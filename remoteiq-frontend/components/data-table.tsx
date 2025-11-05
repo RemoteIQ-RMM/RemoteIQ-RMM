@@ -1,3 +1,5 @@
+//remoteiq-frontend\components\data-table.tsx
+
 "use client";
 
 import * as React from "react";

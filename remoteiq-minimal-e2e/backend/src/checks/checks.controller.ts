@@ -8,7 +8,6 @@ import {
     HttpCode,
     HttpStatus,
     Param,
-    ParseUUIDPipe,
     Post,
     Put,
     Query,
@@ -38,8 +37,8 @@ class CreateCheckDto {
     @IsString() name!: string;
     @IsString() @IsOptional() description?: string;
 
-    @IsOptional() config?: unknown;     // per-type JSON schema validated in service
-    @IsOptional() threshold?: unknown;  // per-type JSON schema validated in service
+    @IsOptional() config?: unknown;
+    @IsOptional() threshold?: unknown;
 
     @IsString() severityDefault!: 'WARN' | 'CRIT';
 
@@ -74,8 +73,6 @@ class RunOnDemandDto {
 export class ChecksController {
     constructor(private readonly checks: ChecksService) { }
 
-    // TODO: add @UseGuards(AuthGuard) once your authZ guard is ready.
-
     @Get()
     async list(@Query() query: ListChecksQuery) {
         return this.checks.list(query);
@@ -83,41 +80,40 @@ export class ChecksController {
 
     @Post()
     async create(@Body() dto: CreateCheckDto) {
-        // NOTE: Service will perform per-type schema validation server-side.
         return this.checks.create({
             ...dto,
-            createdBy: 'system', // TODO: replace with req.user.id
+            createdBy: 'system',
             updatedBy: null,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
-            id: '00000000-0000-0000-0000-000000000000', // placeholder, service should generate
+            id: '00000000-0000-0000-0000-000000000000',
         } as any);
     }
 
     @Put(':id')
-    async update(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: UpdateCheckDto) {
+    async update(@Param('id') id: string, @Body() dto: UpdateCheckDto) {
         return this.checks.update(id, dto as any);
     }
 
     @Delete(':id')
     @HttpCode(HttpStatus.NO_CONTENT)
-    async remove(@Param('id', new ParseUUIDPipe()) id: string) {
+    async remove(@Param('id') id: string) {
         await this.checks.remove(id);
         return;
     }
 
     @Post(':id/assignments/rebuild')
-    async rebuild(@Param('id', new ParseUUIDPipe()) id: string) {
+    async rebuild(@Param('id') id: string) {
         return this.checks.rebuildAssignments(id);
     }
 
     @Post(':id/run')
-    async runOnDemand(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: RunOnDemandDto) {
+    async runOnDemand(@Param('id') id: string, @Body() dto: RunOnDemandDto) {
         return this.checks.runOnDemand(id, dto);
     }
 }
 
-/* ================= New device-scoped /api/devices/:id/checks route ========= */
+/* ========= New device-scoped /api/devices/:deviceId/checks route =========== */
 
 function clamp(n: any, min: number, max: number, def: number): number {
     const x = Number(n);
@@ -133,14 +129,11 @@ export class DeviceChecksController {
      * Device-scoped checks for the UI:
      * GET /api/devices/:deviceId/checks?limit=100
      *
-     * Returns:
-     *  { items: Array<{ id, name, status, lastRun, output, ...optional fields }> }
-     *  Optional advanced fields (type, severity, metrics, thresholds, tags, maintenance, dedupeKey)
-     *  will be included by the service when available.
+     * deviceId is TEXT in DB; do NOT force UUID here.
      */
     @Get(':deviceId/checks')
     async deviceChecks(
-        @Param('deviceId', new ParseUUIDPipe()) deviceId: string,
+        @Param('deviceId') deviceId: string,
         @Query('limit') limit?: string,
     ) {
         const lim = clamp(limit, 1, 200, 100);

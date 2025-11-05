@@ -26,10 +26,12 @@ backend
 │   └── schema.prisma
 ├── public
 │   └── uploads
-│       ├── 1760831401666_logo.png
-│       ├── 1760840146567_logo.ico
-│       ├── 1761017229710_avatar.png
-│       ├── 1761017733451_avatar.png
+│       ├── 1761076275776_logo.png
+│       ├── 1761076278527_logo.png
+│       ├── 1761077735717_logo.png
+│       ├── 1761077738293_logo.png
+│       ├── 1761078203776_logo.ico
+│       ├── 1761078255262_avatar.png
 │       └── avatar-placeholder.png
 ├── src
 │   ├── admin
@@ -41,27 +43,46 @@ backend
 │   │   └── database.service.ts
 │   ├── agents
 │   │   ├── dto
-│   │   │   └── enroll-agent.dto.ts
+│   │   │   ├── enroll-agent.dto.ts
+│   │   │   ├── submit-software.dto.ts
+│   │   │   └── update-agent-facts.dto.ts
 │   │   ├── agents.controller.ts
-│   │   └── agents.module.ts
+│   │   ├── agents.module.ts
+│   │   └── agents.service.ts
+│   ├── alerts
+│   │   ├── alerts.controller.ts
+│   │   ├── alerts.module.ts
+│   │   └── alerts.service.ts
 │   ├── auth
 │   │   ├── dto
-│   │   │   └── login.dto.ts
+│   │   │   ├── login.dto.ts
+│   │   │   └── verify-2fa.dto.ts
 │   │   ├── auth-cookie.guard.ts
 │   │   ├── auth-cookie.middleware.ts
 │   │   ├── auth.controller.ts
 │   │   ├── auth.module.ts
 │   │   ├── auth.service.ts
+│   │   ├── session-heartbeat.interceptor.ts
+│   │   ├── session-heartbeat.middleware.ts
 │   │   ├── user-auth.controller.ts
 │   │   └── user-auth.service.ts
 │   ├── automation
-│   │   └── automation.controller.ts
+│   │   ├── automation.controller.ts
+│   │   ├── automation.module.ts
+│   │   └── automation.service.ts
 │   ├── branding
 │   │   ├── dto
 │   │   │   └── update-branding.dto.ts
 │   │   ├── branding.controller.ts
 │   │   ├── branding.module.ts
 │   │   └── branding.service.ts
+│   ├── checks
+│   │   ├── checks.controller.ts
+│   │   ├── checks.ingest.controller.ts
+│   │   ├── checks.module.ts
+│   │   ├── checks.read.controller.ts
+│   │   ├── checks.runtime.service.ts
+│   │   └── checks.service.ts
 │   ├── common
 │   │   ├── guards
 │   │   │   └── admin-api.guard.ts
@@ -72,20 +93,18 @@ backend
 │   │   ├── health.controller.ts
 │   │   ├── online.util.ts
 │   │   ├── pagination.ts
-│   │   ├── prisma.service.ts
 │   │   ├── socket-registry.service.ts
-│   │   └── types.ts
+│   │   ├── types.ts
+│   │   └── ui-socket-registry.service.ts
 │   ├── company
 │   │   ├── company.controller.ts
 │   │   ├── company.dto.ts
 │   │   ├── company.module.ts
 │   │   └── company.service.ts
-│   ├── database
-│   │   ├── database.module.ts
-│   │   └── prisma.service.ts
 │   ├── devices
 │   │   ├── dto
-│   │   │   └── list-devices.dto.ts
+│   │   │   ├── list-devices.dto.ts
+│   │   │   └── uninstall-software.dto.ts
 │   │   ├── device-actions.controller.ts
 │   │   ├── device-insights.controller.ts
 │   │   ├── devices.controller.ts
@@ -104,20 +123,23 @@ backend
 │   │   ├── imap.module.ts
 │   │   └── inbound-router.service.ts
 │   ├── jobs
+│   │   ├── agent-jobs.controller.ts
 │   │   ├── dispatcher.service.ts
 │   │   ├── jobs.controller.ts
 │   │   ├── jobs.module.ts
 │   │   ├── jobs.service.ts
 │   │   ├── runs.controller.ts
-│   │   └── runs.service.ts
+│   │   ├── runs.service.ts
+│   │   └── scheduler.service.ts
 │   ├── localization
 │   │   ├── localization.controller.ts
 │   │   ├── localization.dto.ts
 │   │   ├── localization.module.ts
 │   │   └── localization.service.ts
-│   ├── prisma
-│   │   ├── prisma.module.ts
-│   │   └── prisma.service.ts
+│   ├── maintenance
+│   │   └── session-cleaner.service.ts
+│   ├── notifications
+│   │   └── notifications.module.ts
 │   ├── realtime
 │   │   └── ws.gateway.ts
 │   ├── roles
@@ -168,46 +190,30 @@ backend
 │   │   └── users.service.ts
 │   ├── ws
 │   │   ├── agent.gateway.ts
-│   │   ├── ws.gateway.ts
+│   │   ├── dashboard.gateway.ts
 │   │   └── ws.module.ts
 │   ├── app.module.ts
 │   ├── main.swagger.example.ts
-│   ├── main.ts
-│   └── users.zip
+│   └── main.ts
 ├── tools
 │   └── remoteiq-sanity.ps1
 ├── .env
 ├── .env.example
-├── app.module.patch.txt
-├── Apply-CompanyProfileSchema.ps1
-├── Apply-LocalizationSchema.ps1
-├── Apply-Migration.ps1
-├── Apply-SupportLegalSchema.ps1
-├── Apply-UsersSchema.ps1
-├── Apply-UUID.ps1
-├── backend.zip
 ├── cookies.txt
 ├── db-inspect.txt
+├── Disable-User2FA.ps1
 ├── docker-compose.db.yml
-├── HOWTO.md
 ├── Inspect-PostgresSchema.ps1
-├── migrate-users-schema.ps1
 ├── nest-cli.json
 ├── package.json
 ├── pnpm-lock.yaml
 ├── pnpm-workspace.yaml
 ├── postman_collection.json
-├── README.md
+├── project-tree.txt
 ├── remoteiq-2fa-recovery-codes.txt
 ├── remoteiq-2fa.png
-├── security-tools.ps1
-├── support_legal.sql
-├── test-api.ps1
-├── test-roles.ps1
 ├── test-smtp.ps1
 ├── tsconfig.build.json
 ├── tsconfig.json
-├── users_schema_fix.sql
-├── users-schema.sql
 ├── Write-ProjectTree.ps1
-└── ws.gateway.patch.txt
+└── ws-auth-files-dump.txt

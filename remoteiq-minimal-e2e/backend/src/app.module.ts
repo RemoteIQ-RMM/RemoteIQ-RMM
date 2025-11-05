@@ -23,6 +23,7 @@ import { SmtpModule } from "./smtp/smtp.module";
 import { ScheduleModule } from "@nestjs/schedule";
 import { ImapModule } from "./imap/imap.module";
 import { SessionCleanerService } from "./maintenance/session-cleaner.service";
+import { CustomersModule } from "./customers/customers.module";
 
 import { JwtModule } from "@nestjs/jwt";
 
@@ -31,6 +32,9 @@ import { AuthCookieMiddleware } from "./auth/auth-cookie.middleware";
 
 // ✅ bring PgPoolService into the AppModule DI context
 import { StorageModule } from "./storage/storage.module";
+
+// ✅ NEW: Tickets
+import { TicketsModule } from "./tickets/tickets.module";
 
 @Module({
     imports: [
@@ -66,6 +70,10 @@ import { StorageModule } from "./storage/storage.module";
         SupportLegalModule,
         UsersModule,
         RolesModule,
+        CustomersModule,
+
+        // ✅ Tickets module
+        TicketsModule,
 
         // SMTP + IMAP
         SmtpModule,

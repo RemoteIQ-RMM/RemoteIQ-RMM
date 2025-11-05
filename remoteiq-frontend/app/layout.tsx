@@ -1,9 +1,9 @@
-// remoteiq-frontend/app/layout.tsx
+// app/layout.tsx
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
-import { ThemeProvider } from "@/components/theme-provider";
 import "@/styles/globals.css";
 import { cn } from "@/lib/utils";
+import { ThemeProvider } from "@/components/theme-provider";
 import Providers from "@/app/providers";
 import { BrandingProvider } from "./providers/BrandingProvider";
 import { ToastProvider } from "@/lib/toast";
@@ -19,10 +19,13 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
+    // important: keep suppressHydrationWarning on <html> for next-themes
     <html lang="en" suppressHydrationWarning>
-      <body className={cn("min-h-screen bg-background font-sans antialiased", inter.className)}>
+      {/* DO NOT put a fixed bg here; use semantic tokens so light/dark both work */}
+      <body className={cn("min-h-screen bg-background text-foreground font-sans antialiased", inter.className)}>
         <ToastProvider>
-          <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
+          {/* ThemeProvider is what reads/writes the riq-theme key and toggles the `dark` class on <html> */}
+          <ThemeProvider>
             <BrandingProvider>
               <Providers>{children}</Providers>
             </BrandingProvider>

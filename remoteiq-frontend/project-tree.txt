@@ -1,0 +1,178 @@
+remoteiq-frontend
+├── .github
+│   └── instructions
+│       └── snyk_rules.instructions.md
+├── .vscode
+│   └── settings.json
+├── app
+│   ├── (auth)
+│   │   └── login
+│   │       └── page.tsx
+│   ├── (dashboard)
+│   │   ├── devices
+│   │   │   └── [deviceId]
+│   │   │       └── page.tsx
+│   │   ├── dashboard-context.tsx
+│   │   ├── layout.tsx
+│   │   └── page.tsx
+│   ├── account
+│   │   ├── components
+│   │   │   ├── AuditPanel.tsx
+│   │   │   └── RecoveryCodesDialog.tsx
+│   │   ├── tabs
+│   │   │   ├── ApiTab.tsx
+│   │   │   ├── DangerTab.tsx
+│   │   │   ├── DeveloperTab.tsx
+│   │   │   ├── IntegrationsTab.tsx
+│   │   │   ├── NotificationsTab.tsx
+│   │   │   ├── ProfileTab.tsx
+│   │   │   ├── SecurityTab.tsx
+│   │   │   └── SessionsTab.tsx
+│   │   ├── layout.tsx
+│   │   └── page.tsx
+│   ├── administration
+│   │   ├── tabs
+│   │   │   ├── AgentsTab.tsx
+│   │   │   ├── ApiTab.tsx
+│   │   │   ├── AuditLogsTab.tsx
+│   │   │   ├── BackupsTab.tsx
+│   │   │   ├── BillingTab.tsx
+│   │   │   ├── BrandingTab.tsx
+│   │   │   ├── ClientPortalTab.tsx
+│   │   │   ├── CompanyTab.tsx
+│   │   │   ├── ComplianceTab.tsx
+│   │   │   ├── CustomFieldsTab.tsx
+│   │   │   ├── DatabaseTab.tsx
+│   │   │   ├── FlagsTab.tsx
+│   │   │   ├── ImportExportTab.tsx
+│   │   │   ├── IntegrationsTab.tsx
+│   │   │   ├── InvoicesTab.tsx
+│   │   │   ├── LocalizationTab.tsx
+│   │   │   ├── MigrationsTab.tsx
+│   │   │   ├── NotificationsTab.tsx
+│   │   │   ├── PlaceholderTab.tsx
+│   │   │   ├── ReportsTab.tsx
+│   │   │   ├── RolesMatrixTab.tsx
+│   │   │   ├── RolesTab.tsx
+│   │   │   ├── SecretsTab.tsx
+│   │   │   ├── SecurityPoliciesTab.tsx
+│   │   │   ├── SessionsTab.tsx
+│   │   │   ├── SlaTab.tsx
+│   │   │   ├── SmtpTab.tsx
+│   │   │   ├── SsoTab.tsx
+│   │   │   ├── StorageTab.tsx
+│   │   │   ├── SubscriptionTab.tsx
+│   │   │   ├── SupportTab.tsx
+│   │   │   ├── SystemTab.tsx
+│   │   │   ├── TemplatesTab.tsx
+│   │   │   ├── TicketingTab.tsx
+│   │   │   ├── UsersTab.tsx
+│   │   │   └── WorkflowsTab.tsx
+│   │   ├── helpers.tsx
+│   │   ├── layout.tsx
+│   │   ├── page.tsx
+│   │   └── types.ts
+│   ├── api
+│   │   └── roles
+│   │       ├── [id]
+│   │       │   └── route.ts
+│   │       └── route.ts
+│   ├── customers
+│   │   ├── customers-context.tsx
+│   │   ├── customers-sidebar.tsx
+│   │   ├── layout.tsx
+│   │   └── page.tsx
+│   ├── hooks
+│   │   └── useRequireAuth.ts
+│   ├── providers
+│   │   └── BrandingProvider.tsx
+│   ├── layout.tsx
+│   └── providers.tsx
+├── components
+│   ├── ui
+│   │   ├── accordion.tsx
+│   │   ├── alert-dialog.tsx
+│   │   ├── avatar.tsx
+│   │   ├── badge.tsx
+│   │   ├── breadcrumb.tsx
+│   │   ├── button.tsx
+│   │   ├── card.tsx
+│   │   ├── checkbox.tsx
+│   │   ├── dialog.tsx
+│   │   ├── dropdown-menu.tsx
+│   │   ├── input.tsx
+│   │   ├── label.tsx
+│   │   ├── popover.tsx
+│   │   ├── radio-group.tsx
+│   │   ├── select.tsx
+│   │   ├── separator.tsx
+│   │   ├── sheet.tsx
+│   │   ├── slider.tsx
+│   │   ├── switch.tsx
+│   │   ├── table.tsx
+│   │   ├── tabs.tsx
+│   │   ├── textarea.tsx
+│   │   ├── toaster.tsx
+│   │   ├── tooltip.tsx
+│   │   └── use-toast.ts
+│   ├── ambient-tooltips.tsx
+│   ├── checks-and-alerts-tab.tsx
+│   ├── ColorPicker.tsx
+│   ├── confirm-destructive.tsx
+│   ├── confirm-popover.tsx
+│   ├── dashboard-shell.tsx
+│   ├── data-table.tsx
+│   ├── device-actions.tsx
+│   ├── device-table-columns.tsx
+│   ├── device-table.tsx
+│   ├── filters-rail.tsx
+│   ├── layout-constants.ts
+│   ├── patch-tab.tsx
+│   ├── remote-tab.tsx
+│   ├── run-script-modal.tsx
+│   ├── sidebar.tsx
+│   ├── software-tab.tsx
+│   ├── status-badge.tsx
+│   ├── theme-provider.tsx
+│   └── top-bar.tsx
+├── lib
+│   ├── account-api.ts
+│   ├── api.ts
+│   ├── auth.ts
+│   ├── debug.ts
+│   ├── draft.ts
+│   ├── forms.ts
+│   ├── images.ts
+│   ├── shortcuts.ts
+│   ├── time.ts
+│   ├── toast.tsx
+│   ├── use-debounced-callback.ts
+│   ├── use-device.ts
+│   ├── use-devices.ts
+│   ├── use-job-run.ts
+│   ├── use-persisted-tab.ts
+│   ├── utils.ts
+│   ├── view-state.ts
+│   └── ws.ts
+├── public
+│   ├── images
+│   ├── avatar-placeholder.png
+│   ├── favicon.ico
+│   └── logo.png
+├── styles
+│   └── globals.css
+├── .env.local
+├── .eslintignore
+├── .eslintrc.json
+├── .prettierrc
+├── components.json
+├── middleware.ts
+├── next-env.d.ts
+├── next.config.mjs
+├── package.json
+├── pnpm-lock.yaml
+├── postcss.config.js
+├── tailwind.config.js
+├── tsconfig.json
+├── tsconfig.tsbuildinfo
+└── Write-ProjectTree.ps1

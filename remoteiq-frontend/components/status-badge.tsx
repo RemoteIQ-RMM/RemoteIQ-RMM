@@ -1,4 +1,4 @@
-//components\status-badge.tsx
+// components/status-badge.tsx
 
 "use client";
 
@@ -7,9 +7,14 @@ import { cn } from "@/lib/utils";
 import type { DeviceStatus } from "@/app/(dashboard)/dashboard-context";
 
 /** Normalize to lowercase for styling/logic. */
-const norm = (s: DeviceStatus) => s.toString().toLowerCase() as "healthy" | "warning" | "critical" | "offline";
+const norm = (s?: DeviceStatus | null) => {
+    const v = (s ?? "offline").toString().toLowerCase();
+    return (v === "healthy" || v === "warning" || v === "critical" || v === "offline"
+        ? v
+        : "offline") as "healthy" | "warning" | "critical" | "offline";
+};
 
-export function StatusBadge({ status }: { status: DeviceStatus }) {
+export function StatusBadge({ status }: { status?: DeviceStatus | null }) {
     const s = norm(status);
     const color =
         s === "healthy" ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" :
@@ -30,6 +35,7 @@ export function StatusBadge({ status }: { status: DeviceStatus }) {
                 color
             )}
             aria-label={`Status: ${label}`}
+            title={label}
         >
             {label}
         </span>

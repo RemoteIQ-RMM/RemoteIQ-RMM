@@ -155,7 +155,7 @@ export default function TopBar() {
     const pathname = usePathname();
     const isDashboard = pathname === "/" || pathname === "/(dashboard)";
     const isCustomers = pathname.startsWith("/customers");
-
+    const isTickets = pathname.startsWith("/tickets");
     // TODO: wire to real auth/role state
     const isSuperAdmin = true;
 
@@ -343,6 +343,16 @@ export default function TopBar() {
                                 className="rounded-none last:rounded-r-md px-4"
                             >
                                 <Link href="/customers">Customers</Link>
+                            </Button>
+                            <div className="h-6 w-px bg-border self-center" />
+                            <Button
+                                asChild
+                                variant={isTickets ? "secondary" : "ghost"}
+                                size="sm"
+                                title="Tickets"
+                                className="rounded-none last:rounded-r-md px-4"
+                            >
+                                <Link href="/tickets">Tickets</Link>
                             </Button>
                         </div>
                     </div>

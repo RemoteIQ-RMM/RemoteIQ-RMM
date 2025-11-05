@@ -1,3 +1,5 @@
+//remoteiq-frontend\components\device-table-columns.tsx
+
 "use client";
 
 import * as React from "react";
