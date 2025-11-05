@@ -177,8 +177,8 @@ Endpoint visibility is provided by a hardened .NET 8 Windows service agent that 
 
 - `remoteiq_export.txt` captures representative backend environment settings, making it a quick reference when populating `.env` or onboarding new operators.【F:remoteiq_export.txt†L1-L19】
 - `riq-support.txt` summarizes platform support expectations, system metadata, and agent footprints for compliance and troubleshooting playbooks.【F:riq-support.txt†L1-L19】
-
-### RemoteIQ V1 consolidates backend orchestration, operator workflows, and endpoint automation into a single repository so that teams can manage remote fleets, enforce branding, and automate remediation with minimal glue code.
+=======
+RemoteIQ V1 consolidates backend orchestration, operator workflows, and endpoint automation into a single repository so that teams can manage remote fleets, enforce branding, and automate remediation with minimal glue code.
 =======
 | `remoteiq-frontend/` | Next.js dashboard including the app router, UI components, Tailwind configuration, and middleware for cookie-protected routes.【F:remoteiq-frontend/package.json†L1-L71】【F:remoteiq-frontend/middleware.ts†L1-L60】 |
 | `remoteiq-minimal-e2e/backend/` | NestJS API with Prisma models, REST and WebSocket endpoints, SMTP/IMAP tooling, and Docker assets for the control-plane backend.【F:remoteiq-minimal-e2e/backend/package.json†L1-L68】【F:remoteiq-minimal-e2e/backend/docker-compose.db.yml†L1-L51】 |
