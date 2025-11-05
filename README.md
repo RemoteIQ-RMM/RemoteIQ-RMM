@@ -1,5 +1,6 @@
 # RemoteIQ V1
 
+
 RemoteIQ is a full-stack remote monitoring and management (RMM) platform that combines a modular NestJS control plane, a Next.js operator dashboard, and a hardened Windows service agent. The monorepo contains everything required to authenticate operators, enroll devices, dispatch automation, stream telemetry, and apply tenant branding from a single codebase.【F:remoteiq-minimal-e2e/backend/src/app.module.ts†L1-L95】【F:remoteiq-frontend/package.json†L1-L71】【F:remoteiq-minimal-e2e/agents/windows/RemoteIQ.Agent/README.md†L1-L44】
 
 ## Platform overview
@@ -52,15 +53,15 @@ RemoteIQ is a full-stack remote monitoring and management (RMM) platform that co
 
 ### Backend (NestJS control plane)
 
-| Area                  | Responsibilities                                                                                                                                                                                                                                                                                                                                                 |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Authentication        | Controllers and services for login, 2FA verification, trusted devices, session cookies, and `/api/auth/me` checks.【F:remoteiq-minimal-e2e/backend/src/auth/auth.controller.ts†L1-L125】【F:remoteiq-minimal-e2e/backend/src/auth/user-auth.service.ts†L1-L200】                                                                                                 |
-| Agents & Jobs         | Agent enrollment, job queuing, dispatch, and result persistence through automation services, WebSocket gateways, and SQL-backed repositories.【F:remoteiq-minimal-e2e/backend/src/automation/automation.service.ts†L1-L50】【F:remoteiq-minimal-e2e/backend/src/ws/agent.gateway.ts†L1-L191】【F:remoteiq-minimal-e2e/backend/src/jobs/jobs.service.ts†L1-L150】 |
-| Device telemetry      | List and fetch devices by merging `agents` and `devices` tables, plus ingest and normalize health checks for dashboards.【F:remoteiq-minimal-e2e/backend/src/devices/devices.service.ts†L1-L200】【F:remoteiq-minimal-e2e/backend/src/checks/checks.service.ts†L1-L200】                                                                                         |
-| Communications        | SMTP profiles with DKIM management, IMAP readiness, and support/legal metadata APIs for tenant operators.【F:remoteiq-minimal-e2e/backend/src/smtp/smtp.service.ts†L1-L200】【F:remoteiq-minimal-e2e/backend/src/support/support.service.ts†L1-L57】                                                                                                             |
-| Branding              | Persist and serve tenant branding (colors, logos, login backgrounds, email chrome, CSS) with SSL-aware Postgres connections.【F:remoteiq-minimal-e2e/backend/src/branding/branding.service.ts†L1-L139】                                                                                                                                                          |
-| Realtime UI           | WebSocket registry for dashboard sockets, supporting device subscriptions, ping/pong heartbeats, and subscriber counts.【F:remoteiq-minimal-e2e/backend/src/ws/dashboard.gateway.ts†L1-L200】                                                                                                                                                                    |
-| Storage & maintenance | Pg pool lifecycle management, environment-driven configuration, and scheduled pruning of revoked sessions.【F:remoteiq-minimal-e2e/backend/src/storage/pg-pool.service.ts†L1-L106】【F:remoteiq-minimal-e2e/backend/src/maintenance/session-cleaner.service.ts†L1-L45】                                                                                          |
+| Area | Responsibilities |
+| ---- | ---------------- |
+| Authentication | Controllers and services for login, 2FA verification, trusted devices, session cookies, and `/api/auth/me` checks.【F:remoteiq-minimal-e2e/backend/src/auth/auth.controller.ts†L1-L125】【F:remoteiq-minimal-e2e/backend/src/auth/user-auth.service.ts†L1-L200】 |
+| Agents & Jobs | Agent enrollment, job queuing, dispatch, and result persistence through automation services, WebSocket gateways, and SQL-backed repositories.【F:remoteiq-minimal-e2e/backend/src/automation/automation.service.ts†L1-L50】【F:remoteiq-minimal-e2e/backend/src/ws/agent.gateway.ts†L1-L191】【F:remoteiq-minimal-e2e/backend/src/jobs/jobs.service.ts†L1-L150】 |
+| Device telemetry | List and fetch devices by merging `agents` and `devices` tables, plus ingest and normalize health checks for dashboards.【F:remoteiq-minimal-e2e/backend/src/devices/devices.service.ts†L1-L200】【F:remoteiq-minimal-e2e/backend/src/checks/checks.service.ts†L1-L200】 |
+| Communications | SMTP profiles with DKIM management, IMAP readiness, and support/legal metadata APIs for tenant operators.【F:remoteiq-minimal-e2e/backend/src/smtp/smtp.service.ts†L1-L200】【F:remoteiq-minimal-e2e/backend/src/support/support.service.ts†L1-L57】 |
+| Branding | Persist and serve tenant branding (colors, logos, login backgrounds, email chrome, CSS) with SSL-aware Postgres connections.【F:remoteiq-minimal-e2e/backend/src/branding/branding.service.ts†L1-L139】 |
+| Realtime UI | WebSocket registry for dashboard sockets, supporting device subscriptions, ping/pong heartbeats, and subscriber counts.【F:remoteiq-minimal-e2e/backend/src/ws/dashboard.gateway.ts†L1-L200】 |
+| Storage & maintenance | Pg pool lifecycle management, environment-driven configuration, and scheduled pruning of revoked sessions.【F:remoteiq-minimal-e2e/backend/src/storage/pg-pool.service.ts†L1-L106】【F:remoteiq-minimal-e2e/backend/src/maintenance/session-cleaner.service.ts†L1-L45】 |
 
 **Key data stores.** Prisma defines `Agent`, `Job`, and `JobResult` tables for automation, while raw SQL modules manage checks, support data, and SMTP credentials.【F:remoteiq-minimal-e2e/backend/prisma/schema.prisma†L1-L53】【F:remoteiq-minimal-e2e/backend/src/checks/checks.service.ts†L1-L200】【F:remoteiq-minimal-e2e/backend/src/smtp/smtp.service.ts†L1-L200】
 
@@ -78,8 +79,9 @@ RemoteIQ is a full-stack remote monitoring and management (RMM) platform that co
 
 - **Runtime.** Built against the repo-wide .NET 8 SDK (`8.0.415`) with centrally managed package versions for hosting, HTTP, logging, and Windows service helpers.【F:global.json†L1-L5】【F:Directory.Packages.props†L1-L14】
 - **Capabilities.** The LocalService-hosted agent enrolls with the backend, posts heartbeats and inventory, executes RSA-PSS-signed tasks, uploads artifacts, protects secrets with DPAPI, supports TLS pinning, and stages self-updates through scripted installers.【F:remoteiq-minimal-e2e/agents/windows/RemoteIQ.Agent/README.md†L1-L44】
-- # **Operations.** `dotnet publish -c Release -r win-x64` produces distributable binaries, while PowerShell scripts install/uninstall the Windows service and persist configuration/logs under `%ProgramData%/RemoteIQ`.【F:remoteiq-minimal-e2e/agents/windows/RemoteIQ.Agent/README.md†L5-L33】
-  RemoteIQ is an end-to-end remote monitoring and management (RMM) platform that combines a modern Next.js dashboard, a NestJS API, and production-ready Windows agents to monitor endpoints, dispatch jobs, and deliver realtime insights. The repository contains everything needed to run the control plane, brand the tenant experience, and build or package field agents.
+- **Operations.** `dotnet publish -c Release -r win-x64` produces distributable binaries, while PowerShell scripts install/uninstall the Windows service and persist configuration/logs under `%ProgramData%/RemoteIQ`.【F:remoteiq-minimal-e2e/agents/windows/RemoteIQ.Agent/README.md†L5-L33】
+=======
+RemoteIQ is an end-to-end remote monitoring and management (RMM) platform that combines a modern Next.js dashboard, a NestJS API, and production-ready Windows agents to monitor endpoints, dispatch jobs, and deliver realtime insights. The repository contains everything needed to run the control plane, brand the tenant experience, and build or package field agents.
 
 ## Table of contents
 
@@ -103,6 +105,7 @@ The control plane is implemented in NestJS with discrete modules for authenticat
 The web dashboard is a Next.js 15 application that ships with opinionated UI primitives, data visualization components, and grid-based layouts for customizable RMM views. It depends on React 19 release candidates, Radix UI, TanStack utilities, Tailwind CSS, and charting libraries to build rich operator workflows.【F:remoteiq-frontend/package.json†L1-L71】
 
 Endpoint visibility is provided by a hardened .NET 8 Windows service agent that authenticates with the RemoteIQ backend, emits heartbeats and inventory snapshots, executes signed jobs, and can self-update in stages for safe rollouts.【F:remoteiq-minimal-e2e/agents/windows/RemoteIQ.Agent/README.md†L1-L51】【F:global.json†L1-L5】
+
 
 ## Repository layout
 
@@ -175,8 +178,8 @@ Endpoint visibility is provided by a hardened .NET 8 Windows service agent that 
 - `remoteiq_export.txt` captures representative backend environment settings, making it a quick reference when populating `.env` or onboarding new operators.【F:remoteiq_export.txt†L1-L19】
 - `riq-support.txt` summarizes platform support expectations, system metadata, and agent footprints for compliance and troubleshooting playbooks.【F:riq-support.txt†L1-L19】
 
-# RemoteIQ V1 consolidates backend orchestration, operator workflows, and endpoint automation into a single repository so that teams can manage remote fleets, enforce branding, and automate remediation with minimal glue code.
-
+RemoteIQ V1 consolidates backend orchestration, operator workflows, and endpoint automation into a single repository so that teams can manage remote fleets, enforce branding, and automate remediation with minimal glue code.
+=======
 | `remoteiq-frontend/` | Next.js dashboard including the app router, UI components, Tailwind configuration, and middleware for cookie-protected routes.【F:remoteiq-frontend/package.json†L1-L71】【F:remoteiq-frontend/middleware.ts†L1-L60】 |
 | `remoteiq-minimal-e2e/backend/` | NestJS API with Prisma models, REST and WebSocket endpoints, SMTP/IMAP tooling, and Docker assets for the control-plane backend.【F:remoteiq-minimal-e2e/backend/package.json†L1-L68】【F:remoteiq-minimal-e2e/backend/docker-compose.db.yml†L1-L51】 |
 | `remoteiq-minimal-e2e/agents/windows/RemoteIQ.Agent/` | Windows service agent source, packaging scripts, and security guidance for deploying managed endpoints.【F:remoteiq-minimal-e2e/agents/windows/RemoteIQ.Agent/README.md†L1-L51】 |
@@ -242,3 +245,4 @@ Endpoint visibility is provided by a hardened .NET 8 Windows service agent that 
 - Use the `health` npm script in the backend to quickly check service availability once the API is running.【F:remoteiq-minimal-e2e/backend/package.json†L5-L15】
 - When extending the dashboard, prefer the shared UI primitives under `remoteiq-frontend/components` and update the `BrandingProvider` if additional theming tokens are introduced.【F:remoteiq-frontend/package.json†L1-L71】【F:remoteiq-frontend/app/providers/BrandingProvider.tsx†L5-L198】
 - Keep agents aligned with backend expectations by regenerating and distributing new public keys whenever signing policies change; the agent README lists the required endpoints and payloads.【F:remoteiq-minimal-e2e/agents/windows/RemoteIQ.Agent/README.md†L3-L44】
+
