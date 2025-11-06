@@ -10,6 +10,8 @@ export type User = {
     name: string;
     email: string;
     role: string;
+    roleId?: string | null;
+    roles?: Array<{ id: string; name: string }>;
     status: string;
     lastSeen: string;
     twoFactorEnabled?: boolean;
