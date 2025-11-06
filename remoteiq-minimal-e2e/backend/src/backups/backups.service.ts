@@ -4,6 +4,7 @@ import {
     NotFoundException,
 } from "@nestjs/common";
 import { PgPoolService } from "../storage/pg-pool.service";
+import { OrganizationContextService } from "../storage/organization-context.service";
 import { BackupConfigDto, HistoryQueryDto } from "./dto";
 import { Readable } from "stream";
 import * as crypto from "crypto";
@@ -15,12 +16,32 @@ type JobRow = {
     id: string;
     started_at: Date;
     finished_at: Date | null;
-    status: "running" | "success" | "failed" | "cancelled";
+    status: "running" | "completed" | "failed" | "cancelled";
     note: string | null;
     size_bytes: number | null;
     duration_sec: number | null;
     verified: boolean | null;
 };
+
+type HistoryStatus = "success" | "failed" | "running";
+
+function mapFilterStatus(status: HistoryStatus | undefined): string | undefined {
+    if (!status) return undefined;
+    if (status === "success") return "completed";
+    return status;
+}
+
+function projectStatus(status: string): HistoryStatus {
+    switch (status) {
+        case "completed":
+            return "success";
+        case "failed":
+        case "cancelled":
+            return "failed";
+        default:
+            return "running";
+    }
+}
 
 function isAbsolutePath(p: string) {
     return p.startsWith("/") || /^[A-Za-z]:\\/.test(p);
@@ -43,13 +64,238 @@ function makeCursor(page: number) {
     return Buffer.from(JSON.stringify({ page }), "utf8").toString("base64");
 }
 
+type PolicyRow = {
+    id: string;
+    schedule: string;
+    retention: any;
+    options: any;
+    destination_id: string | null;
+    destination_provider: string | null;
+    destination_configuration: any | null;
+};
+
+type PolicyConfig = {
+    policyId: string;
+    enabled: boolean;
+    targets: string[];
+    schedule: string;
+    cronExpr?: string;
+    retentionDays: number;
+    encrypt: boolean;
+    destination: any | null;
+    notifications: Record<string, any>;
+    lastScheduledAt?: string | null;
+};
+
 @Injectable()
 export class BackupsService {
     constructor(
         private readonly db: PgPoolService,
         private readonly notifier: NotifierService,
-        private readonly worker: WorkerService
+        private readonly worker: WorkerService,
+        private readonly orgContext: OrganizationContextService,
     ) { }
+
+    private async orgId(): Promise<string> {
+        return this.orgContext.getDefaultOrganizationId();
+    }
+
+    private retentionDays(retention: any): number {
+        if (!retention) return 30;
+        if (typeof retention.days === "number") return retention.days;
+        if (typeof retention.value === "number" && retention.unit === "days") {
+            return retention.value;
+        }
+        return 30;
+    }
+
+    private parsePolicy(row: PolicyRow | null): PolicyConfig | null {
+        if (!row) return null;
+        const options = row.options && typeof row.options === "object" ? row.options : {};
+        const destination =
+            row.destination_configuration && typeof row.destination_configuration === "object"
+                ? row.destination_configuration
+                : null;
+
+        const cronExpr = options.cronExpr ?? options.cron_expr ?? undefined;
+        const notifications =
+            options.notifications && typeof options.notifications === "object"
+                ? options.notifications
+                : {};
+
+        const enabled = options.enabled ?? false;
+        const rawTargets = Array.isArray(options.targets)
+            ? options.targets.filter((t: any) => typeof t === "string" && t.trim().length)
+            : [];
+        const targets = rawTargets.length ? rawTargets : ["users", "roles", "devices", "settings"];
+        const encrypt = options.encrypt ?? true;
+        const lastScheduledAt = options.lastScheduledAt ?? options.last_scheduled_at ?? null;
+
+        return {
+            policyId: row.id,
+            enabled,
+            targets,
+            schedule: row.schedule,
+            cronExpr: cronExpr ?? undefined,
+            retentionDays: this.retentionDays(row.retention),
+            encrypt,
+            destination,
+            notifications,
+            lastScheduledAt,
+        };
+    }
+
+    private normalizeDestinationInput(dest: any): { provider: string; configuration: any } {
+        if (!dest || typeof dest !== "object") {
+            throw new BadRequestException("Destination required");
+        }
+        const provider = dest.kind === "remote" ? "sftp" : dest.kind;
+        return {
+            provider,
+            configuration: { ...dest },
+        };
+    }
+
+    private async fetchDefaultPolicyRow(): Promise<PolicyRow | null> {
+        const orgId = await this.orgId();
+        const { rows } = await this.db.query<PolicyRow>(
+            `SELECT p.id,
+                    p.schedule,
+                    p.retention,
+                    p.options,
+                    p.destination_id,
+                    d.provider AS destination_provider,
+                    d.configuration AS destination_configuration
+               FROM backup_policies p
+          LEFT JOIN backup_destinations d ON d.id = p.destination_id
+              WHERE p.organization_id = $1
+           ORDER BY p.is_default DESC, p.created_at ASC
+              LIMIT 1`,
+            [orgId]
+        );
+        return rows[0] ?? null;
+    }
+
+    private async fetchDefaultPolicy(): Promise<PolicyConfig | null> {
+        const row = await this.fetchDefaultPolicyRow();
+        return this.parsePolicy(row);
+    }
+
+    private async upsertDestination(
+        orgId: string,
+        dest: any,
+    ): Promise<{ id: string; provider: string; configuration: any }> {
+        const { provider, configuration } = this.normalizeDestinationInput(dest);
+        const { rows } = await this.db.query<{ id: string; provider: string; configuration: any }>(
+            `INSERT INTO backup_destinations (organization_id, name, provider, configuration)
+             VALUES ($1, $2, $3, $4::jsonb)
+             ON CONFLICT (organization_id, name)
+             DO UPDATE SET provider = EXCLUDED.provider,
+                           configuration = EXCLUDED.configuration,
+                           updated_at = NOW()
+             RETURNING id, provider, configuration`,
+            [orgId, "Default Backup Destination", provider, JSON.stringify(configuration)]
+        );
+        return rows[0];
+    }
+
+    private async upsertPolicy(
+        orgId: string,
+        destinationId: string,
+        cfg: BackupConfigDto,
+        existingOptions: Record<string, any>,
+    ): Promise<PolicyConfig | null> {
+        const mergedOptions = {
+            ...existingOptions,
+            enabled: !!cfg.enabled,
+            targets: cfg.targets,
+            cronExpr: cfg.schedule === "cron" ? cfg.cronExpr ?? null : null,
+            cron_expr: cfg.schedule === "cron" ? cfg.cronExpr ?? null : null,
+            encrypt: !!cfg.encrypt,
+            notifications: cfg.notifications ?? {},
+        };
+        if (mergedOptions.cronExpr == null) delete (mergedOptions as any).cronExpr;
+        if (mergedOptions.cron_expr == null) delete (mergedOptions as any).cron_expr;
+        const inserted = await this.db.query<{ id: string }>(
+            `INSERT INTO backup_policies (
+                 organization_id,
+                 name,
+                 description,
+                 schedule,
+                 retention,
+                 destination_id,
+                 target_type,
+                 target_id,
+                 options,
+                 is_default)
+             VALUES (
+                 $1,
+                 $2,
+                 $3,
+                 $4,
+                 $5::jsonb,
+                 $6,
+                 'organization',
+                 NULL,
+                 $7::jsonb,
+                 TRUE)
+             ON CONFLICT (organization_id, name)
+             DO UPDATE SET
+                 description = EXCLUDED.description,
+                 schedule = EXCLUDED.schedule,
+                 retention = EXCLUDED.retention,
+                 destination_id = EXCLUDED.destination_id,
+                 target_type = EXCLUDED.target_type,
+                 target_id = EXCLUDED.target_id,
+                 options = EXCLUDED.options,
+                 is_default = TRUE,
+                 updated_at = NOW()
+             RETURNING id`,
+            [
+                orgId,
+                "Default Backup Policy",
+                "Normalized default backups policy",
+                cfg.schedule,
+                JSON.stringify({ days: cfg.retentionDays }),
+                destinationId,
+                JSON.stringify(mergedOptions),
+            ]
+        );
+        const policyId = inserted.rows[0]?.id;
+        if (!policyId) {
+            return null;
+        }
+
+        const detail = await this.db.query<PolicyRow>(
+            `SELECT p.id,
+                    p.schedule,
+                    p.retention,
+                    p.options,
+                    p.destination_id,
+                    d.provider AS destination_provider,
+                    d.configuration AS destination_configuration
+               FROM backup_policies p
+          LEFT JOIN backup_destinations d ON d.id = p.destination_id
+              WHERE p.id = $1`,
+            [policyId]
+        );
+        return this.parsePolicy(detail.rows[0] ?? null);
+    }
+
+    private async ensurePolicyAndDestination(cfg?: BackupConfigDto): Promise<PolicyConfig | null> {
+        if (!cfg) {
+            return this.fetchDefaultPolicy();
+        }
+        const orgId = await this.orgId();
+        const currentRow = await this.fetchDefaultPolicyRow();
+        const existingOptions =
+            currentRow && currentRow.options && typeof currentRow.options === "object"
+                ? currentRow.options
+                : {};
+
+        const destination = await this.upsertDestination(orgId, cfg.destination);
+        return this.upsertPolicy(orgId, destination.id, cfg, existingOptions);
+    }
 
     /* ---------------- Permissions (UI helper) --------------- */
     async getPermissions() {
@@ -59,12 +305,8 @@ export class BackupsService {
 
     /* ---------------- Config --------------------- */
     async getConfig() {
-        const { rows } = await this.db.query(
-            `SELECT enabled, targets, schedule, cron_expr, retention_days, encrypt, destination, notifications
-       FROM backups_config
-       LIMIT 1`
-        );
-        if (!rows.length) {
+        const policy = await this.fetchDefaultPolicy();
+        if (!policy) {
             return {
                 enabled: false,
                 targets: ["users", "roles", "devices", "settings"],
@@ -76,16 +318,16 @@ export class BackupsService {
                 notifications: { email: false, webhook: false, slack: false },
             };
         }
-        const r = rows[0];
+
         return {
-            enabled: !!r.enabled,
-            targets: r.targets,
-            schedule: r.schedule,
-            cronExpr: r.cron_expr ?? undefined,
-            retentionDays: Number(r.retention_days),
-            encrypt: !!r.encrypt,
-            destination: r.destination,
-            notifications: r.notifications ?? undefined,
+            enabled: policy.enabled,
+            targets: policy.targets,
+            schedule: policy.schedule as any,
+            cronExpr: policy.cronExpr,
+            retentionDays: policy.retentionDays,
+            encrypt: policy.encrypt,
+            destination: policy.destination ?? { kind: "local", path: "/var/remoteiq/backups" },
+            notifications: policy.notifications,
         };
     }
 
@@ -124,23 +366,11 @@ export class BackupsService {
         if (cfg.schedule === "cron" && !cfg.cronExpr) {
             throw new BadRequestException("cronExpr required for schedule=cron");
         }
-        const sql = `
-      INSERT INTO backups_config (id, enabled, targets, schedule, cron_expr, retention_days, encrypt, destination, notifications)
-      VALUES ('singleton', $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
-      ON CONFLICT (id) DO UPDATE SET
-        enabled=$1, targets=$2, schedule=$3, cron_expr=$4, retention_days=$5, encrypt=$6, destination=$7::jsonb, notifications=$8::jsonb
-    `;
-        await this.db.query(sql, [
-            !!cfg.enabled,
-            JSON.stringify(cfg.targets),
-            cfg.schedule,
-            cfg.cronExpr ?? null,
-            cfg.retentionDays,
-            !!cfg.encrypt,
-            JSON.stringify(cfg.destination),
-            JSON.stringify(cfg.notifications || {}),
-        ]);
-        return { ok: true };
+        const policy = await this.ensurePolicyAndDestination(cfg);
+        return {
+            ok: true,
+            policyId: policy?.policyId,
+        };
     }
 
     /* ---------------- History -------------------- */
@@ -151,8 +381,15 @@ export class BackupsService {
 
         const params: any[] = [];
         const where: string[] = [];
-        if (q.status) {
-            params.push(q.status);
+
+        const policy = await this.fetchDefaultPolicy();
+        if (policy?.policyId) {
+            params.push(policy.policyId);
+            where.push(`(policy_id = $${params.length} OR policy_id IS NULL)`);
+        }
+        const statusFilter = mapFilterStatus(q.status as HistoryStatus | undefined);
+        if (statusFilter) {
+            params.push(statusFilter);
             where.push(`status = $${params.length}`);
         }
         if (q.q?.trim()) {
@@ -178,11 +415,11 @@ export class BackupsService {
       OFFSET ${offset}
     `;
 
-        const { rows } = await this.db.query(sql, params);
-        const items = rows.slice(0, pageSize).map((r: JobRow) => ({
+        const { rows } = await this.db.query<JobRow>(sql, params);
+        const items = rows.slice(0, pageSize).map((r) => ({
             id: r.id,
             at: r.started_at.toISOString().slice(0, 16).replace("T", " "),
-            status: r.status,
+            status: projectStatus(r.status),
             note: r.note ?? undefined,
             sizeBytes: r.size_bytes ?? undefined,
             durationSec: r.duration_sec ?? undefined,
@@ -195,13 +432,24 @@ export class BackupsService {
 
     /* ---------------- Scheduler hooks ------------- */
     async markScheduledOnce(now: Date) {
-        // prevent double fire across restarts within a 30s window
+        const policy = await this.fetchDefaultPolicyRow();
+        if (!policy) return { updated: false };
+
         const { rows } = await this.db.query(
-            `UPDATE backups_config
-         SET last_scheduled_at=$1
-       WHERE (last_scheduled_at IS NULL OR last_scheduled_at < $1 - interval '30 seconds')
-       RETURNING 1`,
-            [now.toISOString()]
+            `UPDATE backup_policies
+                SET options = jsonb_set(
+                    COALESCE(options, '{}'::jsonb),
+                    '{lastScheduledAt}',
+                    to_jsonb(($2)::timestamptz),
+                    true
+                )
+             WHERE id = $1
+               AND (
+                    options->>'lastScheduledAt' IS NULL
+                 OR (options->>'lastScheduledAt')::timestamptz < ($2)::timestamptz - interval '30 seconds'
+               )
+             RETURNING 1`,
+            [policy.id, now.toISOString()]
         );
         return { updated: rows.length > 0 };
     }
@@ -212,11 +460,19 @@ export class BackupsService {
 
     /* ---------------- Actions -------------------- */
     async startBackupNow() {
+        const policy = await this.ensurePolicyAndDestination();
+        if (!policy) {
+            throw new BadRequestException("Backups not configured");
+        }
+        if (!policy.enabled) {
+            throw new BadRequestException("Backups disabled");
+        }
+
         const id = crypto.randomUUID();
         await this.db.query(
-            `INSERT INTO backup_jobs (id, started_at, status, note)
-       VALUES ($1, NOW(), 'running', 'Scheduled run')`,
-            [id]
+            `INSERT INTO backup_jobs (id, policy_id, started_at, status, note)
+             VALUES ($1, $2, NOW(), 'running', 'Manual run')`,
+            [id, policy.policyId]
         );
         // Start immediately
         await this.worker.runOneIfAny();
@@ -224,14 +480,22 @@ export class BackupsService {
     }
 
     async pruneOld() {
-        const cfg = await this.getConfig();
-        const { rows } = await this.db.query(
-            `DELETE FROM backup_jobs
-       WHERE COALESCE(finished_at, started_at) < (NOW() - ($1 || ' days')::interval)
-         AND status IN ('success','failed','cancelled')
-       RETURNING 1`,
-            [String(cfg.retentionDays)]
-        );
+        const policy = await this.fetchDefaultPolicy();
+        if (!policy) {
+            return { removed: 0 };
+        }
+
+        const params: any[] = [String(policy.retentionDays)];
+        let sql = `DELETE FROM backup_jobs
+             WHERE COALESCE(finished_at, started_at) < (NOW() - ($1 || ' days')::interval)
+               AND status IN ('completed','failed','cancelled')`;
+
+        if (policy.policyId) {
+            params.push(policy.policyId);
+            sql += ` AND (policy_id = $2 OR policy_id IS NULL)`;
+        }
+
+        const { rows } = await this.db.query(sql + ` RETURNING 1`, params);
         return { removed: rows.length };
     }
 
@@ -367,12 +631,12 @@ export class BackupsService {
             [id]
         );
         if (!rows.length) throw new NotFoundException("Backup not found");
-        if (rows[0].status !== "success")
+        if (rows[0].status !== "completed")
             throw new BadRequestException("Backup not successful");
 
         await this.db.query(
-            `INSERT INTO backup_restores (id, backup_id, requested_at, status)
-       VALUES ($1, $2, NOW(), 'running')`,
+            `INSERT INTO backup_restores (id, backup_job_id, status)
+       VALUES ($1, $2, 'running')`,
             [crypto.randomUUID(), id]
         );
         return { started: true };
@@ -400,11 +664,17 @@ export class BackupsService {
 
     async getDownload(id: string): Promise<{ presignedUrl?: string; stream?: Readable; filename: string } | null> {
         const { rows } = await this.db.query(
-            `SELECT status, artifact_location FROM backup_jobs WHERE id=$1`,
+            `SELECT j.status,
+                    j.artifact_location,
+                    d.configuration AS destination_configuration
+               FROM backup_jobs j
+          LEFT JOIN backup_policies p ON j.policy_id = p.id
+          LEFT JOIN backup_destinations d ON d.id = p.destination_id
+              WHERE j.id=$1`,
             [id]
         );
         if (!rows.length) return null;
-        if (rows[0].status !== "success")
+        if (rows[0].status !== "completed")
             throw new BadRequestException("Backup not successful");
 
         const loc = rows[0].artifact_location || {};
@@ -415,18 +685,20 @@ export class BackupsService {
             return { filename, stream: fs.createReadStream(loc.path) };
         }
         if (loc.kind === "s3") {
-            // Reuse the configured S3 connection for presigning
-            const cfg = await this.getConfig();
-            if (cfg.destination.kind !== "s3")
-                throw new BadRequestException("S3 destination not active");
+            const destConfig = rows[0].destination_configuration || {};
+            const connectionId = loc.connectionId || destConfig.connectionId;
+            if (!connectionId) throw new BadRequestException("S3 connection missing");
             const row = (await this.db.query(
                 `SELECT config, secrets FROM storage_connections WHERE id=$1 AND kind='s3'`,
-                [cfg.destination.connectionId]
+                [connectionId]
             )).rows[0];
             if (!row) throw new BadRequestException("S3 connection missing");
             const s3Cfg = { ...(row.config || {}), ...(row.secrets || {}) };
-            const url = await s3PresignGet(s3Cfg, loc.bucket, loc.key, 60 * 10);
-            const filename = String(loc.key || "").split("/").pop() || "backup.tar.gz";
+            const bucket = loc.bucket || destConfig.bucket || s3Cfg.bucket;
+            const key = loc.key || destConfig.key;
+            if (!bucket || !key) throw new BadRequestException("S3 location incomplete");
+            const url = await s3PresignGet(s3Cfg, bucket, key, 60 * 10);
+            const filename = String(key || "").split("/").pop() || "backup.tar.gz";
             return { presignedUrl: url, filename };
         }
         return null;

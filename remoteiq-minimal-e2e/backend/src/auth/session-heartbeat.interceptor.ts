@@ -65,13 +65,10 @@ export class SessionHeartbeatInterceptor implements NestInterceptor {
             UPDATE sessions
                SET last_seen_at = now(),
                    user_agent   = COALESCE($3, user_agent),
-                   ip           = COALESCE($4, ip)
+                   ip_address   = COALESCE($4, ip_address)
              WHERE user_id = $1
                AND revoked_at IS NULL
-               AND (
-                    jti::text = $2
-                 OR id::text  = $2
-               )
+               AND id::text = $2
             `,
                         [userId, jtiText, ua || null, ip || null],
                     )

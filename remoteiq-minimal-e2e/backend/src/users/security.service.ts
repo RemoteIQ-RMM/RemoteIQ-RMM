@@ -2,21 +2,20 @@ import { HttpException, HttpStatus, Inject, Injectable } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
 import { authenticator } from "otplib";
 import QRCode from "qrcode";
+import { createHash } from "crypto";
 import { PgPoolService } from "../storage/pg-pool.service";
 
 const PASSWORD_MIN_LEN = parseInt(process.env.PASSWORD_MIN_LEN || "8", 10) || 8;
 const TOTP_ISSUER = process.env.TOTP_ISSUER || "RemoteIQ";
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX_ATTEMPTS = 5;
-/** drift window in 30s steps (otplib window is +/- this value) */
 const TOTP_WINDOW = parseInt(process.env.TOTP_WINDOW || "1", 10) || 1;
 
 type SessionRow = {
     id: string;
     user_id: string;
-    jti: string | null;
     user_agent: string | null;
-    ip: string | null;
+    ip_address: string | null;
     created_at: string;
     last_seen_at: string;
     revoked_at: string | null;
@@ -26,10 +25,11 @@ type SessionRow = {
 type TokenRow = {
     id: string;
     user_id: string;
-    name: string;
+    description: string | null;
     token_hash: string;
     created_at: string;
     last_used_at: string | null;
+    expires_at: string | null;
     revoked_at: string | null;
 };
 
@@ -42,6 +42,10 @@ function checkRate(key: string) {
     }
     arr.push(now);
     rateMap.set(key, arr);
+}
+
+function sha256Hex(value: string): string {
+    return createHash("sha256").update(value).digest("hex");
 }
 
 @Injectable()
@@ -71,48 +75,53 @@ export class SecurityService {
 
         const newHash = await bcrypt.hash(next, 12);
         await this.pg.query(
-            "UPDATE users SET password_hash = $1, password_updated_at = now() WHERE id = $2",
+            "UPDATE users SET password_hash = $1 WHERE id = $2",
             [newHash, userId],
+        );
+        await this.pg.query(
+            `INSERT INTO user_security (user_id, password_changed_at)
+             VALUES ($1, now())
+             ON CONFLICT (user_id) DO UPDATE
+               SET password_changed_at = EXCLUDED.password_changed_at`,
+            [userId],
         );
         return true;
     }
 
     /* ------------------------- 2FA (TOTP) ------------------------- */
 
-    /** Step 1: generate a secret (do NOT enable yet), return otpauth URL + QR */
     async start2fa(userId: string, email: string) {
         checkRate(`2fa:start:${userId}`);
 
-        const secret = authenticator.generateSecret(); // base32
+        const secret = authenticator.generateSecret();
         const label = encodeURIComponent(email);
         const issuer = encodeURIComponent(TOTP_ISSUER);
         const otpauthUrl = `otpauth://totp/${issuer}:${label}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
         const qrPngDataUrl = await QRCode.toDataURL(otpauthUrl);
 
-        // IMPORTANT: write to two_factor_secret (NOT totp_secret), keep disabled until confirm
         await this.pg.query(
-            `UPDATE users
-          SET two_factor_secret = $1,
-              two_factor_enabled = false,
-              two_factor_recovery_codes = COALESCE(two_factor_recovery_codes, '{}'::text[])
-        WHERE id = $2`,
-            [secret, userId],
+            `INSERT INTO user_security (user_id, two_factor_enabled, totp_secret, recovery_codes)
+             VALUES ($1, false, $2, '{}'::text[])
+             ON CONFLICT (user_id) DO UPDATE
+               SET totp_secret = EXCLUDED.totp_secret,
+                   two_factor_enabled = false,
+                   recovery_codes = COALESCE(user_security.recovery_codes, '{}'::text[])`,
+            [userId, secret],
         );
 
         return { secret, otpauthUrl, qrPngDataUrl };
     }
 
-    /** Step 2: confirm one valid TOTP; then enable and create recovery codes */
     async confirm2fa(userId: string, code: string) {
         checkRate(`2fa:confirm:${userId}`);
 
         const { rows } = await this.pg.query(
-            "SELECT two_factor_secret FROM users WHERE id = $1",
+            `SELECT totp_secret FROM user_security WHERE user_id = $1 LIMIT 1`,
             [userId],
         );
-        if (rows.length === 0) throw new HttpException("User not found.", HttpStatus.NOT_FOUND);
+        if (!rows.length) throw new HttpException("Start 2FA first.", HttpStatus.BAD_REQUEST);
 
-        const secret = (rows[0] as any).two_factor_secret as string | null;
+        const secret = (rows[0] as any).totp_secret as string | null;
         if (!secret) throw new HttpException("Start 2FA first.", HttpStatus.BAD_REQUEST);
 
         const token = (code || "").replace(/\D/g, "").slice(-6);
@@ -123,57 +132,68 @@ export class SecurityService {
         const valid = authenticator.verify({ token, secret });
         if (!valid) throw new HttpException("Invalid TOTP code.", HttpStatus.BAD_REQUEST);
 
-        const recoveryCodes = this.generateRecoveryCodes(8); // plaintext; FE should show/save
+        const recoveryCodes = this.generateRecoveryCodes(8);
+        const hashedCodes = recoveryCodes.map((c) => sha256Hex(c.toLowerCase()));
 
         await this.pg.query(
-            `UPDATE users
-          SET two_factor_enabled = true,
-              two_factor_recovery_codes = $1
-        WHERE id = $2`,
-            [recoveryCodes, userId],
+            `UPDATE user_security
+                SET two_factor_enabled = true,
+                    recovery_codes = $2
+              WHERE user_id = $1`,
+            [userId, hashedCodes],
         );
 
         return recoveryCodes;
     }
 
-    /** Disable using either a current TOTP or a recovery code (consumes it) */
     async disable2fa(userId: string, code?: string, recoveryCode?: string) {
         checkRate(`2fa:disable:${userId}`);
 
         const { rows } = await this.pg.query(
-            "SELECT two_factor_secret, two_factor_recovery_codes, two_factor_enabled FROM users WHERE id = $1",
+            `SELECT totp_secret, two_factor_enabled, recovery_codes
+               FROM user_security
+              WHERE user_id = $1
+              LIMIT 1`,
             [userId],
         );
-        if (rows.length === 0) throw new HttpException("User not found.", HttpStatus.NOT_FOUND);
+        if (!rows.length) {
+            await this.pg.query(
+                `INSERT INTO user_security (user_id, two_factor_enabled, recovery_codes, totp_secret)
+                 VALUES ($1, false, '{}'::text[], NULL)
+                 ON CONFLICT (user_id) DO NOTHING`,
+                [userId],
+            );
+            return;
+        }
 
         const row = rows[0] as any;
         if (!row.two_factor_enabled) {
-            // idempotent clear
             await this.pg.query(
-                `UPDATE users
-            SET two_factor_enabled = false,
-                two_factor_secret = NULL,
-                two_factor_recovery_codes = '{}'::text[]
-          WHERE id = $1`,
+                `UPDATE user_security
+                    SET two_factor_enabled = false,
+                        totp_secret = NULL,
+                        recovery_codes = '{}'::text[]
+                  WHERE user_id = $1`,
                 [userId],
             );
             return;
         }
 
         let ok = false;
-        if (!ok && code && row.two_factor_secret) {
+        if (!ok && code && row.totp_secret) {
             const token = String(code).replace(/\D/g, "").slice(-6);
-            if (token.length === 6) ok = authenticator.verify({ token, secret: row.two_factor_secret });
+            if (token.length === 6) ok = authenticator.verify({ token, secret: row.totp_secret });
         }
 
         if (!ok && recoveryCode) {
-            const list: string[] = row.two_factor_recovery_codes || [];
-            const idx = list.findIndex((c) => c === recoveryCode);
+            const list: string[] = Array.isArray(row.recovery_codes) ? row.recovery_codes : [];
+            const hashed = sha256Hex(recoveryCode.trim().toLowerCase());
+            const idx = list.findIndex((c) => c === hashed);
             if (idx >= 0) {
                 ok = true;
-                list.splice(idx, 1); // consume
+                list.splice(idx, 1);
                 await this.pg.query(
-                    "UPDATE users SET two_factor_recovery_codes = $1 WHERE id = $2",
+                    `UPDATE user_security SET recovery_codes = $1 WHERE user_id = $2`,
                     [list, userId],
                 );
             }
@@ -182,11 +202,11 @@ export class SecurityService {
         if (!ok) throw new HttpException("Invalid code or recovery code.", HttpStatus.FORBIDDEN);
 
         await this.pg.query(
-            `UPDATE users
-          SET two_factor_enabled = false,
-              two_factor_secret = NULL,
-              two_factor_recovery_codes = '{}'::text[]
-        WHERE id = $1`,
+            `UPDATE user_security
+                SET two_factor_enabled = false,
+                    totp_secret = NULL,
+                    recovery_codes = '{}'::text[]
+              WHERE user_id = $1`,
             [userId],
         );
     }
@@ -195,18 +215,18 @@ export class SecurityService {
         checkRate(`2fa:regen:${userId}`);
 
         const { rows } = await this.pg.query(
-            "SELECT two_factor_enabled FROM users WHERE id = $1",
+            `SELECT two_factor_enabled FROM user_security WHERE user_id = $1 LIMIT 1`,
             [userId],
         );
-        if (rows.length === 0) throw new HttpException("User not found.", HttpStatus.NOT_FOUND);
-        if (!(rows[0] as any).two_factor_enabled) {
+        if (!rows.length || !(rows[0] as any).two_factor_enabled) {
             throw new HttpException("Enable 2FA first.", HttpStatus.BAD_REQUEST);
         }
 
         const codes = this.generateRecoveryCodes(8);
+        const hashed = codes.map((c) => sha256Hex(c.toLowerCase()));
         await this.pg.query(
-            "UPDATE users SET two_factor_recovery_codes = $1 WHERE id = $2",
-            [codes, userId],
+            `UPDATE user_security SET recovery_codes = $1 WHERE user_id = $2`,
+            [hashed, userId],
         );
         return codes;
     }
@@ -220,23 +240,13 @@ export class SecurityService {
 
     /* ------------------------- Sessions ------------------------- */
 
-    async listSessions(userId: string, currentJti?: string) {
+    async listSessions(userId: string, currentSessionId?: string) {
         const { rows } = await this.pg.query<SessionRow>(
-            `
-      SELECT id,
-             user_id,
-             jti,
-             user_agent,
-             ip::text AS ip,
-             created_at,
-             last_seen_at,
-             revoked_at,
-             COALESCE(trusted, false) AS trusted
-        FROM sessions
-       WHERE user_id = $1
-         AND revoked_at IS NULL
-       ORDER BY last_seen_at DESC, created_at DESC
-      `,
+            `SELECT id, user_id, user_agent, ip_address::text AS ip_address, created_at, last_seen_at, revoked_at, trusted
+               FROM sessions
+              WHERE user_id = $1
+                AND revoked_at IS NULL
+              ORDER BY last_seen_at DESC, created_at DESC`,
             [userId],
         );
 
@@ -244,84 +254,80 @@ export class SecurityService {
             id: r.id,
             createdAt: r.created_at,
             lastSeenAt: r.last_seen_at,
-            ip: r.ip,
+            ip: r.ip_address,
             userAgent: r.user_agent || "",
-            current: currentJti ? String(r.jti ?? r.id) === String(currentJti) : false,
+            current: currentSessionId ? String(r.id) === String(currentSessionId) : false,
             revokedAt: undefined,
             trusted: !!r.trusted,
         }));
-        return { items, currentJti: currentJti || "" };
+        return { items, currentJti: currentSessionId || "" };
     }
 
     async setSessionTrust(userId: string, sessionId: string, trusted: boolean) {
         const { rows } = await this.pg.query(
-            `
-      UPDATE sessions
-         SET trusted = $3
-       WHERE id = $1
-         AND user_id = $2
-         AND revoked_at IS NULL
-       RETURNING id
-      `,
+            `UPDATE sessions
+                SET trusted = $3
+              WHERE id = $1
+                AND user_id = $2
+                AND revoked_at IS NULL
+            RETURNING id`,
             [sessionId, userId, !!trusted],
         );
-        if (rows.length === 0) throw new HttpException("Session not found.", HttpStatus.NOT_FOUND);
+        if (!rows.length) throw new HttpException("Session not found.", HttpStatus.NOT_FOUND);
         return { trusted: !!trusted };
     }
 
-    async revokeSession(userId: string, sessionId: string, currentJti?: string) {
-        if (currentJti && String(sessionId) === String(currentJti)) {
+    async revokeSession(userId: string, sessionId: string, currentSessionId?: string) {
+        if (currentSessionId && String(sessionId) === String(currentSessionId)) {
             throw new HttpException("You cannot revoke your current session.", HttpStatus.BAD_REQUEST);
         }
         const { rows } = await this.pg.query(
             `UPDATE sessions
-          SET revoked_at = now()
-        WHERE id = $1
-          AND user_id = $2
-          AND revoked_at IS NULL
-      RETURNING id`,
+                SET revoked_at = now()
+              WHERE id = $1
+                AND user_id = $2
+                AND revoked_at IS NULL
+            RETURNING id`,
             [sessionId, userId],
         );
-        if (rows.length === 0) throw new HttpException("Session not found.", HttpStatus.NOT_FOUND);
+        if (!rows.length) throw new HttpException("Session not found.", HttpStatus.NOT_FOUND);
     }
 
-    async revokeAllOtherSessions(userId: string, currentJti?: string) {
-        if (currentJti) {
+    async revokeAllOtherSessions(userId: string, currentSessionId?: string) {
+        if (currentSessionId) {
             await this.pg.query(
                 `UPDATE sessions
-            SET revoked_at = now()
-          WHERE user_id = $1
-            AND revoked_at IS NULL
-            AND (jti::text IS DISTINCT FROM $2)
-            AND (id::text  IS DISTINCT FROM $2)`,
-                [userId, String(currentJti)],
+                    SET revoked_at = now()
+                  WHERE user_id = $1
+                    AND revoked_at IS NULL
+                    AND id::text <> $2`,
+                [userId, String(currentSessionId)],
             );
         } else {
             await this.pg.query(
                 `UPDATE sessions
-            SET revoked_at = now()
-          WHERE user_id = $1
-            AND revoked_at IS NULL`,
+                    SET revoked_at = now()
+                  WHERE user_id = $1
+                    AND revoked_at IS NULL`,
                 [userId],
             );
         }
     }
 
     /* ------------------------- Personal Tokens ------------------------- */
+
     async listTokens(userId: string) {
         const { rows } = await this.pg.query<TokenRow>(
-            `
-      SELECT id, user_id, name, token_hash, created_at, last_used_at, revoked_at
-        FROM personal_tokens
-       WHERE user_id = $1
-       ORDER BY created_at DESC
-      `,
+            `SELECT id, user_id, description, token_hash, created_at, last_used_at, expires_at, revoked_at
+               FROM personal_access_tokens
+              WHERE user_id = $1
+              ORDER BY created_at DESC`,
             [userId],
         );
         return {
             items: rows.map((r) => ({
                 id: r.id,
-                name: r.name,
+                name: r.description || "",
                 createdAt: r.created_at,
                 lastUsedAt: r.last_used_at || undefined,
                 revokedAt: r.revoked_at || undefined,
@@ -337,11 +343,9 @@ export class SecurityService {
         const tokenPlain = this.randomToken();
         const tokenHash = await bcrypt.hash(tokenPlain, 12);
         const ins = await this.pg.query<{ id: string }>(
-            `
-      INSERT INTO personal_tokens (user_id, name, token_hash)
-      VALUES ($1, $2, $3)
-      RETURNING id
-      `,
+            `INSERT INTO personal_access_tokens (user_id, description, token_hash)
+             VALUES ($1, $2, $3)
+             RETURNING id`,
             [userId, name.trim(), tokenHash],
         );
         return { token: tokenPlain, id: ins.rows[0].id };
@@ -349,10 +353,13 @@ export class SecurityService {
 
     async revokeToken(userId: string, id: string) {
         const { rows } = await this.pg.query(
-            "UPDATE personal_tokens SET revoked_at = now() WHERE id = $1 AND user_id = $2 RETURNING id",
+            `UPDATE personal_access_tokens
+                SET revoked_at = now()
+              WHERE id = $1 AND user_id = $2
+            RETURNING id`,
             [id, userId],
         );
-        if (rows.length === 0) throw new HttpException("Token not found.", HttpStatus.NOT_FOUND);
+        if (!rows.length) throw new HttpException("Token not found.", HttpStatus.NOT_FOUND);
     }
 
     private randomToken() {
@@ -361,10 +368,14 @@ export class SecurityService {
     }
 
     /* ------------------------- Overview ------------------------- */
-    async securityOverview(userId: string, currentJti?: string) {
-        const u = await this.pg.query("SELECT two_factor_enabled FROM users WHERE id = $1", [userId]);
-        const twoFactorEnabled = (u.rows[0] as any)?.two_factor_enabled ?? false;
-        const sess = await this.listSessions(userId, currentJti);
+
+    async securityOverview(userId: string, currentSessionId?: string) {
+        const { rows } = await this.pg.query(
+            `SELECT two_factor_enabled FROM user_security WHERE user_id = $1 LIMIT 1`,
+            [userId],
+        );
+        const twoFactorEnabled = !!rows[0]?.two_factor_enabled;
+        const sess = await this.listSessions(userId, currentSessionId);
         const events = (sess.items || []).slice(0, 10).map((s: any) => ({
             id: s.id,
             type: "signed_in" as const,
@@ -379,31 +390,42 @@ export class SecurityService {
         };
     }
 
-    /* ------------------------- WebAuthn (stubs) ------------------------- */
+    async ensureSecurityRow(userId: string) {
+        const { rowCount } = await this.pg.query(
+            `INSERT INTO user_security (user_id)
+             VALUES ($1)
+             ON CONFLICT (user_id) DO NOTHING`,
+            [userId],
+        );
+        return rowCount;
+    }
+
+    /* ------------------------- WebAuthn stubs ------------------------- */
+
     async webauthnCreateOptions(userId: string, email: string) {
-        return {
-            rp: { name: "RemoteIQ" },
-            user: {
-                id: Buffer.from(userId),
-                name: email,
-                displayName: email,
-            },
-            challenge: Buffer.from(this.randomToken(), "utf8").toString("base64url"),
-            pubKeyCredParams: [{ alg: -7, type: "public-key" }],
-            timeout: 60000,
-            attestation: "none",
-        } as any;
+        void userId;
+        void email;
+        throw new HttpException(
+            "WebAuthn registration is not enabled on this deployment.",
+            HttpStatus.NOT_IMPLEMENTED,
+        );
     }
 
-    async webauthnFinish(_userId: string, _body: any) {
-        return {
-            id: "cred_" + this.randomToken().slice(0, 8),
-            label: "Passkey",
-            createdAt: new Date().toISOString(),
-        };
+    async webauthnFinish(userId: string, payload: any) {
+        void userId;
+        void payload;
+        throw new HttpException(
+            "WebAuthn registration is not enabled on this deployment.",
+            HttpStatus.NOT_IMPLEMENTED,
+        );
     }
 
-    async deleteWebAuthn(_userId: string, _id: string) {
-        return { ok: true };
+    async deleteWebAuthn(userId: string, credentialId: string) {
+        void userId;
+        void credentialId;
+        throw new HttpException(
+            "WebAuthn registration is not enabled on this deployment.",
+            HttpStatus.NOT_IMPLEMENTED,
+        );
     }
 }
