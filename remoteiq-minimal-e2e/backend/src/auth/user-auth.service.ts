@@ -4,22 +4,38 @@ import { Injectable, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcryptjs";
 import { PgPoolService } from "../storage/pg-pool.service";
+import { OrganizationContextService } from "../storage/organization-context.service";
 import { randomUUID, createHash, createHmac } from "crypto";
 
-type WebUser = { id: string; email: string; name: string; role: "admin" | "user" | string };
+export type RoleSummary = { id: string; name: string };
 
-// DB user type that includes 2FA fields when needed
-type DbUser = {
+type WebUser = {
     id: string;
+    organizationId: string;
     email: string;
     name: string | null;
-    role: string | null;
-    status?: string;
-    suspended?: boolean | null;
-    password_hash?: string | null;
-    two_factor_enabled?: boolean | null;
-    two_factor_secret?: string | null;            // base32 or otpauth URI
-    two_factor_recovery_codes?: string[] | null;  // stored as hashes
+    role: string;
+    roles: RoleSummary[];
+    permissions: string[];
+};
+
+type DbUserRow = {
+    id: string;
+    email: string;
+    first_name: string | null;
+    last_name: string | null;
+    password_hash: string | null;
+    status: string;
+    organization_id: string;
+    roles: any;
+    permissions: string[] | null;
+};
+
+type UserSecurityRow = {
+    user_id: string;
+    two_factor_enabled: boolean | null;
+    totp_secret: string | null;
+    recovery_codes: string[] | null;
 };
 
 @Injectable()
@@ -27,34 +43,24 @@ export class UserAuthService {
     constructor(
         private readonly jwt: JwtService,
         private readonly pg: PgPoolService,
+        private readonly orgs: OrganizationContextService,
     ) { }
 
     /** Validate against Postgres users table */
     async validateUser(email: string, password: string): Promise<WebUser> {
-        const { rows } = await this.pg.query(
-            `
-      SELECT id, name, email, role, status, suspended, password_hash
-      FROM users
-      WHERE LOWER(email) = LOWER($1)
-      LIMIT 1
-      `,
-            [email],
-        );
-
-        const u = rows[0];
-        if (!u) throw new UnauthorizedException("Invalid email or password");
-        if (u.status !== "active" || u.suspended === true) {
+        const orgId = await this.orgs.getDefaultOrganizationId();
+        const row = await this.loadUserByEmail(orgId, email);
+        if (!row || row.status !== "active") {
             throw new UnauthorizedException("Invalid email or password");
         }
-        if (!u.password_hash || typeof u.password_hash !== "string") {
+        if (!row.password_hash) {
             throw new UnauthorizedException("Invalid email or password");
         }
 
-        const ok = await bcrypt.compare(password, u.password_hash);
+        const ok = await bcrypt.compare(password, row.password_hash);
         if (!ok) throw new UnauthorizedException("Invalid email or password");
 
-        const role: string = u.role || "User";
-        return { id: u.id, email: u.email, name: u.name, role };
+        return this.mapDbRowToWebUser(row);
     }
 
     /** Issue a JWT **with JTI** (uses JwtModule config). */
@@ -65,6 +71,9 @@ export class UserAuthService {
             email: user.email,
             name: user.name,
             role: user.role,
+            org: user.organizationId,
+            perms: user.permissions,
+            roles: user.roles.map((r) => r.name),
             jti,
         });
         return { token, jti };
@@ -77,20 +86,24 @@ export class UserAuthService {
             email: user.email,
             name: user.name,
             role: user.role,
+            org: user.organizationId,
+            perms: user.permissions,
+            roles: user.roles.map((r) => r.name),
         });
     }
 
     /** Verify cookie token and re-hydrate a minimal user */
     async verify(token: string): Promise<WebUser | null> {
         try {
-            const payload = await this.jwt.verifyAsync<{ sub: string; email: string; name?: string; role: string }>(token);
-            const { rows } = await this.pg.query(
-                `SELECT id, name, email, role, status, suspended FROM users WHERE id = $1 LIMIT 1`,
-                [payload.sub],
-            );
-            const u = rows[0];
-            if (!u || u.status !== "active" || u.suspended === true) return null;
-            return { id: u.id, email: u.email, name: u.name, role: u.role || "User" };
+            const payload = await this.jwt.verifyAsync<{
+                sub: string;
+                email: string;
+                name?: string;
+                role: string;
+            }>(token, { secret: process.env.JWT_SECRET ?? "dev-secret" });
+            const row = await this.loadUserById(payload.sub);
+            if (!row || row.status !== "active") return null;
+            return this.mapDbRowToWebUser(row);
         } catch {
             return null;
         }
@@ -100,14 +113,15 @@ export class UserAuthService {
     async recordSessionOnLogin(userId: string, jti: string, ua?: string, ip?: string) {
         await this.pg.query(
             `
-      INSERT INTO sessions (user_id, jti, user_agent, ip)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (jti) DO UPDATE
+      INSERT INTO sessions (id, user_id, refresh_token, user_agent, ip_address)
+      VALUES ($2, $1, $3, $4, $5)
+      ON CONFLICT (id) DO UPDATE
          SET last_seen_at = now(),
              user_agent   = COALESCE(EXCLUDED.user_agent, sessions.user_agent),
-             ip           = COALESCE(EXCLUDED.ip, sessions.ip)
+             ip_address   = COALESCE(EXCLUDED.ip_address, sessions.ip_address),
+             refresh_token = EXCLUDED.refresh_token
       `,
-            [userId, jti, ua || null, ip || null],
+            [userId, jti, jti, ua || null, ip || null],
         );
     }
 
@@ -117,23 +131,22 @@ export class UserAuthService {
         try {
             const { rows } = await this.pg.query<{ enabled: boolean }>(
                 `
-      select
-        (coalesce(two_factor_enabled,false) = true)
-        and (two_factor_secret is not null and length(trim(two_factor_secret)) > 0)
-        as enabled
-      from users
-      where id = $1
-      limit 1
+      SELECT
+        COALESCE(two_factor_enabled, false)
+        AND (totp_secret IS NOT NULL AND length(trim(totp_secret)) > 0)
+        AS enabled
+      FROM user_security
+      WHERE user_id = $1
+      LIMIT 1
       `,
                 [userId],
             );
             return !!rows[0]?.enabled;
         } catch (e: any) {
-            if (e?.code === "42703") return false; // columns not migrated yet
+            if (e?.code === "42P01" || e?.code === "42703") return false;
             throw e;
         }
     }
-
 
     async isDeviceTrusted(userId: string, deviceFingerprint: string | null): Promise<boolean> {
         if (!deviceFingerprint) return false;
@@ -143,24 +156,25 @@ export class UserAuthService {
            FROM trusted_devices
           WHERE user_id = $1
             AND device_fingerprint = $2
-            AND now() < expires_at
+            AND last_seen_at > now() - interval '90 days'
           LIMIT 1`,
                 [userId, deviceFingerprint],
             );
             return !!rows[0];
         } catch {
-            // table may not exist yet
             return false;
         }
     }
 
     async trustCurrentDevice(userId: string, deviceFingerprint: string) {
         try {
+            await this.pg.query(`DELETE FROM trusted_devices WHERE user_id = $1 AND device_fingerprint = $2`, [
+                userId,
+                deviceFingerprint,
+            ]);
             await this.pg.query(
-                `INSERT INTO trusted_devices (user_id, device_fingerprint, created_at, expires_at)
-         VALUES ($1, $2, now(), now() + interval '90 days')
-         ON CONFLICT (user_id, device_fingerprint)
-         DO UPDATE SET expires_at = EXCLUDED.expires_at`,
+                `INSERT INTO trusted_devices (user_id, device_fingerprint)
+         VALUES ($1, $2)`,
                 [userId, deviceFingerprint],
             );
         } catch {
@@ -177,11 +191,15 @@ export class UserAuthService {
             { expiresIn: "10m" },
         );
         try {
+            const hash = this.sha256Hex(token);
             await this.pg.query(
-                `INSERT INTO login_challenges (id, user_id, created_at)
-         VALUES ($1, $2, now())
-         ON CONFLICT DO NOTHING`,
-                [jti, userId],
+                `INSERT INTO login_challenges (id, user_id, challenge, expires_at)
+         VALUES ($1, $2, $3, now() + interval '10 minutes')
+         ON CONFLICT (id) DO UPDATE
+           SET challenge = EXCLUDED.challenge,
+               expires_at = EXCLUDED.expires_at,
+               consumed_at = NULL`,
+                [jti, userId, hash],
             );
         } catch {
             // ignore if table not present
@@ -199,6 +217,33 @@ export class UserAuthService {
         if (!decoded?.sub || decoded?.typ !== "2fa_challenge" || !decoded?.jti) {
             throw new UnauthorizedException("Invalid challenge");
         }
+
+        try {
+            const tokenHash = this.sha256Hex(challengeToken);
+            const { rows } = await this.pg.query<{
+                challenge: string;
+                expires_at: string;
+                consumed_at: string | null;
+            }>(
+                `SELECT challenge, expires_at, consumed_at
+           FROM login_challenges
+          WHERE id = $1 AND user_id = $2
+          LIMIT 1`,
+                [decoded.jti, decoded.sub],
+            );
+            const challengeRow = rows[0];
+            if (!challengeRow) throw new UnauthorizedException("Invalid challenge");
+            if (challengeRow.consumed_at) throw new UnauthorizedException("Challenge already used");
+            if (challengeRow.challenge !== tokenHash) throw new UnauthorizedException("Invalid challenge");
+            if (new Date(challengeRow.expires_at).getTime() < Date.now()) {
+                throw new UnauthorizedException("Challenge expired");
+            }
+            await this.pg.query(`UPDATE login_challenges SET consumed_at = now() WHERE id = $1`, [decoded.jti]);
+        } catch (err) {
+            if (err instanceof UnauthorizedException) throw err;
+            throw new UnauthorizedException("Invalid challenge");
+        }
+
         return { userId: decoded.sub as string, jti: decoded.jti as string };
     }
 
@@ -206,17 +251,16 @@ export class UserAuthService {
 
     async verifyTOTP(userId: string, code: string): Promise<boolean> {
         const u = await this.findUserTwoFactor(userId);
-        if (!u?.two_factor_enabled || !u.two_factor_secret) return false;
+        if (!u?.two_factor_enabled || !u.totp_secret) return false;
 
-        // Accept otpauth:// URIs & normalize base32 secret
-        const normalized = this.normalizeTotpSecret(u.two_factor_secret);
+        const normalized = this.normalizeTotpSecret(u.totp_secret);
         return this.verifyTotpBasic(normalized, code.trim());
     }
 
     async consumeRecoveryCode(userId: string, recoveryCode: string): Promise<boolean> {
         const u = await this.findUserTwoFactor(userId);
         if (!u) return false;
-        const codes = u.two_factor_recovery_codes || [];
+        const codes = u.recovery_codes || [];
         if (codes.length === 0) return false;
 
         const candidateHash = this.sha256Hex(recoveryCode.trim().toLowerCase());
@@ -225,7 +269,7 @@ export class UserAuthService {
 
         const next = [...codes.slice(0, idx), ...codes.slice(idx + 1)];
         await this.pg.query(
-            `UPDATE users SET two_factor_recovery_codes = $1 WHERE id = $2`,
+            `UPDATE user_security SET recovery_codes = $1 WHERE user_id = $2`,
             [next, userId],
         );
         return true;
@@ -234,26 +278,25 @@ export class UserAuthService {
     // =============== Lookups =================
 
     async findUserById(userId: string): Promise<WebUser> {
-        const { rows } = await this.pg.query<DbUser>(
-            `SELECT id, name, email, role FROM users WHERE id = $1 LIMIT 1`,
-            [userId],
-        );
-        const u = rows[0];
-        if (!u) throw new UnauthorizedException("User not found");
-        return { id: u.id, email: String(u.email), name: String(u.name), role: u.role || "User" };
+        const row = await this.loadUserById(userId);
+        if (!row || row.status !== "active") {
+            throw new UnauthorizedException("User not found");
+        }
+        return this.mapDbRowToWebUser(row);
     }
 
-    async findUserTwoFactor(userId: string): Promise<DbUser | null> {
+    async findUserTwoFactor(userId: string): Promise<UserSecurityRow | null> {
         try {
-            const { rows } = await this.pg.query<DbUser>(
-                `SELECT id, two_factor_enabled, two_factor_secret, two_factor_recovery_codes
-           FROM users WHERE id = $1 LIMIT 1`,
+            const { rows } = await this.pg.query<UserSecurityRow>(
+                `SELECT user_id, two_factor_enabled, totp_secret, recovery_codes
+           FROM user_security
+          WHERE user_id = $1
+          LIMIT 1`,
                 [userId],
             );
             return rows[0] ?? null;
         } catch (e: any) {
-            // 42703 = undefined_column -> 2FA columns not migrated yet
-            if (e?.code === "42703") return null;
+            if (e?.code === "42P01" || e?.code === "42703") return null;
             throw e;
         }
     }
@@ -284,7 +327,6 @@ export class UserAuthService {
             const step = 30;
             const t = Math.floor(Date.now() / 1000 / step);
 
-            // Allow a bit more skew: [-2, -1, 0, +1, +2]
             for (const off of [-2, -1, 0, 1, 2]) {
                 const counter = Buffer.alloc(8);
                 counter.writeBigUInt64BE(BigInt(t + off));
@@ -318,5 +360,89 @@ export class UserAuthService {
             bytes.push(parseInt(bits.substring(i, i + 8), 2));
         }
         return Buffer.from(bytes);
+    }
+
+    private async loadUserByEmail(orgId: string, email: string): Promise<DbUserRow | null> {
+        const { rows } = await this.pg.query<DbUserRow>(
+            `SELECT
+                u.id,
+                u.email,
+                u.first_name,
+                u.last_name,
+                u.password_hash,
+                u.status,
+                u.organization_id,
+                COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
+                         FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb) AS roles,
+                COALESCE(array_agg(DISTINCT rp.permission_key)
+                         FILTER (WHERE rp.permission_key IS NOT NULL), '{}'::text[]) AS permissions
+             FROM public.users u
+             LEFT JOIN public.user_roles ur ON ur.user_id = u.id
+             LEFT JOIN public.roles r ON r.id = ur.role_id
+             LEFT JOIN public.role_permissions rp ON rp.role_id = r.id
+             WHERE u.organization_id = $1 AND LOWER(u.email) = LOWER($2)
+             GROUP BY u.id
+             LIMIT 1`,
+            [orgId, email],
+        );
+        return rows[0] ?? null;
+    }
+
+    private async loadUserById(userId: string): Promise<DbUserRow | null> {
+        const { rows } = await this.pg.query<DbUserRow>(
+            `SELECT
+                u.id,
+                u.email,
+                u.first_name,
+                u.last_name,
+                u.password_hash,
+                u.status,
+                u.organization_id,
+                COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
+                         FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb) AS roles,
+                COALESCE(array_agg(DISTINCT rp.permission_key)
+                         FILTER (WHERE rp.permission_key IS NOT NULL), '{}'::text[]) AS permissions
+             FROM public.users u
+             LEFT JOIN public.user_roles ur ON ur.user_id = u.id
+             LEFT JOIN public.roles r ON r.id = ur.role_id
+             LEFT JOIN public.role_permissions rp ON rp.role_id = r.id
+             WHERE u.id = $1
+             GROUP BY u.id
+             LIMIT 1`,
+            [userId],
+        );
+        return rows[0] ?? null;
+    }
+
+    private mapDbRowToWebUser(row: DbUserRow): WebUser {
+        const roles: RoleSummary[] = Array.isArray(row.roles)
+            ? row.roles
+                  .map((r: any) => ({
+                      id: String(r.id ?? ""),
+                      name: String(r.name ?? "").trim(),
+                  }))
+                  .filter((r) => r.name.length > 0)
+            : [];
+        const primaryRole = roles[0]?.name || "user";
+        const permissions = Array.isArray(row.permissions)
+            ? row.permissions.map((p) => String(p).toLowerCase())
+            : [];
+        const displayName = this.buildDisplayName(row.first_name, row.last_name);
+
+        return {
+            id: row.id,
+            organizationId: row.organization_id,
+            email: row.email,
+            name: displayName,
+            role: primaryRole,
+            roles,
+            permissions,
+        };
+    }
+
+    private buildDisplayName(first: string | null, last: string | null): string | null {
+        const parts = [first?.trim(), last?.trim()].filter(Boolean) as string[];
+        if (parts.length === 0) return null;
+        return parts.join(" ");
     }
 }
