@@ -6,6 +6,10 @@ backend
 │   ├── 20251019_keep_current_model.sql
 │   ├── 20251019_roles_companion_meta.sql
 │   ├── 20251020_imap_ingest.sql
+│   ├── 20251105_backups_worker.sql
+│   ├── 20251105_backups.sql
+│   ├── 20251106_permissions_schema.sql
+│   ├── 20251106_permissions_seed.sql
 │   ├── XXXX_add_users_roles.sql
 │   ├── XXXX_create_localization.sql
 │   ├── XXXX_create_support_legal.sql
@@ -62,6 +66,9 @@ backend
 │   │   ├── auth.controller.ts
 │   │   ├── auth.module.ts
 │   │   ├── auth.service.ts
+│   │   ├── permissions.guard.ts
+│   │   ├── policy.ts
+│   │   ├── require-perm.decorator.ts
 │   │   ├── session-heartbeat.interceptor.ts
 │   │   ├── session-heartbeat.middleware.ts
 │   │   ├── user-auth.controller.ts
@@ -70,6 +77,18 @@ backend
 │   │   ├── automation.controller.ts
 │   │   ├── automation.module.ts
 │   │   └── automation.service.ts
+│   ├── backups
+│   │   ├── admin.guard.ts
+│   │   ├── backups.controller.ts
+│   │   ├── backups.module.ts
+│   │   ├── backups.service.ts
+│   │   ├── cron-preview.service.ts
+│   │   ├── dto.ts
+│   │   ├── notifier.service.ts
+│   │   ├── scheduler.service.ts
+│   │   ├── storage-clients.ts
+│   │   ├── storage-connections-lite.controller.ts
+│   │   └── worker.service.ts
 │   ├── branding
 │   │   ├── dto
 │   │   │   └── update-branding.dto.ts
@@ -101,6 +120,10 @@ backend
 │   │   ├── company.dto.ts
 │   │   ├── company.module.ts
 │   │   └── company.service.ts
+│   ├── customers
+│   │   ├── customers.controller.ts
+│   │   ├── customers.module.ts
+│   │   └── customers.service.ts
 │   ├── devices
 │   │   ├── dto
 │   │   │   ├── list-devices.dto.ts
@@ -147,6 +170,8 @@ backend
 │   │   │   ├── create-role.dto.ts
 │   │   │   ├── index.ts
 │   │   │   └── update-role.dto.ts
+│   │   ├── permissions-introspect.service.ts
+│   │   ├── permissions.controller.ts
 │   │   ├── roles.controller.ts
 │   │   ├── roles.dto.ts
 │   │   ├── roles.module.ts
@@ -175,6 +200,14 @@ backend
 │   │   ├── support-legal.dto.ts
 │   │   ├── support-legal.module.ts
 │   │   └── support-legal.service.ts
+│   ├── tickets
+│   │   ├── dto
+│   │   │   ├── create-ticket.dto.ts
+│   │   │   ├── list-tickets.dto.ts
+│   │   │   └── update-ticket.dto.ts
+│   │   ├── tickets.controller.ts
+│   │   ├── tickets.module.ts
+│   │   └── tickets.service.ts
 │   ├── types
 │   │   ├── express.d.ts
 │   │   └── externals.d.ts
@@ -203,13 +236,14 @@ backend
 ├── db-inspect.txt
 ├── Disable-User2FA.ps1
 ├── docker-compose.db.yml
+├── Export-BackendForTickets.ps1
 ├── Inspect-PostgresSchema.ps1
 ├── nest-cli.json
 ├── package.json
 ├── pnpm-lock.yaml
 ├── pnpm-workspace.yaml
 ├── postman_collection.json
-├── project-tree.txt
+├── RemoteIQ_Tickets_Backend_20251102-222533.txt
 ├── remoteiq-2fa-recovery-codes.txt
 ├── remoteiq-2fa.png
 ├── test-smtp.ps1

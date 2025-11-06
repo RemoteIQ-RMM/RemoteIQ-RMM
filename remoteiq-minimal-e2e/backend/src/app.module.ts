@@ -24,6 +24,7 @@ import { ScheduleModule } from "@nestjs/schedule";
 import { ImapModule } from "./imap/imap.module";
 import { SessionCleanerService } from "./maintenance/session-cleaner.service";
 import { CustomersModule } from "./customers/customers.module";
+import { BackupsModule } from "./backups/backups.module";
 
 import { JwtModule } from "@nestjs/jwt";
 
@@ -71,6 +72,9 @@ import { TicketsModule } from "./tickets/tickets.module";
         UsersModule,
         RolesModule,
         CustomersModule,
+
+        // Backups Module
+        BackupsModule,
 
         // ✅ Tickets module
         TicketsModule,

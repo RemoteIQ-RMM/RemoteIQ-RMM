@@ -1,4 +1,4 @@
-RemoteIQ V6
+RemoteIQ V7 - Ticketing
 ├── .github
 │   └── instructions
 │       └── snyk_rules.instructions.md
@@ -11,7 +11,7 @@ RemoteIQ V6
 │   ├── .next
 │   │   ├── cache
 │   │   │   ├── eslint
-│   │   │   │   └── .cache_lravh1
+│   │   │   │   └── .cache_lbtwi0
 │   │   │   ├── swc
 │   │   │   │   └── plugins
 │   │   │   │       └── v7_windows_x86_64_0.107.1
@@ -19,21 +19,7 @@ RemoteIQ V6
 │   │   │   │   ├── client-production
 │   │   │   │   │   ├── 0.pack
 │   │   │   │   │   ├── 1.pack
-│   │   │   │   │   ├── 10.pack
-│   │   │   │   │   ├── 11.pack
-│   │   │   │   │   ├── 12.pack
-│   │   │   │   │   ├── 13.pack
-│   │   │   │   │   ├── 14.pack
-│   │   │   │   │   ├── 15.pack
-│   │   │   │   │   ├── 16.pack
 │   │   │   │   │   ├── 2.pack
-│   │   │   │   │   ├── 3.pack
-│   │   │   │   │   ├── 4.pack
-│   │   │   │   │   ├── 5.pack
-│   │   │   │   │   ├── 6.pack
-│   │   │   │   │   ├── 7.pack
-│   │   │   │   │   ├── 8.pack
-│   │   │   │   │   ├── 9.pack
 │   │   │   │   │   ├── index.pack
 │   │   │   │   │   └── index.pack.old
 │   │   │   │   ├── edge-server-production
@@ -42,13 +28,6 @@ RemoteIQ V6
 │   │   │   │   └── server-production
 │   │   │   │       ├── 0.pack
 │   │   │   │       ├── 1.pack
-│   │   │   │       ├── 2.pack
-│   │   │   │       ├── 3.pack
-│   │   │   │       ├── 4.pack
-│   │   │   │       ├── 5.pack
-│   │   │   │       ├── 6.pack
-│   │   │   │       ├── 7.pack
-│   │   │   │       ├── 8.pack
 │   │   │   │       ├── index.pack
 │   │   │   │       └── index.pack.old
 │   │   │   └── .tsbuildinfo
@@ -69,6 +48,14 @@ RemoteIQ V6
 │   │   │   │   │   │       ├── page_client-reference-manifest.js
 │   │   │   │   │   │       ├── page.js
 │   │   │   │   │   │       └── page.js.nft.json
+│   │   │   │   │   ├── tickets
+│   │   │   │   │   │   ├── [id]
+│   │   │   │   │   │   │   ├── page_client-reference-manifest.js
+│   │   │   │   │   │   │   ├── page.js
+│   │   │   │   │   │   │   └── page.js.nft.json
+│   │   │   │   │   │   ├── page_client-reference-manifest.js
+│   │   │   │   │   │   ├── page.js
+│   │   │   │   │   │   └── page.js.nft.json
 │   │   │   │   │   ├── page_client-reference-manifest.js
 │   │   │   │   │   ├── page.js
 │   │   │   │   │   └── page.js.nft.json
@@ -108,11 +95,14 @@ RemoteIQ V6
 │   │   │   │   ├── index.rsc
 │   │   │   │   ├── login.html
 │   │   │   │   ├── login.meta
-│   │   │   │   └── login.rsc
+│   │   │   │   ├── login.rsc
+│   │   │   │   ├── tickets.html
+│   │   │   │   ├── tickets.meta
+│   │   │   │   └── tickets.rsc
 │   │   │   ├── chunks
 │   │   │   │   ├── 106.js
 │   │   │   │   ├── 1080.js
-│   │   │   │   ├── 1216.js
+│   │   │   │   ├── 118.js
 │   │   │   │   ├── 140.js
 │   │   │   │   ├── 1593.js
 │   │   │   │   ├── 2126.js
@@ -131,30 +121,30 @@ RemoteIQ V6
 │   │   │   │   ├── 4710.js
 │   │   │   │   ├── 4884.js
 │   │   │   │   ├── 4955.js
-│   │   │   │   ├── 4994.js
 │   │   │   │   ├── 5134.js
 │   │   │   │   ├── 5202.js
 │   │   │   │   ├── 5334.js
 │   │   │   │   ├── 579.js
 │   │   │   │   ├── 5924.js
-│   │   │   │   ├── 5996.js
 │   │   │   │   ├── 6096.js
 │   │   │   │   ├── 6452.js
 │   │   │   │   ├── 6457.js
 │   │   │   │   ├── 6697.js
+│   │   │   │   ├── 7099.js
 │   │   │   │   ├── 7181.js
 │   │   │   │   ├── 7599.js
 │   │   │   │   ├── 7644.js
 │   │   │   │   ├── 7670.js
+│   │   │   │   ├── 7892.js
 │   │   │   │   ├── 8057.js
 │   │   │   │   ├── 8193.js
 │   │   │   │   ├── 869.js
-│   │   │   │   ├── 8913.js
 │   │   │   │   ├── 9236.js
 │   │   │   │   ├── 9255.js
 │   │   │   │   ├── 9289.js
 │   │   │   │   ├── 9576.js
 │   │   │   │   ├── 9624.js
+│   │   │   │   ├── 9675.js
 │   │   │   │   ├── 9928.js
 │   │   │   │   └── font-manifest.json
 │   │   │   ├── pages
@@ -184,106 +174,114 @@ RemoteIQ V6
 │   │   │   ├── server-reference-manifest.json
 │   │   │   └── webpack-runtime.js
 │   │   ├── static
+│   │   │   ├── -Aw1_eRkmPb3v1Mudngjw
+│   │   │   │   ├── _buildManifest.js
+│   │   │   │   └── _ssgManifest.js
 │   │   │   ├── chunks
 │   │   │   │   ├── app
 │   │   │   │   │   ├── _not-found
 │   │   │   │   │   │   └── page-69231940db771df0.js
 │   │   │   │   │   ├── (auth)
 │   │   │   │   │   │   └── login
-│   │   │   │   │   │       └── page-73b547b76bbc62ce.js
+│   │   │   │   │   │       └── page-f6e4609d466ac57a.js
 │   │   │   │   │   ├── (dashboard)
 │   │   │   │   │   │   ├── devices
 │   │   │   │   │   │   │   └── [deviceId]
-│   │   │   │   │   │   │       └── page-00fbe6be7a8cf0d8.js
-│   │   │   │   │   │   ├── layout-ec113870325e515d.js
-│   │   │   │   │   │   └── page-6df2b6bd24d06852.js
+│   │   │   │   │   │   │       └── page-362a57b8c59d94ed.js
+│   │   │   │   │   │   ├── tickets
+│   │   │   │   │   │   │   ├── [id]
+│   │   │   │   │   │   │   │   └── page-bd802e68551851ba.js
+│   │   │   │   │   │   │   └── page-c31402491bfcf3c8.js
+│   │   │   │   │   │   ├── layout-bcd293796063e4de.js
+│   │   │   │   │   │   └── page-5e2f159051ce7971.js
 │   │   │   │   │   ├── account
-│   │   │   │   │   │   ├── layout-5bfa50eb8de50e38.js
-│   │   │   │   │   │   └── page-f791e53067b86db3.js
+│   │   │   │   │   │   ├── layout-81e0457a225ed8d8.js
+│   │   │   │   │   │   └── page-450375f3db6350a3.js
 │   │   │   │   │   ├── administration
-│   │   │   │   │   │   ├── layout-1fd4994db94bac3b.js
-│   │   │   │   │   │   └── page-c3b46ad2ceacb8b7.js
+│   │   │   │   │   │   ├── layout-cf5a4a6e87d77d2a.js
+│   │   │   │   │   │   └── page-5e10ca973b2ce28c.js
 │   │   │   │   │   ├── customers
-│   │   │   │   │   │   ├── layout-c7db53930f9b8aa2.js
-│   │   │   │   │   │   └── page-469ce128a70e9db4.js
-│   │   │   │   │   └── layout-eb6cda61344eeb2e.js
+│   │   │   │   │   │   ├── layout-a24095ba64416e0d.js
+│   │   │   │   │   │   └── page-0c6b9eaf7d665abd.js
+│   │   │   │   │   └── layout-7fc97e3f2febfbe8.js
 │   │   │   │   ├── pages
 │   │   │   │   │   ├── _app-31cb04d632b05a93.js
 │   │   │   │   │   └── _error-2bac1289b58c1969.js
 │   │   │   │   ├── 1207.9ef40dff86740402.js
-│   │   │   │   ├── 1208-1deef150ba77d1e5.js
 │   │   │   │   ├── 1246.a77b9597e0f44b15.js
+│   │   │   │   ├── 1450.3ca509122a7fc394.js
 │   │   │   │   ├── 1677-a06fefc99e6d005c.js
 │   │   │   │   ├── 1929-3629cef115187bc0.js
 │   │   │   │   ├── 210f6791.224816c2a51b15e4.js
 │   │   │   │   ├── 2128.9aa1520085b262e7.js
+│   │   │   │   ├── 2144-dd2c908e3df281a8.js
 │   │   │   │   ├── 2228-f56942a9d37b1080.js
+│   │   │   │   ├── 2264.ff48c283b85520b6.js
+│   │   │   │   ├── 2339-d4649a60d769b930.js
 │   │   │   │   ├── 2433.f47b916770d95d5b.js
 │   │   │   │   ├── 255.72e6f0ae032a18d5.js
-│   │   │   │   ├── 2606-bb23fdedf1403ce7.js
-│   │   │   │   ├── 2787-09fd9faaec91d77c.js
-│   │   │   │   ├── 2901-44f3928eaa02dabc.js
+│   │   │   │   ├── 2786-5550d4edbb008428.js
+│   │   │   │   ├── 2787-269a538a31a96eb8.js
+│   │   │   │   ├── 2901-2936e7c9cc61b377.js
 │   │   │   │   ├── 3047.3191446ca4593ab3.js
 │   │   │   │   ├── 3208.15204fd83ad864f7.js
 │   │   │   │   ├── 3286.aa825340013f80f0.js
 │   │   │   │   ├── 3800.3e7cdf9d0364002a.js
-│   │   │   │   ├── 3950-ccd4c781774d1d51.js
 │   │   │   │   ├── 4355.6a1042556d0651a4.js
+│   │   │   │   ├── 4504-31056502ed52753a.js
 │   │   │   │   ├── 4696.b18ac39725f6948d.js
 │   │   │   │   ├── 4715.6a2c6209ad0b5980.js
 │   │   │   │   ├── 4790.3f529d4d972a2429.js
 │   │   │   │   ├── 4860-5ea87b162a8d2d22.js
+│   │   │   │   ├── 4883.454f4b7f9b2f009e.js
 │   │   │   │   ├── 4902.b1daef6eff1ff9b0.js
 │   │   │   │   ├── 5113-85c39f2620620968.js
 │   │   │   │   ├── 5158-a3dd1721c67cb128.js
 │   │   │   │   ├── 521.b227f3ec96545621.js
+│   │   │   │   ├── 5393-2859726fd6ecd7f3.js
 │   │   │   │   ├── 5409.3791e6b3ddaa25ea.js
 │   │   │   │   ├── 5436-23aab017252ea104.js
-│   │   │   │   ├── 5442-d67e9574495b6bd4.js
-│   │   │   │   ├── 5787-34b5adef22e1d8d4.js
-│   │   │   │   ├── 5813-2ae7be10f4bd4807.js
+│   │   │   │   ├── 5442-b14a8c0f2f9cf786.js
+│   │   │   │   ├── 5559-381919ea95716498.js
 │   │   │   │   ├── 5816.2feb1a61361cfd92.js
 │   │   │   │   ├── 5941.8cf9dd47d446b011.js
+│   │   │   │   ├── 6238.3dfaec608c7e7e9d.js
 │   │   │   │   ├── 656.de37f0113c026960.js
 │   │   │   │   ├── 6609.e76cb6ba49e53a56.js
-│   │   │   │   ├── 670.5d58170049b2c5c8.js
+│   │   │   │   ├── 6684-3145238196d10dd7.js
 │   │   │   │   ├── 672.2ed884b03e959f1f.js
 │   │   │   │   ├── 6890.b317dc39eec7fc90.js
 │   │   │   │   ├── 6897.c1ded17ebb627ac2.js
 │   │   │   │   ├── 6935-185afed7ddc17b6f.js
 │   │   │   │   ├── 6e47441d-a68d85a1e1508ab7.js
 │   │   │   │   ├── 7061-3c55d734f3d55ef5.js
+│   │   │   │   ├── 7091-f38efe3627c2dc4b.js
 │   │   │   │   ├── 7106.5535dfa883d39219.js
+│   │   │   │   ├── 7198-6fafdace2d9d3870.js
 │   │   │   │   ├── 7321.d197a65944d0dbfb.js
-│   │   │   │   ├── 7449-c6dc9d4d3421bc47.js
 │   │   │   │   ├── 7468.84016334c34ef2a8.js
 │   │   │   │   ├── 758.c5783b412a27e44d.js
 │   │   │   │   ├── 7640.98b735603877f4db.js
-│   │   │   │   ├── 7687-cab65243085953dc.js
-│   │   │   │   ├── 7981-90a4697768526b5a.js
+│   │   │   │   ├── 7820.330bc98c6c0085d1.js
+│   │   │   │   ├── 7981-872a7b6edad2055b.js
 │   │   │   │   ├── 8.201db37b49f6ce16.js
-│   │   │   │   ├── 8720-b9fa031dab97fe96.js
+│   │   │   │   ├── 809-c5d6e03d2073e2f6.js
+│   │   │   │   ├── 8720-5d2c04ed077ed5d7.js
 │   │   │   │   ├── 9052.8114d27580156468.js
 │   │   │   │   ├── 9258.3c9079cfa636be0d.js
 │   │   │   │   ├── 9341.1324bb134c005e57.js
-│   │   │   │   ├── 9373-cde07c6d0cc0d7a3.js
-│   │   │   │   ├── 9374-d5a4a685b14597e0.js
-│   │   │   │   ├── 9400.44ce0677f978c359.js
 │   │   │   │   ├── 944.a25793d5eff4514a.js
 │   │   │   │   ├── 9656.6c602562f4ac5075.js
 │   │   │   │   ├── 9862-d3e935890da87f86.js
-│   │   │   │   ├── 9940.62ed2d16ab901b1d.js
+│   │   │   │   ├── 9940.01df02613ac0c919.js
 │   │   │   │   ├── framework-ada01bc056db6321.js
-│   │   │   │   ├── main-291169f9eb2bb43b.js
-│   │   │   │   ├── main-app-d7f178b1eb3b9784.js
+│   │   │   │   ├── main-a7fb3eb18e885b33.js
+│   │   │   │   ├── main-app-67a1760a9a12cc24.js
 │   │   │   │   ├── polyfills-78c92fac7aa8fdd8.js
-│   │   │   │   └── webpack-e57c35593ac186ad.js
+│   │   │   │   └── webpack-036d6cf70ea131e4.js
 │   │   │   ├── css
-│   │   │   │   ├── d0886cdfb40aa818.css
+│   │   │   │   ├── b5224e0803f3f3e9.css
 │   │   │   │   └── e9f989f02c269104.css
-│   │   │   ├── m8GBkBeN3tXTnLu_wDOCD
-│   │   │   │   ├── _buildManifest.js
-│   │   │   │   └── _ssgManifest.js
 │   │   │   └── media
 │   │   │       ├── 19cfc7226ec3afaa-s.woff2
 │   │   │       ├── 21350d82a1f187e9-s.woff2
@@ -301,6 +299,10 @@ RemoteIQ V6
 │   │   │   │   │   ├── devices
 │   │   │   │   │   │   └── [deviceId]
 │   │   │   │   │   │       └── page.ts
+│   │   │   │   │   ├── tickets
+│   │   │   │   │   │   ├── [id]
+│   │   │   │   │   │   │   └── page.ts
+│   │   │   │   │   │   └── page.ts
 │   │   │   │   │   ├── layout.ts
 │   │   │   │   │   └── page.ts
 │   │   │   │   ├── account
@@ -343,6 +345,10 @@ RemoteIQ V6
 │   │   │   ├── devices
 │   │   │   │   └── [deviceId]
 │   │   │   │       └── page.tsx
+│   │   │   ├── tickets
+│   │   │   │   ├── [id]
+│   │   │   │   │   └── page.tsx
+│   │   │   │   └── page.tsx
 │   │   │   ├── dashboard-context.tsx
 │   │   │   ├── layout.tsx
 │   │   │   └── page.tsx
@@ -438,6 +444,7 @@ RemoteIQ V6
 │   │   │   ├── select.tsx
 │   │   │   ├── separator.tsx
 │   │   │   ├── sheet.tsx
+│   │   │   ├── skeleton.tsx
 │   │   │   ├── slider.tsx
 │   │   │   ├── switch.tsx
 │   │   │   ├── table.tsx
@@ -457,31 +464,39 @@ RemoteIQ V6
 │   │   ├── device-table-columns.tsx
 │   │   ├── device-table.tsx
 │   │   ├── filters-rail.tsx
+│   │   ├── icons.tsx
 │   │   ├── layout-constants.ts
 │   │   ├── patch-tab.tsx
+│   │   ├── pills.tsx
 │   │   ├── remote-tab.tsx
 │   │   ├── run-script-modal.tsx
 │   │   ├── sidebar.tsx
 │   │   ├── software-tab.tsx
 │   │   ├── status-badge.tsx
 │   │   ├── theme-provider.tsx
+│   │   ├── tickets-table.tsx
 │   │   └── top-bar.tsx
 │   ├── lib
 │   │   ├── account-api.ts
 │   │   ├── api.ts
 │   │   ├── auth.ts
+│   │   ├── backups.ts
 │   │   ├── debug.ts
 │   │   ├── draft.ts
 │   │   ├── forms.ts
 │   │   ├── images.ts
 │   │   ├── shortcuts.ts
+│   │   ├── storage.ts
+│   │   ├── tickets-types.ts
 │   │   ├── time.ts
 │   │   ├── toast.tsx
+│   │   ├── use-customers.ts
 │   │   ├── use-debounced-callback.ts
 │   │   ├── use-device.ts
 │   │   ├── use-devices.ts
 │   │   ├── use-job-run.ts
 │   │   ├── use-persisted-tab.ts
+│   │   ├── use-tickets.ts
 │   │   ├── utils.ts
 │   │   ├── view-state.ts
 │   │   └── ws.ts
@@ -497,12 +512,15 @@ RemoteIQ V6
 │   ├── .eslintrc.json
 │   ├── .prettierrc
 │   ├── components.json
+│   ├── Export-FrontendForTickets.ps1
 │   ├── middleware.ts
 │   ├── next-env.d.ts
 │   ├── next.config.mjs
 │   ├── package.json
 │   ├── pnpm-lock.yaml
 │   ├── postcss.config.js
+│   ├── project-tree.txt
+│   ├── RemoteIQ_Tickets_Frontend_20251102-223140.txt
 │   ├── tailwind.config.js
 │   ├── tsconfig.json
 │   ├── tsconfig.tsbuildinfo
@@ -673,6 +691,10 @@ RemoteIQ V6
 │   │   │   ├── 20251019_keep_current_model.sql
 │   │   │   ├── 20251019_roles_companion_meta.sql
 │   │   │   ├── 20251020_imap_ingest.sql
+│   │   │   ├── 20251105_backups_worker.sql
+│   │   │   ├── 20251105_backups.sql
+│   │   │   ├── 20251106_permissions_schema.sql
+│   │   │   ├── 20251106_permissions_seed.sql
 │   │   │   ├── XXXX_add_users_roles.sql
 │   │   │   ├── XXXX_create_localization.sql
 │   │   │   ├── XXXX_create_support_legal.sql
@@ -729,6 +751,9 @@ RemoteIQ V6
 │   │   │   │   ├── auth.controller.ts
 │   │   │   │   ├── auth.module.ts
 │   │   │   │   ├── auth.service.ts
+│   │   │   │   ├── permissions.guard.ts
+│   │   │   │   ├── policy.ts
+│   │   │   │   ├── require-perm.decorator.ts
 │   │   │   │   ├── session-heartbeat.interceptor.ts
 │   │   │   │   ├── session-heartbeat.middleware.ts
 │   │   │   │   ├── user-auth.controller.ts
@@ -737,6 +762,18 @@ RemoteIQ V6
 │   │   │   │   ├── automation.controller.ts
 │   │   │   │   ├── automation.module.ts
 │   │   │   │   └── automation.service.ts
+│   │   │   ├── backups
+│   │   │   │   ├── admin.guard.ts
+│   │   │   │   ├── backups.controller.ts
+│   │   │   │   ├── backups.module.ts
+│   │   │   │   ├── backups.service.ts
+│   │   │   │   ├── cron-preview.service.ts
+│   │   │   │   ├── dto.ts
+│   │   │   │   ├── notifier.service.ts
+│   │   │   │   ├── scheduler.service.ts
+│   │   │   │   ├── storage-clients.ts
+│   │   │   │   ├── storage-connections-lite.controller.ts
+│   │   │   │   └── worker.service.ts
 │   │   │   ├── branding
 │   │   │   │   ├── dto
 │   │   │   │   │   └── update-branding.dto.ts
@@ -745,7 +782,10 @@ RemoteIQ V6
 │   │   │   │   └── branding.service.ts
 │   │   │   ├── checks
 │   │   │   │   ├── checks.controller.ts
+│   │   │   │   ├── checks.ingest.controller.ts
 │   │   │   │   ├── checks.module.ts
+│   │   │   │   ├── checks.read.controller.ts
+│   │   │   │   ├── checks.runtime.service.ts
 │   │   │   │   └── checks.service.ts
 │   │   │   ├── common
 │   │   │   │   ├── guards
@@ -765,6 +805,10 @@ RemoteIQ V6
 │   │   │   │   ├── company.dto.ts
 │   │   │   │   ├── company.module.ts
 │   │   │   │   └── company.service.ts
+│   │   │   ├── customers
+│   │   │   │   ├── customers.controller.ts
+│   │   │   │   ├── customers.module.ts
+│   │   │   │   └── customers.service.ts
 │   │   │   ├── devices
 │   │   │   │   ├── dto
 │   │   │   │   │   ├── list-devices.dto.ts
@@ -811,6 +855,8 @@ RemoteIQ V6
 │   │   │   │   │   ├── create-role.dto.ts
 │   │   │   │   │   ├── index.ts
 │   │   │   │   │   └── update-role.dto.ts
+│   │   │   │   ├── permissions-introspect.service.ts
+│   │   │   │   ├── permissions.controller.ts
 │   │   │   │   ├── roles.controller.ts
 │   │   │   │   ├── roles.dto.ts
 │   │   │   │   ├── roles.module.ts
@@ -839,6 +885,14 @@ RemoteIQ V6
 │   │   │   │   ├── support-legal.dto.ts
 │   │   │   │   ├── support-legal.module.ts
 │   │   │   │   └── support-legal.service.ts
+│   │   │   ├── tickets
+│   │   │   │   ├── dto
+│   │   │   │   │   ├── create-ticket.dto.ts
+│   │   │   │   │   ├── list-tickets.dto.ts
+│   │   │   │   │   └── update-ticket.dto.ts
+│   │   │   │   ├── tickets.controller.ts
+│   │   │   │   ├── tickets.module.ts
+│   │   │   │   └── tickets.service.ts
 │   │   │   ├── types
 │   │   │   │   ├── express.d.ts
 │   │   │   │   └── externals.d.ts
@@ -867,6 +921,7 @@ RemoteIQ V6
 │   │   ├── db-inspect.txt
 │   │   ├── Disable-User2FA.ps1
 │   │   ├── docker-compose.db.yml
+│   │   ├── Export-BackendForTickets.ps1
 │   │   ├── Inspect-PostgresSchema.ps1
 │   │   ├── nest-cli.json
 │   │   ├── package.json
@@ -874,11 +929,13 @@ RemoteIQ V6
 │   │   ├── pnpm-workspace.yaml
 │   │   ├── postman_collection.json
 │   │   ├── project-tree.txt
+│   │   ├── RemoteIQ_Tickets_Backend_20251102-222533.txt
 │   │   ├── remoteiq-2fa-recovery-codes.txt
 │   │   ├── remoteiq-2fa.png
 │   │   ├── test-smtp.ps1
 │   │   ├── tsconfig.build.json
 │   │   ├── tsconfig.json
+│   │   ├── Write-ProjectTree.ps1
 │   │   └── ws-auth-files-dump.txt
 │   ├── agent-windows.zip
 │   ├── generate-jwt-secret.ps1
@@ -898,6 +955,7 @@ RemoteIQ V6
 │   ├── package-remoteiq.ps1
 │   └── update-agent.ps1
 ├── .gitignore
+├── Collect-Checks-Files.ps1
 ├── collect-remoteiq-bundle.ps1
 ├── Directory.Packages.props
 ├── dump-ws-auth-files.ps1
@@ -906,8 +964,8 @@ RemoteIQ V6
 ├── package.json
 ├── package.manifest.json
 ├── pnpm-lock.yaml
+├── README.md
 ├── remoteiq_export.txt
-├── RemoteIQ_RMM_Package.zip
 ├── RemoteIQ.sln
 ├── riq-support.txt
 └── Write-ProjectTree.ps1

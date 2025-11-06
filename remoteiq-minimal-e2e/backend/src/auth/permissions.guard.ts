@@ -57,7 +57,18 @@ export class PermissionsGuard implements CanActivate {
         // 1) Take perms directly if attached to request
         let userPerms = this.normalizePerms(user.permissions);
 
-        // 2) Else try role_meta (TEXT[] or JSON(B) array)
+        // 2) Else fall back to default role mappings (owner/admin/etc.)
+        if (userPerms.length === 0) {
+            const roleHints = this.extractRoleNames(user);
+            if (roleHints.length) {
+                const defaults = permsForRoles(roleHints);
+                if (defaults.size) {
+                    userPerms = Array.from(defaults);
+                }
+            }
+        }
+
+        // 3) Else try role_meta (TEXT[] or JSON(B) array)
         if (userPerms.length === 0) {
             const roleId: string | undefined = user.role?.id ?? user.roleId ?? user.role_id ?? undefined;
             const roleName: string | undefined =
@@ -135,7 +146,7 @@ export class PermissionsGuard implements CanActivate {
     /**
      * Optional fallback if you add normalized ACL tables later.
      * Expects role_permissions(role_id uuid, permission text)
-     * and permissions(name text PK) — adjust as needed.
+     * and permissions(name text PK) - adjust as needed.
      */
     private async loadPermsFromJoinTable(roleId?: string): Promise<string[]> {
         if (!roleId) return [];
@@ -155,5 +166,22 @@ export class PermissionsGuard implements CanActivate {
         } catch {
             return [];
         }
+    }
+
+    private extractRoleNames(user: any): string[] {
+        const out = new Set<string>();
+        const push = (val: unknown) => {
+            if (!val) return;
+            const name = String(val).trim();
+            if (name) out.add(name.toLowerCase());
+        };
+
+        if (Array.isArray(user?.roles)) user.roles.forEach(push);
+        push(user?.role);
+        push(user?.roleName);
+        push(user?.role_name);
+        if (user?.role?.name) push(user.role.name);
+
+        return Array.from(out);
     }
 }

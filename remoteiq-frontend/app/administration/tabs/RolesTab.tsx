@@ -50,6 +50,7 @@ import {
     Check,
     Zap,
     RefreshCw,
+    ChevronDown,
 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ExcelJS from "exceljs";
@@ -97,7 +98,6 @@ const PROTECTED_NAMES = new Set(["owner", "admin"]);
 const PROTECTED_FULL_LOCK = "owner";
 const ROW_HEIGHT = 70;
 
-
 type SortKey = "name" | "usersCount" | "updatedAt";
 type SortDir = "asc" | "desc";
 type Sort = { key: SortKey; dir: SortDir };
@@ -108,7 +108,7 @@ type PermGroup = {
     items: { key: string; label: string }[];
 };
 
-export const PERM_GROUPS: PermGroup[] = [
+const DEFAULT_PERM_GROUPS: PermGroup[] = [
     {
         key: "users",
         label: "Users",
@@ -153,9 +153,19 @@ export const PERM_GROUPS: PermGroup[] = [
             { key: "settings.write", label: "settings.write" },
         ],
     },
+    {
+        key: "backups",
+        label: "Backups",
+        items: [
+            { key: "backups.read", label: "View config and history" },
+            { key: "backups.run", label: "Run, retry or cancel jobs" },
+            { key: "backups.prune", label: "Prune artifacts" },
+            { key: "backups.manage", label: "Configure/test destinations" },
+            { key: "backups.restore", label: "Restore from backups" },
+            { key: "backups.download", label: "Download backups" },
+        ],
+    },
 ];
-
-const ALL_PERMISSION_KEYS = PERM_GROUPS.flatMap((g) => g.items.map((i) => i.key));
 
 function isProtectedRoleName(name: string) {
     return PROTECTED_NAMES.has(name.trim().toLowerCase());
@@ -306,6 +316,28 @@ async function apiDeleteRole(id: string): Promise<void> {
     }
 }
 
+async function apiListPermissionGroups(): Promise<PermGroup[]> {
+    const res = await fetch(`${API_BASE}/roles/permission-keys`, {
+        cache: "no-store",
+        credentials: "include",
+    });
+    if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(`Failed to load permission catalog (${res.status}): ${txt || res.statusText}`);
+    }
+    const body = (await res.json().catch(() => ({}))) as { groups?: PermGroup[] };
+    if (!Array.isArray(body.groups) || !body.groups.length) {
+        return DEFAULT_PERM_GROUPS;
+    }
+    return body.groups.map((group) => ({
+        key: group.key,
+        label: group.label,
+        items: Array.isArray(group.items)
+            ? group.items.map((item) => ({ key: item.key, label: item.label }))
+            : [],
+    }));
+}
+
 /* ========= Component ========= */
 export default function RolesTab({
     roles,
@@ -313,6 +345,12 @@ export default function RolesTab({
     push,
     refetchRoles,
 }: RolesTabProps) {
+    const [permissionGroups, setPermissionGroups] = React.useState<PermGroup[]>(DEFAULT_PERM_GROUPS);
+    const allPermissionKeys = React.useMemo(
+        () => permissionGroups.flatMap((g) => g.items.map((i) => i.key)),
+        [permissionGroups]
+    );
+
     // Track whether backend originally returns a map or an array for permissions
     const originalIsMapRef = React.useRef<boolean>(
         roles.length ? isPermMap((roles[0] as AnyRole)?.permissions) : false
@@ -330,7 +368,7 @@ export default function RolesTab({
         async (toastOnSuccess = false) => {
             setLoading(true);
             try {
-                const fresh = await apiListRoles(); // <- raw (keeps description & permissions)
+                const fresh = await apiListRoles(); // <- raw
                 setRoles(fresh as any[]);
                 originalIsMapRef.current = fresh.length
                     ? isPermMap(fresh[0]?.permissions as any)
@@ -356,6 +394,27 @@ export default function RolesTab({
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    React.useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const groups = await apiListPermissionGroups();
+                if (!cancelled && groups.length) {
+                    setPermissionGroups(groups);
+                }
+            } catch (e: any) {
+                push({
+                    title: "Failed to load permissions",
+                    desc: e?.message ?? "Internal server error",
+                    kind: "destructive",
+                });
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [push]);
 
     const normalized = React.useMemo<Role[]>(
         () => (roles as AnyRole[]).map(normalizeRole),
@@ -645,6 +704,17 @@ export default function RolesTab({
         if (!editingRole) return;
         const { id, name, description, permissions } = editingRole;
         const trimmed = name.trim();
+        const lowered = trimmed.toLowerCase();
+
+        // prevent creating a new protected role
+        if (!id && PROTECTED_NAMES.has(lowered)) {
+            push({
+                title: "Protected role name",
+                desc: `"${trimmed}" is reserved and cannot be created`,
+                kind: "warning",
+            });
+            return;
+        }
 
         if (trimmed.length < 2 || trimmed.length > 64) {
             push({
@@ -654,6 +724,7 @@ export default function RolesTab({
             });
             return;
         }
+
         if (!nameIsUnique(trimmed, id || undefined)) {
             push({
                 title: "Duplicate name",
@@ -663,18 +734,23 @@ export default function RolesTab({
             return;
         }
 
-        const payload = {
-            name: trimmed,
+        // Build payload. For protected system roles, DO NOT send `name` at all.
+        const isProtectedExisting = Boolean(id) && PROTECTED_NAMES.has(lowered);
+        const payload: Partial<Role> = {
+            // name only if not protected
+            ...(isProtectedExisting ? {} : { name: trimmed }),
             description: (description ?? "").trim() || undefined,
             permissions: permissions ?? [],
         };
 
         if (!id) {
-            // optimistic add
+            // optimistic create
             const optimisticId = `tmp_${Math.random().toString(36).slice(2)}`;
             const optimistic: Role = {
                 id: optimisticId,
-                ...payload,
+                name: trimmed,
+                description: payload.description,
+                permissions: payload.permissions as string[],
                 usersCount: 0,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
@@ -689,10 +765,13 @@ export default function RolesTab({
             setEditOpen(false);
 
             try {
-                await apiCreateRole(payload);
-                await refreshFromServer(true); // <- authoritative merge (keeps description/permissions exact)
+                await apiCreateRole({
+                    name: trimmed,
+                    description: payload.description,
+                    permissions: (payload.permissions as string[]) ?? [],
+                });
+                await refreshFromServer(true);
             } catch (e: any) {
-                // rollback optimistic
                 setRoles((prev) =>
                     prev.filter(
                         (r) => normalizeRole(r as unknown as AnyRole).id !== optimisticId
@@ -707,13 +786,14 @@ export default function RolesTab({
             return;
         }
 
-        // edit existing
+        // editing existing
         const before = roles;
         const updated: Role = {
             ...editingRole,
-            name: trimmed,
+            // only change name locally if not protected
+            name: isProtectedExisting ? editingRole.name : trimmed,
             description: payload.description,
-            permissions: payload.permissions,
+            permissions: (payload.permissions as string[]) ?? [],
             updatedAt: new Date().toISOString(),
         };
 
@@ -731,7 +811,7 @@ export default function RolesTab({
 
         try {
             await apiUpdateRole(id, payload);
-            await refreshFromServer(false); // keep view fresh (no need to toast)
+            await refreshFromServer(false);
             push({ title: "Role updated", kind: "success" });
         } catch (e: any) {
             setRoles(before);
@@ -742,6 +822,7 @@ export default function RolesTab({
             });
         }
     }, [editingRole, nameIsUnique, push, roles, setRoles, refreshFromServer]);
+
 
     const [confirmDelete, setConfirmDelete] = React.useState<{
         open: boolean;
@@ -926,7 +1007,7 @@ export default function RolesTab({
                                 </SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="__all__">All permissions</SelectItem>
-                                    {ALL_PERMISSION_KEYS.map((p) => (
+                                    {allPermissionKeys.map((p) => (
                                         <SelectItem key={p} value={p}>
                                             {p}
                                         </SelectItem>
@@ -1059,7 +1140,6 @@ export default function RolesTab({
                                                 )}
                                                 style={{ transform: `translateY(${vi.start}px)`, height: ROW_HEIGHT }}
                                             >
-
                                                 <div className="flex items-center justify-center">
                                                     <Checkbox
                                                         checked={isSelected}
@@ -1125,7 +1205,6 @@ export default function RolesTab({
                                             )}
                                             style={{ height: ROW_HEIGHT }}
                                         >
-
                                             <div className="flex items-center justify-center">
                                                 <Checkbox
                                                     checked={isSelected}
@@ -1218,10 +1297,15 @@ export default function RolesTab({
                 </CardContent>
             </Card>
 
-            {/* Create/Edit Role Dialog */}
+            {/* Create/Edit Role Dialog — redesigned for better fit */}
             <Dialog open={editOpen} onOpenChange={(v) => setEditOpen(v)}>
-                <DialogContent className="max-w-2xl">
-                    <DialogHeader>
+                <DialogContent
+                    // Wider but clamped; internal scroll area handles height
+                    className={cn(
+                        "w-[min(100vw-2rem,1100px)] max-w-none p-0 overflow-hidden"
+                    )}
+                >
+                    <DialogHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-b px-6 py-4">
                         <DialogTitle>{editingRole?.id ? "Edit role" : "New role"}</DialogTitle>
                         <DialogDescription>
                             {editingRole?.id
@@ -1231,171 +1315,180 @@ export default function RolesTab({
                     </DialogHeader>
 
                     {editingRole && (
-                        <div className="space-y-4">
-                            <div className="grid gap-3 md:grid-cols-2">
-                                <div className="grid gap-1">
-                                    <label className="text-sm">Name</label>
-                                    <Input
-                                        value={editingRole.name}
-                                        onChange={(e) =>
-                                            setEditingRole((prev) => (prev ? { ...prev, name: e.target.value } : prev))
-                                        }
-                                        placeholder="e.g. Support Agent"
-                                        aria-label="Role name"
-                                        disabled={
-                                            Boolean(editingRole.id) &&
-                                            editingRole.name.trim().toLowerCase() === PROTECTED_FULL_LOCK
-                                        }
-                                    />
-                                </div>
-                                <div className="grid gap-1">
-                                    <label className="text-sm">Description (optional)</label>
-                                    <Input
-                                        value={editingRole.description ?? ""}
-                                        onChange={(e) =>
-                                            setEditingRole((prev) =>
-                                                prev ? { ...prev, description: e.target.value } : prev
-                                            )
-                                        }
-                                        placeholder="Short description"
-                                        aria-label="Role description"
-                                    />
-                                </div>
-                            </div>
-
-                            {/* Permission checklist */}
-                            <div className="rounded-md border">
-                                <div className="flex items-center justify-between px-3 py-2 border-b">
-                                    <div className="font-medium text-sm">Permissions</div>
-                                    <div className="flex items-center gap-2">
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() =>
+                        <>
+                            {/* Scroll body */}
+                            <div className="max-h-[75vh] overflow-auto px-6 py-4">
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="grid gap-1">
+                                        <label className="text-sm">Name</label>
+                                        <Input
+                                            value={editingRole.name}
+                                            onChange={(e) =>
+                                                setEditingRole((prev) => (prev ? { ...prev, name: e.target.value } : prev))
+                                            }
+                                            placeholder="e.g. Support Agent"
+                                            aria-label="Role name"
+                                            disabled={
+                                                Boolean(editingRole.id) &&
+                                                editingRole.name.trim().toLowerCase() === PROTECTED_FULL_LOCK
+                                            }
+                                        />
+                                    </div>
+                                    <div className="grid gap-1">
+                                        <label className="text-sm">Description (optional)</label>
+                                        <Input
+                                            value={editingRole.description ?? ""}
+                                            onChange={(e) =>
                                                 setEditingRole((prev) =>
-                                                    prev ? { ...prev, permissions: [...ALL_PERMISSION_KEYS] } : prev
+                                                    prev ? { ...prev, description: e.target.value } : prev
                                                 )
                                             }
-                                            aria-label="Check all permissions"
-                                            title="Grant all permissions"
-                                        >
-                                            <Check className="h-4 w-4 mr-2" />
-                                            All permissions
-                                        </Button>
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() =>
-                                                setEditingRole((prev) => (prev ? { ...prev, permissions: [] } : prev))
-                                            }
-                                            aria-label="Uncheck all permissions"
-                                            title="Revoke all"
-                                        >
-                                            Clear
-                                        </Button>
+                                            placeholder="Short description"
+                                            aria-label="Role description"
+                                        />
                                     </div>
                                 </div>
 
-                                <div className="p-3 space-y-3">
-                                    {PERM_GROUPS.map((group) => {
-                                        const groupKeys = group.items.map((i) => i.key);
-                                        const hasAll =
-                                            editingRole.permissions &&
-                                            groupKeys.every((k) => (editingRole.permissions ?? []).includes(k));
-                                        const hasSome =
-                                            editingRole.permissions &&
-                                            groupKeys.some((k) => (editingRole.permissions ?? []).includes(k));
+                                {/* Permission checklist (accordion/compact) */}
+                                <div className="rounded-md border mt-3">
+                                    <div className="flex items-center justify-between px-3 py-2 border-b">
+                                        <div className="font-medium text-sm">Permissions</div>
+                                        <div className="flex items-center gap-2">
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() =>
+                                                    setEditingRole((prev) =>
+                                                        prev ? { ...prev, permissions: [...allPermissionKeys] } : prev
+                                                    )
+                                                }
+                                                aria-label="Check all permissions"
+                                                title="Grant all permissions"
+                                            >
+                                                <Check className="h-4 w-4 mr-2" />
+                                                All permissions
+                                            </Button>
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() =>
+                                                    setEditingRole((prev) => (prev ? { ...prev, permissions: [] } : prev))
+                                                }
+                                                aria-label="Uncheck all permissions"
+                                                title="Revoke all"
+                                            >
+                                                Clear
+                                            </Button>
+                                        </div>
+                                    </div>
 
-                                        return (
-                                            <div key={group.key} className="rounded-md border p-3">
-                                                <div className="mb-2 flex items-center justify-between">
-                                                    <div className="font-medium">{group.label}</div>
-                                                    <div className="flex items-center gap-2">
-                                                        <Button
-                                                            size="sm"
-                                                            variant="outline"
-                                                            onClick={() =>
-                                                                setEditingRole((prev) => {
-                                                                    if (!prev) return prev;
-                                                                    const next = new Set(prev.permissions ?? []);
-                                                                    groupKeys.forEach((k) => next.add(k));
-                                                                    return { ...prev, permissions: [...next] };
-                                                                })
-                                                            }
-                                                            aria-label={`Grant all ${group.label}`}
-                                                            title={`Grant all ${group.label}`}
-                                                        >
-                                                            <Layers className="h-4 w-4 mr-2" />
-                                                            Check all
-                                                        </Button>
-                                                        <Button
-                                                            size="sm"
-                                                            variant="outline"
-                                                            onClick={() =>
-                                                                setEditingRole((prev) => {
-                                                                    if (!prev) return prev;
-                                                                    const next = new Set(prev.permissions ?? []);
-                                                                    groupKeys.forEach((k) => next.delete(k));
-                                                                    return { ...prev, permissions: [...next] };
-                                                                })
-                                                            }
-                                                            aria-label={`Revoke all ${group.label}`}
-                                                            title={`Revoke all ${group.label}`}
-                                                        >
-                                                            Clear
-                                                        </Button>
-                                                    </div>
-                                                </div>
+                                    <div className="p-2 sm:p-3 space-y-2">
+                                        {permissionGroups.map((group) => {
+                                            const groupKeys = group.items.map((i) => i.key);
+                                            const hasAll =
+                                                editingRole.permissions &&
+                                                groupKeys.every((k) => (editingRole.permissions ?? []).includes(k));
+                                            const hasSome =
+                                                editingRole.permissions &&
+                                                groupKeys.some((k) => (editingRole.permissions ?? []).includes(k));
 
-                                                <div className="grid gap-2 sm:grid-cols-2">
-                                                    {group.items.map((p) => {
-                                                        const checked = editingRole.permissions?.includes(p.key) ?? false;
-                                                        return (
-                                                            <label
-                                                                key={p.key}
-                                                                className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+                                            return (
+                                                <details
+                                                    key={group.key}
+                                                    className="rounded-md border"
+                                                    open
+                                                >
+                                                    <summary className="flex items-center justify-between cursor-pointer list-none px-3 py-2 select-none">
+                                                        <div className="flex items-center gap-2">
+                                                            <ChevronDown className="h-4 w-4 transition-transform data-[state=open]:rotate-180" />
+                                                            <span className="font-medium">{group.label}</span>
+                                                            <span className="text-xs text-muted-foreground">
+                                                                {hasAll ? "All" : hasSome ? "Partial" : "None"}
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                onClick={(e) => {
+                                                                    e.preventDefault();
+                                                                    setEditingRole((prev) => {
+                                                                        if (!prev) return prev;
+                                                                        const next = new Set(prev.permissions ?? []);
+                                                                        groupKeys.forEach((k) => next.add(k));
+                                                                        return { ...prev, permissions: [...next] };
+                                                                    });
+                                                                }}
+                                                                aria-label={`Grant all ${group.label}`}
+                                                                title={`Grant all ${group.label}`}
                                                             >
-                                                                <div className="text-sm">{p.label}</div>
-                                                                <Checkbox
-                                                                    checked={checked}
-                                                                    onCheckedChange={(v) =>
-                                                                        setEditingRole((prev) => {
-                                                                            if (!prev) return prev;
-                                                                            const next = new Set(prev.permissions ?? []);
-                                                                            v ? next.add(p.key) : next.delete(p.key);
-                                                                            return { ...prev, permissions: [...next] };
-                                                                        })
-                                                                    }
-                                                                    aria-label={p.label}
-                                                                />
-                                                            </label>
-                                                        );
-                                                    })}
-                                                </div>
+                                                                <Layers className="h-4 w-4 mr-2" />
+                                                                Check all
+                                                            </Button>
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                onClick={(e) => {
+                                                                    e.preventDefault();
+                                                                    setEditingRole((prev) => {
+                                                                        if (!prev) return prev;
+                                                                        const next = new Set(prev.permissions ?? []);
+                                                                        groupKeys.forEach((k) => next.delete(k));
+                                                                        return { ...prev, permissions: [...next] };
+                                                                    });
+                                                                }}
+                                                                aria-label={`Revoke all ${group.label}`}
+                                                                title={`Revoke all ${group.label}`}
+                                                            >
+                                                                Clear
+                                                            </Button>
+                                                        </div>
+                                                    </summary>
 
-                                                <div className="mt-2 text-xs text-muted-foreground">
-                                                    {hasAll
-                                                        ? "All permissions in this group selected."
-                                                        : hasSome
-                                                            ? "Some permissions selected."
-                                                            : "None selected."}
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
+                                                    <div className="px-3 pb-3">
+                                                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                                                            {group.items.map((p) => {
+                                                                const checked = editingRole.permissions?.includes(p.key) ?? false;
+                                                                return (
+                                                                    <label
+                                                                        key={p.key}
+                                                                        className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+                                                                    >
+                                                                        <div className="text-sm">{p.label}</div>
+                                                                        <Checkbox
+                                                                            checked={checked}
+                                                                            onCheckedChange={(v) =>
+                                                                                setEditingRole((prev) => {
+                                                                                    if (!prev) return prev;
+                                                                                    const next = new Set(prev.permissions ?? []);
+                                                                                    v ? next.add(p.key) : next.delete(p.key);
+                                                                                    return { ...prev, permissions: [...next] };
+                                                                                })
+                                                                            }
+                                                                            aria-label={p.label}
+                                                                        />
+                                                                    </label>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                </details>
+                                            );
+                                        })}
+                                    </div>
                                 </div>
                             </div>
-                        </div>
+                            {/* Sticky footer */}
+                            <DialogFooter className="sticky bottom-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-t px-6 py-4">
+                                <Button variant="outline" onClick={() => setEditOpen(false)}>
+                                    Cancel
+                                </Button>
+                                <Button onClick={submitEdit}>
+                                    {editingRole?.id ? "Save changes" : "Create role"}
+                                </Button>
+                            </DialogFooter>
+                        </>
                     )}
-
-                    <DialogFooter className="mt-4">
-                        <Button variant="outline" onClick={() => setEditOpen(false)}>
-                            Cancel
-                        </Button>
-                        <Button onClick={submitEdit}>
-                            {editingRole?.id ? "Save changes" : "Create role"}
-                        </Button>
-                    </DialogFooter>
                 </DialogContent>
             </Dialog>
 
@@ -1425,7 +1518,7 @@ export default function RolesTab({
                 </DialogContent>
             </Dialog>
 
-            {/* Export dialog */}
+            {/* Export dialog (unchanged) */}
             <Dialog open={exportOpen} onOpenChange={(v) => setExportOpen(v)}>
                 <DialogContent>
                     <DialogHeader>

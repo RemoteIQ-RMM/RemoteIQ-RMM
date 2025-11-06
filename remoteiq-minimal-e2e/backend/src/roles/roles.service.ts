@@ -5,6 +5,7 @@ import {
     ConflictException,
 } from '@nestjs/common';
 import { PgPoolService } from '../storage/pg-pool.service';
+import { ALL_PERMISSIONS, Permission } from '../auth/policy';
 
 export type RoleDto = {
     id: string;
@@ -30,9 +31,32 @@ export type UpdateRoleDto = Partial<{
 
 const PROTECTED_NAMES = new Set(['owner', 'admin']);
 const FULL_LOCK_NAME = 'owner';
+const VALID_PERMISSIONS = new Set<Permission>(ALL_PERMISSIONS);
 
 function isUuid(v: string) {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
+function normalizePermissions(perms?: string[]): Permission[] {
+    if (!perms || !perms.length) return [];
+    const invalid: string[] = [];
+    const out = new Set<Permission>();
+
+    for (const raw of perms) {
+        if (!raw) continue;
+        const key = raw.trim().toLowerCase() as Permission;
+        if (!VALID_PERMISSIONS.has(key)) {
+            invalid.push(raw);
+            continue;
+        }
+        out.add(key);
+    }
+
+    if (invalid.length) {
+        throw new BadRequestException(`Unknown permission(s): ${invalid.join(", ")}`);
+    }
+
+    return Array.from(out);
 }
 
 @Injectable()
@@ -42,15 +66,27 @@ export class RolesService {
     async list(): Promise<RoleDto[]> {
         const sql = `
       SELECT
-        id,
-        name,
-        description,
-        COALESCE(permissions,'{}'::text[]) AS permissions,
-        users_count       AS "usersCount",
-        created_at        AS "createdAt",
-        updated_at        AS "updatedAt"
-      FROM public.roles_with_meta
-      ORDER BY name ASC;
+        r.id,
+        r.name,
+        COALESCE(rm.description, '') AS description,
+        COALESCE(rp.permissions, rm.permissions, '{}'::text[]) AS permissions,
+        (
+          SELECT COUNT(*)::int
+          FROM public.users u
+          WHERE lower(u.role) = lower(r.name)
+        ) AS "usersCount",
+        r.created_at AS "createdAt",
+        COALESCE(rm.updated_at, r.created_at) AS "updatedAt"
+      FROM public.roles r
+      LEFT JOIN public.role_meta rm
+        ON rm.role_name = r.name
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(array_agg(p.key ORDER BY p.key), '{}'::text[]) AS permissions
+        FROM public.role_permissions rp
+        JOIN public.permissions p ON p.id = rp.permission_id
+        WHERE rp.role_id = r.id
+      ) rp ON TRUE
+      ORDER BY lower(r.name) ASC;
     `;
         const { rows } = await this.db.query(sql);
         return rows.map((r: any) => ({
@@ -79,7 +115,7 @@ export class RolesService {
         }
 
         const desc = payload.description?.trim() || null;
-        const perms = (payload.permissions ?? []).map(String);
+        const perms = normalizePermissions(payload.permissions);
 
         // Create role
         const insRole = await this.db.query(
@@ -99,6 +135,8 @@ export class RolesService {
             [name, desc, perms],
         );
 
+        await this.replaceRolePermissions(id, perms);
+
         return { id };
     }
 
@@ -113,6 +151,7 @@ export class RolesService {
         const { name: newNameRaw, description, permissions } = patch;
         const role = await this.getById(id);
         const oldLower = role.name.trim().toLowerCase();
+        const normalizedPerms = permissions === undefined ? null : normalizePermissions(permissions ?? []);
 
         if (newNameRaw !== undefined) {
             const newName = newNameRaw.trim();
@@ -145,7 +184,7 @@ export class RolesService {
         // Upsert/Update meta fields if provided
         if (description !== undefined || permissions !== undefined) {
             const descVal = description === undefined ? null : (description ?? null);
-            const permsVal = permissions === undefined ? null : permissions;
+            const permsVal = normalizedPerms;
 
             // Ensure row exists for current role.name
             await this.db.query(
@@ -174,6 +213,10 @@ export class RolesService {
                 [...params, role.name],
             );
         }
+
+        if (normalizedPerms !== null) {
+            await this.replaceRolePermissions(id, normalizedPerms);
+        }
     }
 
     async remove(id: string): Promise<void> {
@@ -196,5 +239,28 @@ export class RolesService {
 
         // Delete role; role_meta has FK ON DELETE CASCADE to roles.name
         await this.db.query(`DELETE FROM public.roles WHERE id=$1;`, [id]);
+    }
+
+    private async replaceRolePermissions(roleId: string, permissions: Permission[]): Promise<void> {
+        await this.db.query(`DELETE FROM public.role_permissions WHERE role_id=$1;`, [roleId]);
+        if (!permissions.length) return;
+
+        const existing = await this.db.query<{ key: string }>(
+            `SELECT key FROM public.permissions WHERE key = ANY($1::text[])`,
+            [permissions]
+        );
+        const found = new Set(existing.rows.map((row) => row.key));
+        const missing = permissions.filter((p) => !found.has(p));
+        if (missing.length) {
+            throw new BadRequestException(`Permissions not provisioned in catalog: ${missing.join(", ")}`);
+        }
+
+        await this.db.query(
+            `INSERT INTO public.role_permissions (role_id, permission_id)
+       SELECT $1, p.id
+       FROM public.permissions p
+       WHERE p.key = ANY($2::text[])`,
+            [roleId, permissions]
+        );
     }
 }
