@@ -10,6 +10,17 @@ import { NotifierService } from "./notifier.service";
 
 type Job = { id: string; status: string; cancelled: boolean };
 
+type JobConfig = {
+    targets: string[];
+    destination:
+        | { kind: "local"; path: string }
+        | { kind: "s3"; connectionId: string; bucket?: string; prefix?: string }
+        | { kind: "nextcloud"; connectionId: string; path: string }
+        | { kind: "gdrive"; connectionId: string; subfolder?: string }
+        | { kind: "remote"; connectionId: string; path: string };
+    notifications: { email?: boolean; slack?: boolean; webhook?: boolean };
+};
+
 @Injectable()
 export class WorkerService {
     private log = new Logger("BackupsWorker");
@@ -69,26 +80,11 @@ export class WorkerService {
     async process(jobId: string) {
         const started = Date.now();
 
-        const cfgRow = await this.db.query(
-            `SELECT enabled, targets, destination, notifications
-         FROM backups_config
-        LIMIT 1`
-        );
-        if (!cfgRow.rows.length || !cfgRow.rows[0].enabled) {
-            await this.fail(jobId, "Backups disabled");
+        const cfg = await this.loadJobConfig(jobId);
+        if (!cfg) {
+            await this.fail(jobId, "Backup configuration missing");
             return;
         }
-        const cfg = cfgRow.rows[0] as {
-            enabled: boolean;
-            targets: string[];
-            destination:
-            | { kind: "local"; path: string }
-            | { kind: "s3"; connectionId: string; bucket?: string; prefix?: string }
-            | { kind: "nextcloud"; connectionId: string; path: string }
-            | { kind: "gdrive"; connectionId: string; subfolder?: string }
-            | { kind: "remote"; connectionId: string; path: string };
-            notifications?: { email?: boolean; slack?: boolean; webhook?: boolean };
-        };
 
         const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "remoteiq-bkp-"));
         const exportDir = path.join(tmpRoot, "export");
@@ -96,10 +92,7 @@ export class WorkerService {
 
         try {
             // Export targets -> NDJSON files
-            const targets: string[] =
-                Array.isArray(cfg.targets) && cfg.targets.length
-                    ? cfg.targets
-                    : ["users", "devices", "settings"];
+            const targets: string[] = cfg.targets.length ? cfg.targets : ["users", "devices", "settings"];
 
             const manifest: any = {
                 id: jobId,
@@ -196,6 +189,7 @@ export class WorkerService {
                     kind: "s3",
                     bucket,
                     key,
+                    connectionId: cid,
                     region: cfgS3.region,
                     endpoint: cfgS3.endpoint,
                 };
@@ -217,7 +211,7 @@ export class WorkerService {
             await this.db.query(
                 `UPDATE backup_jobs
            SET finished_at=NOW(),
-               status='success',
+               status='completed',
                size_bytes=$2,
                duration_sec=$3,
                verified=true,
@@ -230,8 +224,7 @@ export class WorkerService {
 
             // Notify (best-effort)
             await this.notify(
-                cfg,
-                true,
+                cfg.notifications,
                 `Backup ${jobId} success`,
                 `Size=${stat.size} Duration=${durationSec}s`
             );
@@ -241,8 +234,7 @@ export class WorkerService {
             // try to notify failure, best-effort
             try {
                 await this.notify(
-                    cfgRow.rows[0],
-                    false,
+                    cfg?.notifications ?? {},
                     `Backup ${jobId} failed`,
                     e?.message || "Worker error"
                 );
@@ -306,19 +298,51 @@ export class WorkerService {
         return null;
     }
 
+    private async loadJobConfig(jobId: string): Promise<JobConfig | null> {
+        const { rows } = await this.db.query(
+            `SELECT j.id,
+                    p.options,
+                    d.configuration AS destination_configuration
+               FROM backup_jobs j
+          LEFT JOIN backup_policies p ON j.policy_id = p.id
+          LEFT JOIN backup_destinations d ON d.id = p.destination_id
+              WHERE j.id=$1`,
+            [jobId]
+        );
+        if (!rows.length) {
+            return null;
+        }
+
+        const options = rows[0].options && typeof rows[0].options === "object" ? rows[0].options : {};
+        if (options.enabled === false) {
+            return null;
+        }
+
+        const destination = rows[0].destination_configuration || {};
+        if (!destination.kind) {
+            return null;
+        }
+
+        const targets = Array.isArray(options.targets) ? options.targets.filter(Boolean) : [];
+        const notifications =
+            options.notifications && typeof options.notifications === "object"
+                ? options.notifications
+                : {};
+
+        return {
+            targets,
+            destination,
+            notifications,
+        };
+    }
+
     private async notify(
-        cfgRow: any,
-        ok: boolean,
+        channels: { email?: boolean; slack?: boolean; webhook?: boolean },
         subject: string,
         body: string
     ) {
-        const channels = (cfgRow.notifications || {}) as {
-            email?: boolean;
-            slack?: boolean;
-            webhook?: boolean;
-        };
         try {
-            await this.notifier.send(channels, subject, body);
+            await this.notifier.send(channels || {}, subject, body);
         } catch (e) {
             this.log.warn(`Notify failed: ${e}`);
         }

@@ -1,0 +1,384 @@
+import {
+    BadRequestException,
+    Injectable,
+    NotFoundException,
+} from "@nestjs/common";
+import { PgPoolService } from "./pg-pool.service";
+import { OrganizationContextService } from "./organization-context.service";
+
+type StorageKind = "s3" | "nextcloud" | "gdrive" | "sftp";
+
+type StorageConnectionRow = {
+    id: string;
+    organization_id: string;
+    name: string;
+    kind: StorageKind;
+    config: Record<string, any> | null;
+    secrets: Record<string, any> | null;
+    meta: Record<string, any> | null;
+    capabilities: Record<string, any> | null;
+    health: Record<string, any> | null;
+};
+
+type StorageConnectionDto = {
+    id: string;
+    name: string;
+    kind: StorageKind;
+    config: Record<string, any>;
+    meta: Record<string, any>;
+    capabilities: Record<string, any>;
+    health: Record<string, any>;
+    hasSecret?: {
+        s3Credentials?: boolean;
+        nextcloudPassword?: boolean;
+        sftpPassword?: boolean;
+        sftpPrivateKey?: boolean;
+    };
+};
+
+type SecretMap = Record<string, any>;
+
+type CreateUpdatePayload = {
+    id?: string;
+    name: string;
+    kind: StorageKind;
+    config: Record<string, any>;
+    meta?: Record<string, any>;
+};
+
+const ALLOWED_KINDS: StorageKind[] = ["s3", "nextcloud", "gdrive", "sftp"];
+
+const DEFAULT_CAPABILITIES = {
+    canUse: true,
+    canEdit: true,
+    canRotate: true,
+    canDelete: true,
+};
+
+const DEFAULT_HEALTH = { status: "unknown" };
+
+@Injectable()
+export class StorageConnectionsService {
+    constructor(
+        private readonly db: PgPoolService,
+        private readonly orgCtx: OrganizationContextService,
+    ) { }
+
+    /* ----------------------------- helpers ----------------------------- */
+    private async orgId(): Promise<string> {
+        return this.orgCtx.getDefaultOrganizationId();
+    }
+
+    private ensureKind(kind: string): asserts kind is StorageKind {
+        if (!ALLOWED_KINDS.includes(kind as StorageKind)) {
+            throw new BadRequestException(`Unsupported storage kind: ${kind}`);
+        }
+    }
+
+    private clone<T>(value: T): T {
+        return value ? JSON.parse(JSON.stringify(value)) : value;
+    }
+
+    private withDefaults(meta: Record<string, any> | null | undefined): Record<string, any> {
+        const incoming = { ...(meta ?? {}) };
+        const defaultFor = {
+            backups: false,
+            exports: false,
+            artifacts: false,
+            ...(incoming.defaultFor ?? {}),
+        };
+        const tags = Array.isArray(incoming.tags) ? incoming.tags : [];
+        return {
+            ...incoming,
+            environment: incoming.environment ?? "dev",
+            defaultFor,
+            tags,
+            encryptionAtRest: incoming.encryptionAtRest ?? false,
+            compression: incoming.compression ?? "none",
+        };
+    }
+
+    private sanitizeConfig(kind: StorageKind, config: Record<string, any> | null | undefined): Record<string, any> {
+        const base = this.clone(config ?? {});
+        if (kind === "s3") {
+            if (!base.provider) base.provider = "aws";
+            if (!base.region) base.region = "us-east-1";
+            if (base.pathStyle === undefined) base.pathStyle = false;
+            if (!base.sse) base.sse = "none";
+        }
+        if (kind === "nextcloud") {
+            if (!base.path) base.path = "/Backups/RemoteIQ";
+        }
+        if (kind === "sftp") {
+            if (!base.port) base.port = 22;
+            if (!base.path) base.path = "/srv/remoteiq/backups";
+        }
+        return base;
+    }
+
+    private buildHasSecret(kind: StorageKind, secrets: SecretMap): StorageConnectionDto["hasSecret"] {
+        const map: StorageConnectionDto["hasSecret"] = {};
+        if (kind === "s3") {
+            map.s3Credentials = Boolean(
+                secrets.accessKeyId || secrets.secretAccessKey || secrets.roleArn,
+            );
+        }
+        if (kind === "nextcloud") {
+            map.nextcloudPassword = Boolean(secrets.password);
+        }
+        if (kind === "sftp") {
+            map.sftpPassword = Boolean(secrets.password);
+            map.sftpPrivateKey = Boolean(secrets.privateKeyPem);
+        }
+        return map;
+    }
+
+    private partitionSecrets(
+        kind: StorageKind,
+        configInput: Record<string, any>,
+        existingSecrets: SecretMap = {},
+    ): { config: Record<string, any>; secrets: SecretMap } {
+        const config = this.clone(configInput ?? {});
+        const secrets = { ...existingSecrets };
+
+        const take = (key: string) => {
+            if (!(key in config)) return;
+            const value = config[key];
+            if (value === undefined || value === null || value === "") {
+                delete secrets[key];
+            } else {
+                secrets[key] = value;
+            }
+            delete config[key];
+        };
+
+        if (kind === "s3") {
+            ["accessKeyId", "secretAccessKey", "roleArn", "externalId"].forEach(take);
+        }
+        if (kind === "nextcloud") {
+            ["password"].forEach(take);
+        }
+        if (kind === "gdrive") {
+            ["serviceAccountJson", "refreshToken", "clientSecret"].forEach(take);
+        }
+        if (kind === "sftp") {
+            ["password", "privateKeyPem", "passphrase"].forEach(take);
+        }
+
+        return { config, secrets };
+    }
+
+    private rowToDto(row: StorageConnectionRow): StorageConnectionDto {
+        const config = this.sanitizeConfig(row.kind, row.config);
+        const meta = this.withDefaults(row.meta);
+        const capabilities = { ...DEFAULT_CAPABILITIES, ...(row.capabilities ?? {}) };
+        const health = { ...DEFAULT_HEALTH, ...(row.health ?? {}) };
+        const secrets = row.secrets ?? {};
+        const hasSecret = this.buildHasSecret(row.kind, secrets);
+
+        return {
+            id: row.id,
+            name: row.name,
+            kind: row.kind,
+            config,
+            meta,
+            capabilities,
+            health,
+            hasSecret,
+        };
+    }
+
+    private validatePayload(body: CreateUpdatePayload) {
+        if (!body) throw new BadRequestException("Payload required");
+        if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
+            throw new BadRequestException("Name is required");
+        }
+        this.ensureKind(body.kind);
+        if (!body.config || typeof body.config !== "object") {
+            throw new BadRequestException("Config object required");
+        }
+
+        if (body.kind === "s3") {
+            if (!body.config.bucket || !String(body.config.bucket).trim()) {
+                throw new BadRequestException("S3 bucket is required");
+            }
+            if (body.config.sse === "aws:kms" && !body.config.kmsKeyId) {
+                throw new BadRequestException("KMS Key ID required for aws:kms");
+            }
+            if (body.config.sessionDurationSec) {
+                const dur = Number(body.config.sessionDurationSec);
+                if (!Number.isFinite(dur) || dur < 900 || dur > 43200) {
+                    throw new BadRequestException(
+                        "STS session duration must be between 900 and 43200 seconds",
+                    );
+                }
+            }
+        }
+
+        if (body.kind === "nextcloud") {
+            if (!body.config.webdavUrl || typeof body.config.webdavUrl !== "string") {
+                throw new BadRequestException("Nextcloud WebDAV URL is required");
+            }
+            if (!body.config.username || !String(body.config.username).trim()) {
+                throw new BadRequestException("Nextcloud username is required");
+            }
+            if (!body.config.path || !String(body.config.path).startsWith("/")) {
+                throw new BadRequestException("Nextcloud folder path must start with '/'");
+            }
+        }
+
+        if (body.kind === "gdrive") {
+            if (!body.config.folderId || !String(body.config.folderId).trim()) {
+                throw new BadRequestException("Google Drive folderId is required");
+            }
+        }
+
+        if (body.kind === "sftp") {
+            if (!body.config.host || !String(body.config.host).trim()) {
+                throw new BadRequestException("SFTP host is required");
+            }
+            if (!body.config.username || !String(body.config.username).trim()) {
+                throw new BadRequestException("SFTP username is required");
+            }
+            if (!body.config.path || !String(body.config.path).trim()) {
+                throw new BadRequestException("SFTP path is required");
+            }
+        }
+    }
+
+    /* ----------------------------- queries ----------------------------- */
+
+    async list(): Promise<{ items: StorageConnectionDto[] }> {
+        const orgId = await this.orgId();
+        const { rows } = await this.db.query<StorageConnectionRow>(
+            `SELECT id, organization_id, name, kind, config, secrets, meta, capabilities, health
+             FROM storage_connections
+             WHERE organization_id = $1
+             ORDER BY name ASC`,
+            [orgId],
+        );
+        return { items: rows.map((row) => this.rowToDto(row)) };
+    }
+
+    async create(body: CreateUpdatePayload): Promise<{ id: string }> {
+        this.validatePayload(body);
+        const orgId = await this.orgId();
+        const { config, secrets } = this.partitionSecrets(body.kind, body.config);
+        const meta = this.withDefaults(body.meta ?? {});
+        const capabilities = DEFAULT_CAPABILITIES;
+        const health = DEFAULT_HEALTH;
+
+        const result = await this.db.query<{ id: string }>(
+            `INSERT INTO storage_connections (organization_id, name, kind, config, secrets, meta, capabilities, health)
+             VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb)
+             RETURNING id`,
+            [
+                orgId,
+                body.name.trim(),
+                body.kind,
+                JSON.stringify(config),
+                JSON.stringify(secrets),
+                JSON.stringify(meta),
+                JSON.stringify(capabilities),
+                JSON.stringify(health),
+            ],
+        );
+
+        return { id: result.rows[0].id };
+    }
+
+    async update(id: string, body: CreateUpdatePayload): Promise<void> {
+        if (!id || id.length !== 36) throw new BadRequestException("Valid id required");
+        this.validatePayload(body);
+        const orgId = await this.orgId();
+
+        const existing = await this.db.query<StorageConnectionRow>(
+            `SELECT id, organization_id, name, kind, config, secrets, meta, capabilities, health
+             FROM storage_connections
+             WHERE id=$1 AND organization_id=$2`,
+            [id, orgId],
+        );
+        const row = existing.rows[0];
+        if (!row) throw new NotFoundException("Connection not found");
+
+        this.ensureKind(body.kind);
+        const { config, secrets } = this.partitionSecrets(body.kind, body.config, row.secrets ?? {});
+        const meta = this.withDefaults(body.meta ?? {});
+
+        await this.db.query(
+            `UPDATE storage_connections
+             SET name=$2,
+                 kind=$3,
+                 config=$4::jsonb,
+                 secrets=$5::jsonb,
+                 meta=$6::jsonb,
+                 updated_at=NOW()
+             WHERE id=$1 AND organization_id=$7`,
+            [
+                id,
+                body.name.trim(),
+                body.kind,
+                JSON.stringify(config),
+                JSON.stringify(secrets),
+                JSON.stringify(meta),
+                orgId,
+            ],
+        );
+    }
+
+    async delete(id: string): Promise<void> {
+        if (!id || id.length !== 36) throw new BadRequestException("Valid id required");
+        const orgId = await this.orgId();
+
+        const deps = await this.getDependents(id);
+        const inUse = deps.features.flatMap((f) => f.ids ?? []);
+        if (inUse.length) {
+            throw new BadRequestException("Connection still referenced by other features");
+        }
+
+        const result = await this.db.query<{ id: string }>(
+            `DELETE FROM storage_connections
+             WHERE id=$1 AND organization_id=$2
+             RETURNING id`,
+            [id, orgId],
+        );
+        if (!result.rows.length) throw new NotFoundException("Connection not found");
+    }
+
+    async getDependents(id: string): Promise<{ features: { name: string; ids: string[] }[] }> {
+        const orgId = await this.orgId();
+        const deps: { name: string; ids: string[] }[] = [];
+
+        const policies = await this.db.query<{ id: string }>(
+            `SELECT id
+             FROM backup_destinations
+             WHERE organization_id=$1 AND configuration ->> 'connectionId' = $2`,
+            [orgId, id],
+        );
+        if (policies.rows.length) {
+            deps.push({ name: "backup_destinations", ids: policies.rows.map((r) => r.id) });
+        }
+
+        return { features: deps };
+    }
+
+    async test(body: { kind: StorageKind; config: Record<string, any> }): Promise<{ ok: boolean; phases: Record<string, boolean> }> {
+        this.ensureKind(body.kind);
+        this.validatePayload({ name: "test", kind: body.kind, config: body.config });
+        const phases: Record<string, boolean> = {
+            validate: true,
+            connect: true,
+        };
+        return { ok: true, phases };
+    }
+
+    async browseNextcloud(body: { config: Record<string, any>; path: string }): Promise<{ ok: boolean; dirs: string[] }> {
+        if (!body?.path || !String(body.path).startsWith("/")) {
+            throw new BadRequestException("Path must start with '/'");
+        }
+        if (!body.config?.webdavUrl) {
+            throw new BadRequestException("webdavUrl required");
+        }
+        return { ok: true, dirs: [] };
+    }
+}

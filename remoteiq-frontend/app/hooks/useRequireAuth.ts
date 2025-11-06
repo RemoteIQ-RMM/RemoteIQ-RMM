@@ -7,7 +7,16 @@ const API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "http://localhost:3001").r
 
 type MeResponse =
     | { user: null }
-    | { user: { id: string; email: string; name: string; role: string } };
+    | {
+          user: {
+              id: string;
+              email: string;
+              name: string;
+              role: string;
+              roleId?: string | null;
+              roles?: Array<{ id: string; name: string }>;
+          };
+      };
 
 export function useRequireAuth() {
     const [loading, setLoading] = React.useState(true);

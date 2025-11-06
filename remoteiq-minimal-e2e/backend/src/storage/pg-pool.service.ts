@@ -90,9 +90,9 @@ export class PgPoolService implements OnModuleDestroy {
         this.lastKey = nextKey;
     }
 
-    async query<T = any>(text: string, params?: any[]): Promise<{ rows: T[] }> {
+    async query<T = any>(text: string, params?: any[]): Promise<{ rows: T[]; rowCount: number }> {
         const res = await this.ensurePool().query(text, params);
-        return { rows: res.rows as T[] };
+        return { rows: res.rows as T[], rowCount: typeof res.rowCount === "number" ? res.rowCount : 0 };
     }
 
     async onModuleDestroy() {

@@ -1,55 +1,59 @@
 BEGIN;
 
-CREATE TABLE IF NOT EXISTS backups_config (
-    id text PRIMARY KEY DEFAULT 'singleton',
-    enabled boolean NOT NULL DEFAULT false,
-    targets jsonb NOT NULL DEFAULT '[]' :: jsonb,
-    schedule text NOT NULL CHECK (schedule IN ('hourly', 'daily', 'weekly', 'cron')),
-    cron_expr text,
-    retention_days integer NOT NULL DEFAULT 30 CHECK (
-        retention_days BETWEEN 1
-        AND 3650
-    ),
-    encrypt boolean NOT NULL DEFAULT true,
-    destination jsonb NOT NULL,
-    notifications jsonb NOT NULL DEFAULT '{}' :: jsonb
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS backup_destinations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid NOT NULL,
+    name text NOT NULL,
+    provider text NOT NULL,
+    configuration jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (organization_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS backup_policies (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid NOT NULL,
+    name text NOT NULL,
+    description text NULL,
+    schedule text NOT NULL,
+    retention jsonb NOT NULL DEFAULT jsonb_build_object('days', 30),
+    destination_id uuid NULL REFERENCES backup_destinations(id) ON DELETE SET NULL,
+    target_type text NOT NULL DEFAULT 'organization',
+    target_id uuid NULL,
+    options jsonb NOT NULL DEFAULT '{}'::jsonb,
+    is_default boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (organization_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS backup_jobs (
     id uuid PRIMARY KEY,
+    policy_id uuid NULL REFERENCES backup_policies(id) ON DELETE SET NULL,
     started_at timestamptz NOT NULL DEFAULT now(),
     finished_at timestamptz NULL,
-    status text NOT NULL CHECK (
-        status IN ('running', 'success', 'failed', 'cancelled')
-    ),
+    status text NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
     note text NULL,
     size_bytes bigint NULL,
     duration_sec integer NULL,
     verified boolean NULL,
-    -- optional snapshot columns for future use
-    targets jsonb NULL,
-    destination jsonb NULL
+    cancelled boolean NOT NULL DEFAULT false,
+    artifact_location jsonb NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS backup_jobs_started_at_desc ON backup_jobs (started_at DESC);
-
-CREATE INDEX IF NOT EXISTS backup_jobs_status_idx ON backup_jobs (status);
+CREATE INDEX IF NOT EXISTS backup_jobs_policy_idx ON backup_jobs (policy_id, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS backup_restores (
     id uuid PRIMARY KEY,
-    backup_id uuid NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE,
+    backup_job_id uuid NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE,
     requested_at timestamptz NOT NULL DEFAULT now(),
     finished_at timestamptz NULL,
-    status text NOT NULL CHECK (status IN ('running', 'success', 'failed')),
+    status text NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
     note text NULL
 );
 
--- Storage connections table (assumed already exists). If not, define minimally:
--- CREATE TABLE storage_connections (
---   id uuid PRIMARY KEY,
---   name text NOT NULL,
---   kind text NOT NULL CHECK (kind IN ('s3','nextcloud','gdrive','sftp')),
---   config jsonb NOT NULL,
---   secrets jsonb NOT NULL DEFAULT '{}'::jsonb
--- );
 COMMIT;

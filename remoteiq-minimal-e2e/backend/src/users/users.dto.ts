@@ -12,13 +12,18 @@ import {
 } from "class-validator";
 import { Type } from "class-transformer";
 
+export type UserRoleSummary = { id: string; name: string };
+
 export type UserRow = {
     id: string;
     name: string;
     email: string;
     role: string;
+    roleId?: string | null;
+    roles?: UserRoleSummary[];
     status: "active" | "suspended" | "invited";
     twoFactorEnabled: boolean;
+    suspended?: boolean;
     lastSeen: string | null;
     createdAt: string;
     updatedAt: string;

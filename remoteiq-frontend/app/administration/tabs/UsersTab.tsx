@@ -82,6 +82,81 @@ function isUuid(v: unknown): v is string {
     return typeof v === "string" && uuidRegex.test(v);
 }
 
+const safeStr = (v: unknown) => (typeof v === "string" ? v : "");
+const safeBool = (v: unknown) => (typeof v === "boolean" ? v : false);
+
+type RoleSummary = { id: string; name: string };
+
+const normalizeRoleSummaries = (roles: unknown): RoleSummary[] => {
+    if (!Array.isArray(roles)) return [];
+    return roles
+        .map((r) => ({
+            id: typeof r?.id === "string" ? r.id : null,
+            name: typeof r?.name === "string" ? r.name.trim() : "",
+        }))
+        .filter((r): r is RoleSummary => Boolean(r.id) && Boolean(r.name));
+};
+
+const getPrimaryRoleId = (u: Partial<User>): string | null => {
+    const direct = typeof (u as any)?.roleId === "string" ? ((u as any).roleId as string) : null;
+    if (direct && direct.length) return direct;
+    const roles = normalizeRoleSummaries((u as any)?.roles);
+    if (roles.length > 0) return roles[0].id;
+    return null;
+};
+
+const getPrimaryRoleName = (u: Partial<User>): string => {
+    const direct = safeStr((u as any)?.role);
+    if (direct) return direct;
+    const roles = normalizeRoleSummaries((u as any)?.roles);
+    return roles.length > 0 ? roles[0].name : "";
+};
+
+const userHasRoleFilter = (u: Partial<User>, filter: string): boolean => {
+    if (filter === NO_ROLE) {
+        return !getPrimaryRoleId(u) && !getPrimaryRoleName(u);
+    }
+    const directId = getPrimaryRoleId(u);
+    if (directId && directId === filter) return true;
+    const summaries = normalizeRoleSummaries((u as any)?.roles);
+    if (summaries.some((r) => r.id === filter || r.name === filter)) return true;
+    const directName = getPrimaryRoleName(u);
+    return Boolean(directName) && directName === filter;
+};
+
+const updateUserRoleMetadata = (user: User, roleId: string | null, catalog: Role[]): User => {
+    if (!roleId) {
+        return {
+            ...user,
+            role: "",
+            roleId: null,
+            roles: [],
+        };
+    }
+
+    const catalogMatch = catalog.find((r) => r.id === roleId);
+    const name = catalogMatch?.name ?? getPrimaryRoleName(user);
+    return {
+        ...user,
+        role: name,
+        roleId,
+        roles: catalogMatch ? [{ id: catalogMatch.id, name: catalogMatch.name }] : user.roles,
+    };
+};
+
+const resolveRoleSelection = (
+    value: string | undefined,
+    catalog: Role[],
+): { id: string | null; name: string } => {
+    if (!value || value === NO_ROLE) return { id: null, name: "" };
+    if (isUuid(value)) {
+        const match = catalog.find((r) => r.id === value);
+        return { id: value, name: match?.name ?? "" };
+    }
+    const match = catalog.find((r) => r.name === value);
+    return { id: match?.id ?? null, name: match?.name ?? value };
+};
+
 type SortKey = "name" | "email" | "role" | "lastSeen";
 type SortDir = "asc" | "desc";
 
@@ -94,9 +169,6 @@ function getStatus(u: Partial<User>) {
     return "active";
 }
 type StatusFilter = "all" | "active" | "suspended" | "invited";
-
-const safeStr = (v: unknown) => (typeof v === "string" ? v : "");
-const safeBool = (v: unknown) => (typeof v === "boolean" ? v : false);
 
 // CSV helper date (kept for potential custom date fields)
 const formatIsoDate = (raw?: string) => {
@@ -191,7 +263,7 @@ const ALL_COLUMNS: {
         { key: "id", label: "ID", getter: (u) => safeStr((u as any).id) },
         { key: "name", label: "Name", getter: (u) => safeStr((u as any).name) },
         { key: "email", label: "Email", getter: (u) => safeStr((u as any).email) },
-        { key: "role", label: "Role", getter: (u) => safeStr((u as any).role) },
+        { key: "role", label: "Role", getter: (u) => getPrimaryRoleName(u) },
         {
             key: "twoFactorEnabled",
             label: "2FA Enabled",
@@ -403,7 +475,7 @@ export default function UsersTab({
         }
 
         if (roleFilter !== "all") {
-            list = list.filter((u) => safeStr((u as any).role) === roleFilter);
+            list = list.filter((u) => userHasRoleFilter(u, roleFilter));
         }
 
         if (statusFilter !== "all") {
@@ -417,7 +489,7 @@ export default function UsersTab({
                     : key === "email"
                         ? safeStr(x.email)
                         : key === "role"
-                            ? safeStr(x.role)
+                            ? getPrimaryRoleName(x)
                             : safeStr(x.lastSeen ?? "");
 
             if (sortKey === "lastSeen") {
@@ -473,10 +545,14 @@ export default function UsersTab({
         [selected]
     );
 
-    const roleToSelectValue = (role?: string | null) =>
-        role && role.length > 0 ? role : NO_ROLE;
+    const roleToSelectValue = (user: Partial<User>) => {
+        const primaryId = getPrimaryRoleId(user);
+        if (primaryId) return primaryId;
+        const name = getPrimaryRoleName(user);
+        return name && name.length > 0 ? name : NO_ROLE;
+    };
 
-    const updateRole = async (userId: string, roleNameOrNone: string) => {
+    const updateRole = async (userId: string, roleSelection: string) => {
         if (!isUuid(userId)) {
             push({
                 title: "Invalid user id",
@@ -485,11 +561,28 @@ export default function UsersTab({
             });
             return;
         }
-        const roleToSend = roleNameOrNone === NO_ROLE ? "" : roleNameOrNone;
+        const resolved = resolveRoleSelection(roleSelection, roles);
+        const roleToSend = roleSelection === NO_ROLE ? "" : resolved.id ?? roleSelection;
         try {
             await apiUpdateUserRole(userId, roleToSend);
             setUsers((prev) =>
-                prev.map((u) => (u.id === userId ? { ...u, role: roleToSend } : u))
+                prev.map((u) => {
+                    if (u.id !== userId) return u;
+                    if (roleSelection === NO_ROLE) {
+                        return updateUserRoleMetadata(u, null, roles);
+                    }
+                    if (resolved.id) {
+                        return updateUserRoleMetadata(u, resolved.id, roles);
+                    }
+                    return {
+                        ...u,
+                        role: resolved.name || roleToSend,
+                        roleId: null,
+                        roles: resolved.name
+                            ? [{ id: roleToSend, name: resolved.name }]
+                            : u.roles,
+                    };
+                })
             );
             push({ title: "Role updated", kind: "success" });
             await refreshFromServer(false);
@@ -563,17 +656,34 @@ export default function UsersTab({
                 });
             }
 
-            const createdUsers: User[] = created.map((i: any) => ({
-                id: i.id,
-                name: i.name,
-                email: i.email,
-                role: i.role ?? "",
-                status: i.status ?? "invited",
-                twoFactorEnabled: Boolean(i.twoFactorEnabled ?? false),
-                lastSeen: i.lastSeen ?? "",
-                createdAt: i.createdAt ?? new Date().toISOString(),
-                updatedAt: i.updatedAt ?? new Date().toISOString(),
-            }));
+            const createdUsers: User[] = created.map((i: any) => {
+                const serverSummaries = normalizeRoleSummaries(i.roles);
+                const primaryRoleId =
+                    typeof i.roleId === "string" && i.roleId.length
+                        ? i.roleId
+                        : serverSummaries[0]?.id ?? null;
+                const primaryRoleName = safeStr(i.role) || serverSummaries[0]?.name || "";
+                const fallback = resolveRoleSelection(primaryRoleId ?? i.role, roles);
+                const summaries = serverSummaries.length
+                    ? serverSummaries
+                    : fallback.id && fallback.name
+                        ? [{ id: fallback.id, name: fallback.name }]
+                        : [];
+
+                return {
+                    id: i.id,
+                    name: i.name,
+                    email: i.email,
+                    role: primaryRoleName || fallback.name,
+                    roleId: primaryRoleId ?? fallback.id ?? null,
+                    roles: summaries,
+                    status: i.status ?? "invited",
+                    twoFactorEnabled: Boolean(i.twoFactorEnabled ?? false),
+                    lastSeen: i.lastSeen ?? "",
+                    createdAt: i.createdAt ?? new Date().toISOString(),
+                    updatedAt: i.updatedAt ?? new Date().toISOString(),
+                };
+            });
 
             if (createdUsers.length > 0) {
                 // optimistic add, then authoritative refresh
@@ -586,20 +696,25 @@ export default function UsersTab({
                 await refreshFromServer(false);
             }
         } catch (e: any) {
-            const newUsers: User[] = payload.invites.map((i) => ({
-                id: crypto.randomUUID(),
-                name: i.name || i.email.split("@")[0],
-                email: i.email,
-                role: i.role && i.role !== NO_ROLE ? i.role : "",
-                // @ts-ignore
-                status: "invited",
-                // @ts-ignore
-                twoFactorEnabled: false,
-                // @ts-ignore
-                suspended: false,
-                // @ts-ignore
-                lastSeen: "",
-            }));
+            const newUsers: User[] = payload.invites.map((i) => {
+                const meta = resolveRoleSelection(i.role, roles);
+                return {
+                    id: crypto.randomUUID(),
+                    name: i.name || i.email.split("@")[0],
+                    email: i.email,
+                    role: meta.name,
+                    roleId: meta.id,
+                    roles: meta.id && meta.name ? [{ id: meta.id, name: meta.name }] : [],
+                    // @ts-ignore
+                    status: "invited",
+                    // @ts-ignore
+                    twoFactorEnabled: false,
+                    // @ts-ignore
+                    suspended: false,
+                    // @ts-ignore
+                    lastSeen: "",
+                };
+            });
             setUsers((prev) => [...newUsers, ...prev]);
             push({
                 title: `Invites queued (offline)`,
@@ -743,8 +858,9 @@ export default function UsersTab({
                                 </SelectTrigger>
                                 <SelectContent>
                                     <SelectItem value="all">All roles</SelectItem>
+                                    <SelectItem value={NO_ROLE}>(No role)</SelectItem>
                                     {roles.map((r) => (
-                                        <SelectItem key={r.id} value={r.name}>
+                                        <SelectItem key={r.id} value={r.id}>
                                             {r.name}
                                         </SelectItem>
                                     ))}
@@ -981,24 +1097,24 @@ export default function UsersTab({
 
                                                 {/* Role */}
                                                 <div className="px-2 relative z-10">
-                                                    <Select
-                                                        value={roleToSelectValue((u as any).role)}
-                                                        onValueChange={(v) => canEditRole && updateRole(id, v)}
-                                                        disabled={!canEditRole}
-                                                    >
-                                                        <SelectTrigger className="h-8" aria-label="Change role">
-                                                            <SelectValue placeholder={canEditRole ? "Role" : "No id"} />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            <SelectItem value={NO_ROLE}>(No role)</SelectItem>
-                                                            {roles.map((r) => (
-                                                                <SelectItem key={r.id} value={r.name}>
-                                                                    {r.name}
-                                                                </SelectItem>
-                                                            ))}
-                                                        </SelectContent>
-                                                    </Select>
-                                                </div>
+                                                <Select
+                                                    value={roleToSelectValue(u)}
+                                                    onValueChange={(v) => canEditRole && updateRole(id, v)}
+                                                    disabled={!canEditRole}
+                                                >
+                                                    <SelectTrigger className="h-8" aria-label="Change role">
+                                                        <SelectValue placeholder={canEditRole ? "Role" : "No id"} />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value={NO_ROLE}>(No role)</SelectItem>
+                                                        {roles.map((r) => (
+                                                            <SelectItem key={r.id} value={r.id}>
+                                                                {r.name}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
 
                                                 {/* Last seen */}
                                                 <div className="px-2 text-muted-foreground truncate" title={lastSeenIso || "No data"}>
@@ -1038,6 +1154,11 @@ export default function UsersTab({
                                     safeStr((u as any).updatedAt) ||
                                     safeStr((u as any).createdAt);
                                 const canEditRole = isUuid(id);
+                                const roleSummaries = normalizeRoleSummaries((u as any).roles);
+                                const primaryRoleId = getPrimaryRoleId(u);
+                                const extraRoles = roleSummaries.filter((r, idx) =>
+                                    primaryRoleId ? r.id !== primaryRoleId : idx > 0,
+                                );
 
                                 return (
                                     <div
@@ -1080,24 +1201,33 @@ export default function UsersTab({
 
                                         {/* Role */}
                                         <div className="px-2 relative z-10">
-                                            <Select
-                                                value={roleToSelectValue((u as any).role)}
-                                                onValueChange={(v) => canEditRole && updateRole(id, v)}
-                                                disabled={!canEditRole}
-                                            >
-                                                <SelectTrigger className="h-8" aria-label="Change role">
-                                                    <SelectValue placeholder={canEditRole ? "Role" : "No id"} />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value={NO_ROLE}>(No role)</SelectItem>
-                                                    {roles.map((r) => (
-                                                        <SelectItem key={r.id} value={r.name}>
-                                                            {r.name}
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
+                                                <Select
+                                                    value={roleToSelectValue(u)}
+                                                    onValueChange={(v) => canEditRole && updateRole(id, v)}
+                                                    disabled={!canEditRole}
+                                                >
+                                                    <SelectTrigger className="h-8" aria-label="Change role">
+                                                        <SelectValue placeholder={canEditRole ? "Role" : "No id"} />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value={NO_ROLE}>(No role)</SelectItem>
+                                                        {roles.map((r) => (
+                                                            <SelectItem key={r.id} value={r.id}>
+                                                                {r.name}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                                {extraRoles.length > 0 && (
+                                                    <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                                                        {extraRoles.map((r) => (
+                                                            <Badge key={r.id} variant="outline">
+                                                                {r.name}
+                                                            </Badge>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
 
                                         {/* Last seen */}
                                         <div className="px-2 text-muted-foreground truncate" title={lastSeenIso || "No data"}>
@@ -1217,7 +1347,7 @@ export default function UsersTab({
                             status: "active",
                         });
 
-                        const roleStr = form.role === NO_ROLE ? "" : form.role || "";
+                        const roleMeta = resolveRoleSelection(form.role, roles);
 
                         // optimistic add
                         setUsers((prev) => [
@@ -1225,7 +1355,12 @@ export default function UsersTab({
                                 id,
                                 name: form.name,
                                 email: form.email,
-                                role: roleStr,
+                                role: roleMeta.name,
+                                roleId: roleMeta.id,
+                                roles:
+                                    roleMeta.id && roleMeta.name
+                                        ? [{ id: roleMeta.id, name: roleMeta.name }]
+                                        : [],
                                 // @ts-ignore
                                 status: "active",
                                 // @ts-ignore
@@ -1321,8 +1456,27 @@ export default function UsersTab({
 
                     // optimistic
                     const before = users;
+                    const resolvedRole = resolveRoleSelection(form.role, roles);
+                    const removingRole = form.role === NO_ROLE;
                     setUsers((prev) =>
-                        prev.map((u) => (u.id === userId ? { ...u, ...payload } : u))
+                        prev.map((u) => {
+                            if (u.id !== userId) return u;
+                            const next = { ...u, ...payload } as User;
+                            if (removingRole) {
+                                return updateUserRoleMetadata(next, null, roles);
+                            }
+                            if (resolvedRole.id) {
+                                return updateUserRoleMetadata(next, resolvedRole.id, roles);
+                            }
+                            if (resolvedRole.name) {
+                                return {
+                                    ...next,
+                                    role: resolvedRole.name,
+                                    roleId: null,
+                                };
+                            }
+                            return next;
+                        })
                     );
 
                     try {
@@ -1678,7 +1832,7 @@ function CreateUserDialog({
         name.trim().length > 0 &&
         validEmail &&
         validPwd &&
-        (role === NO_ROLE ? true : roles.some((r) => r.name === role));
+        (role === NO_ROLE ? true : roles.some((r) => r.id === role));
 
     const handleSubmit = async () => {
         if (!valid) return;
@@ -1739,7 +1893,7 @@ function CreateUserDialog({
                             <SelectContent>
                                 <SelectItem value={NO_ROLE}>(No role)</SelectItem>
                                 {roles.map((r) => (
-                                    <SelectItem key={r.id} value={r.name}>
+                                    <SelectItem key={r.id} value={r.id}>
                                         {r.name}
                                     </SelectItem>
                                 ))}
@@ -1897,7 +2051,13 @@ function EditUserDialog({
         if (!user) return;
         setName(user.name || "");
         setEmail(user.email || "");
-        setRole(user.role ? user.role : NO_ROLE);
+        const primaryId = getPrimaryRoleId(user);
+        if (primaryId) {
+            setRole(primaryId);
+        } else {
+            const fallback = resolveRoleSelection(user.role, roles);
+            setRole(fallback.id ?? NO_ROLE);
+        }
         setPhone((user as any).phone || "");
         setAddress1((user as any).address1 || "");
         setAddress2((user as any).address2 || "");
@@ -1905,13 +2065,13 @@ function EditUserDialog({
         setState((user as any).state || "");
         setPostal((user as any).postal || "");
         setCountry((user as any).country || "");
-    }, [user]);
+    }, [user, roles]);
 
     const validEmail = /\S+@\S+\.\S+/.test(email);
     const valid =
         name.trim().length > 0 &&
         validEmail &&
-        (role === NO_ROLE ? true : roles.some((r) => r.name === role));
+        (role === NO_ROLE ? true : roles.some((r) => r.id === role));
 
     const handleSubmit = async () => {
         if (!valid || !user) return;
@@ -1971,7 +2131,7 @@ function EditUserDialog({
                             <SelectContent>
                                 <SelectItem value={NO_ROLE}>(No role)</SelectItem>
                                 {roles.map((r) => (
-                                    <SelectItem key={r.id} value={r.name}>
+                                    <SelectItem key={r.id} value={r.id}>
                                         {r.name}
                                     </SelectItem>
                                 ))}
@@ -2050,7 +2210,7 @@ function InviteSingleDialog({
 
     const valid =
         /\S+@\S+\.\S+/.test(email) &&
-        (role === NO_ROLE ? true : roles.some((r) => r.name === role));
+        (role === NO_ROLE ? true : roles.some((r) => r.id === role));
 
     const handleSubmit = async () => {
         if (!valid) return;
@@ -2108,7 +2268,7 @@ function InviteSingleDialog({
                             <SelectContent>
                                 <SelectItem value={NO_ROLE}>(No role)</SelectItem>
                                 {roles.map((r) => (
-                                    <SelectItem key={r.id} value={r.name}>
+                                    <SelectItem key={r.id} value={r.id}>
                                         {r.name}
                                     </SelectItem>
                                 ))}
@@ -2220,7 +2380,7 @@ function InviteBulkDialog({
                             <SelectContent>
                                 <SelectItem value={NO_ROLE}>(No role)</SelectItem>
                                 {roles.map((r) => (
-                                    <SelectItem key={r.id} value={r.name}>
+                                    <SelectItem key={r.id} value={r.id}>
                                         {r.name}
                                     </SelectItem>
                                 ))}

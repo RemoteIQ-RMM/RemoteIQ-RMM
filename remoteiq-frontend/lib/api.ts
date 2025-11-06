@@ -11,6 +11,8 @@ function url(path: string) {
   return `${API_BASE.replace(/\/+$/, "")}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 type JsonInit = Omit<RequestInit, "body" | "method"> & {
   body?: any;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -341,6 +343,8 @@ export type UserDTO = {
   name: string;
   email: string;
   role: string;
+  roleId?: string | null;
+  roles?: Array<{ id: string; name: string }>;
   twoFactorEnabled: boolean;
   suspended: boolean;
   lastSeen: string | null;
@@ -379,11 +383,14 @@ export async function inviteUsers(invites: InvitePayload[]): Promise<{ created: 
       method: "POST",
       body: i,
     });
+    const roleValue = typeof i.role === "string" ? i.role.trim() : "";
+    const roleIsUuid = roleValue && UUID_REGEX.test(roleValue);
     created.push({
       id: resp.id,
       name: i.name ?? i.email.split("@")[0],
       email: i.email,
-      role: i.role ?? "User",
+      role: roleIsUuid ? "" : roleValue || "",
+      roleId: roleIsUuid ? roleValue : undefined,
       status: "invited",
       twoFactorEnabled: false,
       suspended: false,
