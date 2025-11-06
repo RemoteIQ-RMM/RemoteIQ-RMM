@@ -429,6 +429,5 @@ export class SecurityService {
             HttpStatus.NOT_IMPLEMENTED,
         );
 
-
     }
 }

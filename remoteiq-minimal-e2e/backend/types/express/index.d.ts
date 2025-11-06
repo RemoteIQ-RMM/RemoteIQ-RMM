@@ -5,6 +5,11 @@ declare module "express" {
         params: Record<string, string>;
         query: Record<string, any>;
         body?: any;
+
+        headers: Record<string, string | undefined>;
+        ip?: string;
+        cookies?: Record<string, string>;
+
         [key: string]: any;
     }
 
@@ -12,6 +17,11 @@ declare module "express" {
         status(code: number): this;
         json(body: any): this;
         send(body?: any): this;
+
+        cookie(name: string, value: any, options?: Record<string, any>): this;
+        clearCookie(name: string, options?: Record<string, any>): this;
+        locals: Record<string, any>;
+
     }
 
     export type NextFunction = (err?: any) => void;

@@ -12,6 +12,9 @@ declare const process: {
     cwd(): string;
 };
 
+
+declare const __dirname: string;
+
 declare class Buffer extends Uint8Array {
     static from(data: string | ArrayBuffer | Uint8Array, encoding?: string): Buffer;
     static from(data: number[]): Buffer;
@@ -26,7 +29,19 @@ declare module "buffer" {
 
 declare module "crypto" {
     export function randomUUID(): string;
+
+    export function randomBytes(size: number): Buffer;
+    export function createHash(algo: string): {
+        update(data: string | Buffer, encoding?: string): any;
+        digest(enc: string): string;
+    };
+}
+
+declare module "node:crypto" {
+    export * from "crypto";
+
     export function createHash(algo: string): { update(data: string | Buffer): any; digest(enc: string): string };
+
 }
 
 declare module "events" {
@@ -49,7 +64,11 @@ declare module "stream" {
 declare module "http" {
     import { EventEmitter } from "events";
     class IncomingMessage extends EventEmitter {
+
+        headers: Record<string, string | undefined>;
+
         headers: Record<string, string | string[] | undefined>;
+
         url?: string;
         method?: string;
     }
@@ -75,6 +94,7 @@ declare module "fs/promises" {
     export function writeFile(path: string, data: string | Buffer): Promise<void>;
     export function mkdir(path: string, opts?: any): Promise<void>;
     export function access(path: string, mode?: number): Promise<void>;
+    export function stat(path: string): Promise<{ isDirectory(): boolean }>;
     export function stat(path: string): Promise<{ isDirectory(): boolean }>; 
 }
 
