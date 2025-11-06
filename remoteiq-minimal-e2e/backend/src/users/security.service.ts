@@ -398,5 +398,37 @@ export class SecurityService {
             [userId],
         );
         return rowCount;
+
+    }
+
+    /* ------------------------- WebAuthn stubs ------------------------- */
+
+    async webauthnCreateOptions(userId: string, email: string) {
+        void userId;
+        void email;
+        throw new HttpException(
+            "WebAuthn registration is not enabled on this deployment.",
+            HttpStatus.NOT_IMPLEMENTED,
+        );
+    }
+
+    async webauthnFinish(userId: string, payload: any) {
+        void userId;
+        void payload;
+        throw new HttpException(
+            "WebAuthn registration is not enabled on this deployment.",
+            HttpStatus.NOT_IMPLEMENTED,
+        );
+    }
+
+    async deleteWebAuthn(userId: string, credentialId: string) {
+        void userId;
+        void credentialId;
+        throw new HttpException(
+            "WebAuthn registration is not enabled on this deployment.",
+            HttpStatus.NOT_IMPLEMENTED,
+        );
+
+
     }
 }

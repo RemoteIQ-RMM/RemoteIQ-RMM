@@ -23,6 +23,7 @@ export type UserRow = {
     roles?: UserRoleSummary[];
     status: "active" | "suspended" | "invited";
     twoFactorEnabled: boolean;
+    suspended?: boolean;
     lastSeen: string | null;
     createdAt: string;
     updatedAt: string;
