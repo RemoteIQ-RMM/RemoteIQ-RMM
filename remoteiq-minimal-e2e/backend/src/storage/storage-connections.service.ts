@@ -89,12 +89,23 @@ export class StorageConnectionsService {
         };
         const tags = Array.isArray(incoming.tags) ? incoming.tags : [];
         return {
+
             ...incoming,
             environment: incoming.environment ?? "dev",
             defaultFor,
             tags,
             encryptionAtRest: incoming.encryptionAtRest ?? false,
             compression: incoming.compression ?? "none",
+
+            environment: incoming.environment ?? "dev",
+            tags,
+            defaultFor,
+            encryptionAtRest: incoming.encryptionAtRest ?? false,
+            compression: incoming.compression ?? "none",
+            ...incoming,
+            defaultFor,
+            tags,
+
         };
     }
 

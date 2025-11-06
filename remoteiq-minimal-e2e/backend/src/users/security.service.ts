@@ -398,6 +398,7 @@ export class SecurityService {
             [userId],
         );
         return rowCount;
+
     }
 
     /* ------------------------- WebAuthn stubs ------------------------- */
@@ -427,5 +428,7 @@ export class SecurityService {
             "WebAuthn registration is not enabled on this deployment.",
             HttpStatus.NOT_IMPLEMENTED,
         );
+
+
     }
 }
