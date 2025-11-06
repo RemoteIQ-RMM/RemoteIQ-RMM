@@ -555,8 +555,11 @@ export default function AdministrationPage() {
 
                         {tab === "system" && <SystemTab push={push} />}
                         {tab === "database" && <DatabaseTab push={push} />}
-                        {tab === "storage" && <StorageTab push={push} />}
-                        {tab === "backups" && <BackupsTab push={push} />}
+
+                        {/* ⬇️ FIX: stop passing `push` to StorageTab and BackupsTab */}
+                        {tab === "storage" && <StorageTab />}
+                        {tab === "backups" && <BackupsTab />}
+
                         {tab === "agents" && <AgentsTab push={push} />}
                         {tab === "migrations" && <MigrationsTab push={push} />}
 
