@@ -17,6 +17,7 @@ coverage/
 **/obj/
 **/publish/
 *.log
+*.txt
 
 # OS / Editor
 .DS_Store
