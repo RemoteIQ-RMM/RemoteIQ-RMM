@@ -1,0 +1,4341 @@
+RemoteIQ Auth & whoami Diagnostics Bundle
+Generated: 2025-11-06 20:52:43 -05:00
+Working Directory (Root): C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend
+
+# FILES INCLUDED
+# --------------
+
+## FILE: src\auth\auth-cookie.guard.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\auth-cookie.guard.ts
+Size: 7212 bytes
+SHA256: 7AD9A07524B3DB26DF5E12E3C43C34AB6D666E20A0D60DBDE5C8D8086A4C6C58
+----- BEGIN CONTENT -----
+     1: import {
+     2: 
+     3:     CanActivate,
+     4: 
+     5:     ExecutionContext,
+     6: 
+     7:     Injectable,
+     8: 
+     9:     UnauthorizedException,
+    10: 
+    11: } from "@nestjs/common";
+    12: 
+    13: import type { Request, Response } from "express";
+    14: 
+    15: import { JwtService } from "@nestjs/jwt";
+    16: 
+    17: import { PgPoolService } from "../storage/pg-pool.service";
+    18: 
+    19: import { randomUUID, createHash } from "crypto";
+    20: 
+    21: 
+    22: 
+    23: function parseCookieMaxAge(): number {
+    24: 
+    25:     const v = process.env.AUTH_COOKIE_MAX_AGE_MS;
+    26: 
+    27:     const n = Number(v);
+    28: 
+    29:     return Number.isFinite(n) && n > 0 ? n : 7 * 24 * 60 * 60 * 1000;
+    30: 
+    31: }
+    32: 
+    33: 
+    34: 
+    35: function hashToken(token: string): string {
+    36: 
+    37:     return createHash("sha256").update(token, "utf8").digest("hex");
+    38: 
+    39: }
+    40: 
+    41: 
+    42: 
+    43: type DbUserRow = {
+    44: 
+    45:     id: string;
+    46: 
+    47:     email: string;
+    48: 
+    49:     first_name: string | null;
+    50: 
+    51:     last_name: string | null;
+    52: 
+    53:     status: string;
+    54: 
+    55:     organization_id: string;
+    56: 
+    57:     roles: any;
+    58: 
+    59:     permissions: string[] | null;
+    60: 
+    61: };
+    62: 
+    63: 
+    64: 
+    65: function buildDisplayName(first: string | null, last: string | null, fallback?: string | null): string | null {
+    66: 
+    67:     const parts = [first?.trim(), last?.trim()].filter(Boolean) as string[];
+    68: 
+    69:     if (parts.length > 0) return parts.join(" ");
+    70: 
+    71:     return fallback ?? null;
+    72: 
+    73: }
+    74: 
+    75: 
+    76: 
+    77: @Injectable()
+    78: 
+    79: export class AuthCookieGuard implements CanActivate {
+    80: 
+    81:     constructor(
+    82: 
+    83:         private readonly jwt: JwtService,
+    84: 
+    85:         private readonly pg: PgPoolService,
+    86: 
+    87:     ) { }
+    88: 
+    89: 
+    90: 
+    91:     async canActivate(context: ExecutionContext): Promise<boolean> {
+    92: 
+    93:         const req = context.switchToHttp().getRequest<Request>();
+    94: 
+    95:         const res = context.switchToHttp().getResponse<Response>();
+    96: 
+    97: 
+    98: 
+    99:         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+   100: 
+   101:         const tokenFromCookie =
+   102: 
+   103:             (req as any).cookies?.[cookieName] ||
+   104: 
+   105:             (req as any).cookies?.["auth_token"];
+   106: 
+   107:         const tokenFromHeader =
+   108: 
+   109:             req.headers.authorization?.replace(/^Bearer\s+/i, "") || null;
+   110: 
+   111: 
+   112: 
+   113:         const token = tokenFromCookie || tokenFromHeader;
+   114: 
+   115:         if (!token) throw new UnauthorizedException("No auth token provided");
+   116: 
+   117: 
+   118: 
+   119:         let payload: any;
+   120: 
+   121:         try {
+   122: 
+   123:             payload = await this.jwt.verifyAsync(token, {
+   124: 
+   125:                 secret: process.env.JWT_SECRET ?? "dev-secret",
+   126: 
+   127:             });
+   128: 
+   129:         } catch {
+   130: 
+   131:             throw new UnauthorizedException("Invalid token");
+   132: 
+   133:         }
+   134: 
+   135:         if (!payload?.sub) throw new UnauthorizedException("Invalid token payload");
+   136: 
+   137: 
+   138: 
+   139:         const userRow = await this.loadUserById(String(payload.sub));
+   140: 
+   141:         if (!userRow || userRow.status !== "active") {
+   142: 
+   143:             throw new UnauthorizedException("Account disabled");
+   144: 
+   145:         }
+   146: 
+   147: 
+   148: 
+   149:         const roles: string[] = Array.isArray(userRow.roles)
+   150: 
+   151:             ? userRow.roles.map((r: any) => String(r.name ?? r).trim()).filter(Boolean)
+   152: 
+   153:             : [];
+   154: 
+   155:         const permissions = Array.isArray(userRow.permissions)
+   156: 
+   157:             ? userRow.permissions.map((p) => String(p).toLowerCase())
+   158: 
+   159:             : [];
+   160: 
+   161:         const displayName = buildDisplayName(userRow.first_name, userRow.last_name, payload.name);
+   162: 
+   163:         const primaryRole = roles[0] || payload.role || "user";
+   164: 
+   165: 
+   166: 
+   167:         (req as any).user = {
+   168: 
+   169:             id: userRow.id,
+   170: 
+   171:             email: userRow.email,
+   172: 
+   173:             name: displayName,
+   174: 
+   175:             organizationId: userRow.organization_id,
+   176: 
+   177:             roles,
+   178: 
+   179:             role: primaryRole,
+   180: 
+   181:             permissions,
+   182: 
+   183:         };
+   184: 
+   185: 
+   186: 
+   187:         let jti: string | null = payload?.jti != null ? String(payload.jti) : null;
+   188: 
+   189:         if (!jti) {
+   190: 
+   191:             jti = randomUUID();
+   192: 
+   193:             const newToken = await this.jwt.signAsync({
+   194: 
+   195:                 sub: payload.sub,
+   196: 
+   197:                 email: payload.email,
+   198: 
+   199:                 name: displayName,
+   200: 
+   201:                 role: primaryRole,
+   202: 
+   203:                 org: userRow.organization_id,
+   204: 
+   205:             perms: permissions,
+   206: 
+   207:                 jti,
+   208: 
+   209:             });
+   210: 
+   211: 
+   212: 
+   213:             res.cookie(cookieName, newToken, {
+   214: 
+   215:                 httpOnly: true,
+   216: 
+   217:                 sameSite: "lax",
+   218: 
+   219:                 secure: process.env.NODE_ENV === "production",
+   220: 
+   221:                 path: "/",
+   222: 
+   223:                 maxAge: parseCookieMaxAge(),
+   224: 
+   225:             });
+   226: 
+   227: 
+   228: 
+   229:             const ipHdr = (req.headers["x-forwarded-for"] as string) || "";
+   230: 
+   231:             const ip = (ipHdr.split(",")[0] || req.ip || "").trim() || null;
+   232: 
+   233:             const ua = req.get("user-agent") || null;
+   234: 
+   235: 
+   236: 
+   237:             await this.upsertSession(userRow.id, jti, ua, ip, hashToken(newToken));
+   238: 
+   239:         }
+   240: 
+   241: 
+   242: 
+   243:         (req as any).jti = jti;
+   244: 
+   245: 
+   246: 
+   247:         if (jti) {
+   248: 
+   249:             const ipHdr = (req.headers["x-forwarded-for"] as string) || "";
+   250: 
+   251:             const ip = (ipHdr.split(",")[0] || req.ip || "").trim() || null;
+   252: 
+   253:             const ua = req.get("user-agent") || null;
+   254: 
+   255:             this.pg
+   256: 
+   257:                 .query(
+   258: 
+   259:                     `UPDATE sessions
+   260: 
+   261:              SET last_seen_at = now(),
+   262: 
+   263:                  ip_address = COALESCE($2, ip_address),
+   264: 
+   265:                  user_agent = COALESCE($3, user_agent)
+   266: 
+   267:            WHERE id = $1 AND revoked_at IS NULL`,
+   268: 
+   269:                     [jti, ip, ua],
+   270: 
+   271:                 )
+   272: 
+   273:                 .catch(() => { });
+   274: 
+   275:         }
+   276: 
+   277: 
+   278: 
+   279:         return true;
+   280: 
+   281:     }
+   282: 
+   283: 
+   284: 
+   285:     private async upsertSession(userId: string, sessionId: string, ua: string | null, ip: string | null, tokenHash: string) {
+   286: 
+   287:         await this.pg.query(
+   288: 
+   289:             `
+   290: 
+   291:         INSERT INTO sessions (id, user_id, refresh_token, user_agent, ip_address)
+   292: 
+   293:         VALUES ($2, $1, $3, $4, $5)
+   294: 
+   295:         ON CONFLICT (id) DO UPDATE
+   296: 
+   297:            SET last_seen_at = now(),
+   298: 
+   299:                user_agent   = COALESCE(EXCLUDED.user_agent, sessions.user_agent),
+   300: 
+   301:                ip_address   = COALESCE(EXCLUDED.ip_address, sessions.ip_address),
+   302: 
+   303:                refresh_token = EXCLUDED.refresh_token
+   304: 
+   305:         `,
+   306: 
+   307:             [userId, sessionId, tokenHash, ua || null, ip || null],
+   308: 
+   309:         );
+   310: 
+   311:     }
+   312: 
+   313: 
+   314: 
+   315:     private async loadUserById(userId: string): Promise<DbUserRow | null> {
+   316: 
+   317:         try {
+   318: 
+   319:             const { rows } = await this.pg.query<DbUserRow>(
+   320: 
+   321:                 `SELECT
+   322: 
+   323:                     u.id,
+   324: 
+   325:                     u.email,
+   326: 
+   327:                     u.first_name,
+   328: 
+   329:                     u.last_name,
+   330: 
+   331:                     u.status,
+   332: 
+   333:                     u.organization_id,
+   334: 
+   335:                     COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
+   336: 
+   337:                              FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb) AS roles,
+   338: 
+   339:                     COALESCE(array_agg(DISTINCT rp.permission_key)
+   340: 
+   341:                              FILTER (WHERE rp.permission_key IS NOT NULL), '{}'::text[]) AS permissions
+   342: 
+   343:                  FROM public.users u
+   344: 
+   345:                  LEFT JOIN public.user_roles ur ON ur.user_id = u.id
+   346: 
+   347:                  LEFT JOIN public.roles r ON r.id = ur.role_id
+   348: 
+   349:                  LEFT JOIN public.role_permissions rp ON rp.role_id = r.id
+   350: 
+   351:                  WHERE u.id = $1
+   352: 
+   353:                  GROUP BY u.id`,
+   354: 
+   355:                 [userId],
+   356: 
+   357:             );
+   358: 
+   359:             if (!rows.length) return null;
+   360: 
+   361:             const row = rows[0];
+   362: 
+   363:             return {
+   364: 
+   365:                 ...row,
+   366: 
+   367:                 roles: Array.isArray(row.roles) ? row.roles : [],
+   368: 
+   369:                 permissions: Array.isArray(row.permissions) ? row.permissions : [],
+   370: 
+   371:             };
+   372: 
+   373:         } catch {
+   374: 
+   375:             return null;
+   376: 
+   377:         }
+   378: 
+   379:     }
+   380: 
+   381: }
+   382: 
+   383: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\auth-cookie.middleware.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\auth-cookie.middleware.ts
+Size: 5239 bytes
+SHA256: 34141557F3D7E03F5DA7CBBF9DF094783F10521A6BD7D6E92274F4635A838437
+----- BEGIN CONTENT -----
+     1: import { Injectable, NestMiddleware } from "@nestjs/common";
+     2: 
+     3: import type { Request, Response, NextFunction } from "express";
+     4: 
+     5: import { JwtService } from "@nestjs/jwt";
+     6: 
+     7: import { PgPoolService } from "../storage/pg-pool.service";
+     8: 
+     9: 
+    10: 
+    11: const SESSION_IDLE_UPDATE_SECS =
+    12: 
+    13:     parseInt(process.env.SESSION_IDLE_UPDATE_SECS || "300", 10) || 300;
+    14: 
+    15: 
+    16: 
+    17: type DbSessionRow = { revoked_at: string | null; last_seen_at: string };
+    18: 
+    19: type DbUserRow = {
+    20: 
+    21:     id: string;
+    22: 
+    23:     email: string;
+    24: 
+    25:     first_name: string | null;
+    26: 
+    27:     last_name: string | null;
+    28: 
+    29:     status: string;
+    30: 
+    31:     organization_id: string;
+    32: 
+    33:     roles: any;
+    34: 
+    35:     permissions: string[] | null;
+    36: 
+    37: };
+    38: 
+    39: 
+    40: 
+    41: function buildDisplayName(first: string | null, last: string | null): string | null {
+    42: 
+    43:     const parts = [first?.trim(), last?.trim()].filter(Boolean) as string[];
+    44: 
+    45:     if (parts.length === 0) return null;
+    46: 
+    47:     return parts.join(" ");
+    48: 
+    49: }
+    50: 
+    51: 
+    52: 
+    53: @Injectable()
+    54: 
+    55: export class AuthCookieMiddleware implements NestMiddleware {
+    56: 
+    57:     private readonly cookieName: string;
+    58: 
+    59: 
+    60: 
+    61:     constructor(
+    62: 
+    63:         private readonly jwt: JwtService,
+    64: 
+    65:         private readonly pg: PgPoolService,
+    66: 
+    67:     ) {
+    68: 
+    69:         this.cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+    70: 
+    71:     }
+    72: 
+    73: 
+    74: 
+    75:     async use(req: Request & { user?: any; jti?: string }, res: Response, next: NextFunction) {
+    76: 
+    77:         try {
+    78: 
+    79:             const token = (req as any).cookies?.[this.cookieName];
+    80: 
+    81:             if (!token) return next();
+    82: 
+    83: 
+    84: 
+    85:             const payload = await this.jwt.verifyAsync<any>(token, {
+    86: 
+    87:                 secret: process.env.JWT_SECRET ?? "dev-secret",
+    88: 
+    89:             });
+    90: 
+    91: 
+    92: 
+    93:             const userRow = await this.loadUserById(payload.sub);
+    94: 
+    95:             if (!userRow || userRow.status !== "active") {
+    96: 
+    97:                 return next();
+    98: 
+    99:             }
+   100: 
+   101: 
+   102: 
+   103:             const displayName = buildDisplayName(userRow.first_name, userRow.last_name) || payload.name || null;
+   104: 
+   105:             const roles: string[] = Array.isArray(userRow.roles)
+   106: 
+   107:                 ? userRow.roles.map((r: any) => String(r.name ?? r).trim()).filter(Boolean)
+   108: 
+   109:                 : [];
+   110: 
+   111:             const permissions = Array.isArray(userRow.permissions)
+   112: 
+   113:                 ? userRow.permissions.map((p) => String(p).toLowerCase())
+   114: 
+   115:                 : [];
+   116: 
+   117:             const primaryRole = roles[0] || payload.role || "user";
+   118: 
+   119: 
+   120: 
+   121:             req.user = {
+   122: 
+   123:                 id: userRow.id,
+   124: 
+   125:                 email: userRow.email,
+   126: 
+   127:                 name: displayName,
+   128: 
+   129:                 organizationId: userRow.organization_id,
+   130: 
+   131:                 roles,
+   132: 
+   133:                 role: primaryRole,
+   134: 
+   135:                 permissions,
+   136: 
+   137:             };
+   138: 
+   139:             req.jti = payload.jti;
+   140: 
+   141: 
+   142: 
+   143:             if (req.jti) {
+   144: 
+   145:                 const session = await this.loadSession(req.jti);
+   146: 
+   147:                 if (session?.revoked_at) {
+   148: 
+   149:                     return res.status(401).json({ message: "Session revoked." });
+   150: 
+   151:                 }
+   152: 
+   153:                 if (session) {
+   154: 
+   155:                     const lastSeen = new Date(session.last_seen_at).getTime();
+   156: 
+   157:                     const now = Date.now();
+   158: 
+   159:                     if ((now - lastSeen) / 1000 > SESSION_IDLE_UPDATE_SECS) {
+   160: 
+   161:                         await this.pg.query(`UPDATE sessions SET last_seen_at = now() WHERE id = $1`, [req.jti]);
+   162: 
+   163:                     }
+   164: 
+   165:                 }
+   166: 
+   167:             }
+   168: 
+   169:         } catch {
+   170: 
+   171:             // ignore broken/expired token; route can still choose to 401
+   172: 
+   173:         }
+   174: 
+   175:         next();
+   176: 
+   177:     }
+   178: 
+   179: 
+   180: 
+   181:     private async loadSession(id: string): Promise<DbSessionRow | null> {
+   182: 
+   183:         try {
+   184: 
+   185:             const { rows } = await this.pg.query<DbSessionRow>(
+   186: 
+   187:                 `SELECT revoked_at, last_seen_at FROM sessions WHERE id = $1 LIMIT 1`,
+   188: 
+   189:                 [id],
+   190: 
+   191:             );
+   192: 
+   193:             return rows[0] ?? null;
+   194: 
+   195:         } catch {
+   196: 
+   197:             return null;
+   198: 
+   199:         }
+   200: 
+   201:     }
+   202: 
+   203: 
+   204: 
+   205:     private async loadUserById(userId: string): Promise<DbUserRow | null> {
+   206: 
+   207:         try {
+   208: 
+   209:             const { rows } = await this.pg.query<DbUserRow>(
+   210: 
+   211:                 `SELECT
+   212: 
+   213:                     u.id,
+   214: 
+   215:                     u.email,
+   216: 
+   217:                     u.first_name,
+   218: 
+   219:                     u.last_name,
+   220: 
+   221:                     u.status,
+   222: 
+   223:                     u.organization_id,
+   224: 
+   225:                     COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
+   226: 
+   227:                              FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb) AS roles,
+   228: 
+   229:                     COALESCE(array_agg(DISTINCT rp.permission_key)
+   230: 
+   231:                              FILTER (WHERE rp.permission_key IS NOT NULL), '{}'::text[]) AS permissions
+   232: 
+   233:                  FROM public.users u
+   234: 
+   235:                  LEFT JOIN public.user_roles ur ON ur.user_id = u.id
+   236: 
+   237:                  LEFT JOIN public.roles r ON r.id = ur.role_id
+   238: 
+   239:                  LEFT JOIN public.role_permissions rp ON rp.role_id = r.id
+   240: 
+   241:                  WHERE u.id = $1
+   242: 
+   243:                  GROUP BY u.id`,
+   244: 
+   245:                 [userId],
+   246: 
+   247:             );
+   248: 
+   249:             if (!rows.length) return null;
+   250: 
+   251:             const row = rows[0];
+   252: 
+   253:             return {
+   254: 
+   255:                 ...row,
+   256: 
+   257:                 roles: Array.isArray(row.roles) ? row.roles : [],
+   258: 
+   259:                 permissions: Array.isArray(row.permissions) ? row.permissions : [],
+   260: 
+   261:             };
+   262: 
+   263:         } catch {
+   264: 
+   265:             return null;
+   266: 
+   267:         }
+   268: 
+   269:     }
+   270: 
+   271: }
+   272: 
+   273: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\auth.controller.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\auth.controller.ts
+Size: 5198 bytes
+SHA256: BBB2B1B76AC099AD57898F0078E0427FD03313E1B0001D4FCDC1AE39EAFEEFC9
+----- BEGIN CONTENT -----
+     1: //remoteiq-minimal-e2e\backend\src\auth\auth.controller.ts
+     2: 
+     3: 
+     4: 
+     5: import { Body, Controller, Get, Post, Req, Res, BadRequestException } from "@nestjs/common";
+     6: 
+     7: import { ApiOkResponse, ApiTags } from "@nestjs/swagger";
+     8: 
+     9: import type { Request, Response } from "express";
+    10: 
+    11: import { LoginDto } from "./dto/login.dto";
+    12: 
+    13: import { Verify2FADto } from "./dto/verify-2fa.dto";
+    14: 
+    15: import { UserAuthService } from "./user-auth.service";
+    16: 
+    17: 
+    18: 
+    19: @ApiTags("auth")
+    20: 
+    21: @Controller("api/auth")
+    22: 
+    23: export class AuthController {
+    24: 
+    25:     constructor(private readonly users: UserAuthService) { }
+    26: 
+    27: 
+    28: 
+    29:     @Post("login")
+    30: 
+    31:     @ApiOkResponse({ description: "Sets auth cookie on success or returns 2FA challenge when required" })
+    32: 
+    33:     async login(
+    34: 
+    35:         @Body() dto: LoginDto & { deviceFingerprint?: string },
+    36: 
+    37:         @Req() req: Request,
+    38: 
+    39:         @Res({ passthrough: true }) res: Response,
+    40: 
+    41:     ) {
+    42: 
+    43:         // 1) Validate user
+    44: 
+    45:         const user = await this.users.validateUser(dto.email, dto.password);
+    46: 
+    47: 
+    48: 
+    49:         // 2) 2FA gate
+    50: 
+    51:         const is2FAEnabled = await this.users.isTwoFactorEnabled(user.id);
+    52: 
+    53:         const deviceTrusted = await this.users.isDeviceTrusted(user.id, dto.deviceFingerprint ?? null);
+    54: 
+    55:         if (is2FAEnabled && !deviceTrusted) {
+    56: 
+    57:             const { token: challengeToken, jti } = await this.users.createChallengeToken(user.id);
+    58: 
+    59:             return { status: "2fa_required" as const, challengeToken, jti };
+    60: 
+    61:         }
+    62: 
+    63: 
+    64: 
+    65:         // 3) Issue JWT with JTI
+    66: 
+    67:         const { token, jti } = await this.users.signWithJti(user);
+    68: 
+    69: 
+    70: 
+    71:         // 4) Record session
+    72: 
+    73:         const ua = req.headers["user-agent"] || "";
+    74: 
+    75:         const ip =
+    76: 
+    77:             (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+    78: 
+    79:             (req.socket as any)?.remoteAddress ||
+    80: 
+    81:             "";
+    82: 
+    83:         await this.users.recordSessionOnLogin(user.id, jti, String(ua), String(ip));
+    84: 
+    85: 
+    86: 
+    87:         // 5) Set cookie
+    88: 
+    89:         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+    90: 
+    91:         const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000); // 7d
+    92: 
+    93:         res.cookie(cookieName, token, {
+    94: 
+    95:             httpOnly: true,
+    96: 
+    97:             sameSite: "lax",
+    98: 
+    99:             secure: process.env.NODE_ENV === "production",
+   100: 
+   101:             path: "/",
+   102: 
+   103:             maxAge: maxAgeMs,
+   104: 
+   105:         });
+   106: 
+   107: 
+   108: 
+   109:         return { user };
+   110: 
+   111:     }
+   112: 
+   113: 
+   114: 
+   115:     @Post("2fa/verify")
+   116: 
+   117:     @ApiOkResponse({ description: "Verifies TOTP or recovery code and sets auth cookie" })
+   118: 
+   119:     async verify2FA(@Body() dto: Verify2FADto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+   120: 
+   121:         // Normalize incoming values
+   122: 
+   123:         if (dto.code) dto.code = dto.code.trim();
+   124: 
+   125:         if (dto.recoveryCode) dto.recoveryCode = dto.recoveryCode.trim();
+   126: 
+   127: 
+   128: 
+   129:         if (!dto.code && !dto.recoveryCode) {
+   130: 
+   131:             throw new BadRequestException("Provide either 'code' or 'recoveryCode'.");
+   132: 
+   133:         }
+   134: 
+   135: 
+   136: 
+   137:         // 1) Validate challenge and extract userId + jti
+   138: 
+   139:         const { userId, jti } = await this.users.verifyChallengeToken(dto.challengeToken);
+   140: 
+   141: 
+   142: 
+   143:         // 2) Verify TOTP or recovery
+   144: 
+   145:         let ok = false;
+   146: 
+   147:         if (dto.code) ok = await this.users.verifyTOTP(userId, dto.code);
+   148: 
+   149:         else if (dto.recoveryCode) ok = await this.users.consumeRecoveryCode(userId, dto.recoveryCode);
+   150: 
+   151: 
+   152: 
+   153:         if (!ok) throw new BadRequestException("Invalid code");
+   154: 
+   155: 
+   156: 
+   157:         // 3) Sign normal auth token with JTI and set cookie
+   158: 
+   159:         const user = await this.users.findUserById(userId);
+   160: 
+   161:         const { token, jti: newJti } = await this.users.signWithJti(user);
+   162: 
+   163: 
+   164: 
+   165:         const ua = req.headers["user-agent"] || "";
+   166: 
+   167:         const ip =
+   168: 
+   169:             (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+   170: 
+   171:             (req.socket as any)?.remoteAddress ||
+   172: 
+   173:             "";
+   174: 
+   175:         await this.users.recordSessionOnLogin(userId, newJti, String(ua), String(ip));
+   176: 
+   177: 
+   178: 
+   179:         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+   180: 
+   181:         const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000);
+   182: 
+   183:         res.cookie(cookieName, token, {
+   184: 
+   185:             httpOnly: true,
+   186: 
+   187:             sameSite: "lax",
+   188: 
+   189:             secure: process.env.NODE_ENV === "production",
+   190: 
+   191:             path: "/",
+   192: 
+   193:             maxAge: maxAgeMs,
+   194: 
+   195:         });
+   196: 
+   197: 
+   198: 
+   199:         // 4) Trust device if requested
+   200: 
+   201:         if (dto.rememberDevice) {
+   202: 
+   203:             const fp = dto.deviceFingerprint ?? jti;
+   204: 
+   205:             await this.users.trustCurrentDevice(userId, fp);
+   206: 
+   207:         }
+   208: 
+   209: 
+   210: 
+   211:         return { ok: true };
+   212: 
+   213:     }
+   214: 
+   215: 
+   216: 
+   217:     @Post("logout")
+   218: 
+   219:     @ApiOkResponse({ description: "Clears auth cookie" })
+   220: 
+   221:     async logout(@Res({ passthrough: true }) res: Response) {
+   222: 
+   223:         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+   224: 
+   225:         res.clearCookie(cookieName, { path: "/" });
+   226: 
+   227:         return { ok: true };
+   228: 
+   229:     }
+   230: 
+   231: 
+   232: 
+   233:     @Get("me")
+   234: 
+   235:     @ApiOkResponse({ description: "Current user (if authenticated)" })
+   236: 
+   237:     async me(@Req() req: Request) {
+   238: 
+   239:         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+   240: 
+   241:         const token = (req as any).cookies?.[cookieName];
+   242: 
+   243:         if (!token) return { user: null };
+   244: 
+   245:         const user = await this.users.verify(token);
+   246: 
+   247:         return { user };
+   248: 
+   249:     }
+   250: 
+   251: }
+   252: 
+   253: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\auth.module.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\auth.module.ts
+Size: 1308 bytes
+SHA256: FA79AA063B6A3CA3F688F44635D3812CDAC756F039BF1F1DEB6C7782AFF03935
+----- BEGIN CONTENT -----
+     1: // backend/src/auth/auth.module.ts
+     2: 
+     3: import { Module } from "@nestjs/common";
+     4: 
+     5: import { JwtModule } from "@nestjs/jwt";
+     6: 
+     7: import { StorageModule } from "../storage/storage.module";
+     8: 
+     9: import { AuthService } from "./auth.service";
+    10: 
+    11: import { AuthController } from "./auth.controller";
+    12: 
+    13: import { UserAuthService } from "./user-auth.service";
+    14: 
+    15: 
+    16: 
+    17: function parseExpiresToSeconds(input: string | undefined, fallbackSeconds: number): number {
+    18: 
+    19:   if (!input) return fallbackSeconds;
+    20: 
+    21:   if (/^\d+$/.test(input)) return Number(input);
+    22: 
+    23:   const m = input.trim().match(/^(\d+)\s*([smhd])$/i);
+    24: 
+    25:   if (!m) return fallbackSeconds;
+    26: 
+    27:   const n = Number(m[1]);
+    28: 
+    29:   const unit = m[2].toLowerCase();
+    30: 
+    31:   const factor = unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : unit === "d" ? 86400 : 1;
+    32: 
+    33:   return n * factor;
+    34: 
+    35: }
+    36: 
+    37: const EXPIRES_IN_SECONDS = parseExpiresToSeconds(process.env.JWT_EXPIRES, 60 * 60 * 24 * 7);
+    38: 
+    39: 
+    40: 
+    41: @Module({
+    42: 
+    43:   imports: [
+    44: 
+    45:     StorageModule, // ✅ PgPoolService lives here; no Prisma
+    46: 
+    47:     JwtModule.register({
+    48: 
+    49:       secret: process.env.JWT_SECRET ?? "dev-secret",
+    50: 
+    51:       signOptions: { expiresIn: EXPIRES_IN_SECONDS },
+    52: 
+    53:     }),
+    54: 
+    55:   ],
+    56: 
+    57:   controllers: [AuthController],
+    58: 
+    59:   providers: [AuthService, UserAuthService],
+    60: 
+    61:   exports: [AuthService, UserAuthService, JwtModule],
+    62: 
+    63: })
+    64: 
+    65: export class AuthModule { }
+    66: 
+    67: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\auth.service.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\auth.service.ts
+Size: 3971 bytes
+SHA256: 40CBF01FEF9A260E7328A8F7ABCADB95F9EDF29203AD910C8EB20674BC8CDD82
+----- BEGIN CONTENT -----
+     1: // backend/src/auth/auth.service.ts
+     2: 
+     3: import {
+     4: 
+     5:   Injectable,
+     6: 
+     7:   UnauthorizedException,
+     8: 
+     9:   InternalServerErrorException,
+    10: 
+    11:   Logger,
+    12: 
+    13: } from "@nestjs/common";
+    14: 
+    15: import { createHash, randomBytes } from "node:crypto";
+    16: 
+    17: import { PgPoolService } from "../storage/pg-pool.service";
+    18: 
+    19: 
+    20: 
+    21: function newOpaqueToken(): string {
+    22: 
+    23:   return randomBytes(18).toString("base64url");
+    24: 
+    25: }
+    26: 
+    27: function hashToken(token: string): string {
+    28: 
+    29:   return createHash("sha256").update(token, "utf8").digest("hex");
+    30: 
+    31: }
+    32: 
+    33: 
+    34: 
+    35: type EnrollInput = {
+    36: 
+    37:   enrollmentSecret: string;
+    38: 
+    39:   deviceId: string;
+    40: 
+    41:   hostname: string;
+    42: 
+    43:   os: string;
+    44: 
+    45:   arch: string;
+    46: 
+    47:   version: string;
+    48: 
+    49: };
+    50: 
+    51: 
+    52: 
+    53: @Injectable()
+    54: 
+    55: export class AuthService {
+    56: 
+    57:   private readonly logger = new Logger(AuthService.name);
+    58: 
+    59: 
+    60: 
+    61:   constructor(private readonly pg: PgPoolService) { }
+    62: 
+    63: 
+    64: 
+    65:   /**
+    66: 
+    67:    * Enroll (or re-enroll) an agent.
+    68: 
+    69:    * - Validates the shared enrollment secret
+    70: 
+    71:    * - If deviceId exists, rotates token & updates metadata
+    72: 
+    73:    * - Otherwise creates a new agent
+    74: 
+    75:    * - Returns { agentId, agentToken }
+    76: 
+    77:    *
+    78: 
+    79:    * Tables/columns expected:
+    80: 
+    81:    *   agents(id uuid pk, device_id text unique, hostname text, os text, arch text,
+    82: 
+    83:    *          version text, token_hash text, created_at timestamptz, updated_at timestamptz)
+    84: 
+    85:    */
+    86: 
+    87:   async enrollAgent(input: EnrollInput) {
+    88: 
+    89:     const expected = process.env.ENROLLMENT_SECRET || "";
+    90: 
+    91:     if (!expected || input.enrollmentSecret !== expected) {
+    92: 
+    93:       throw new UnauthorizedException("Invalid enrollment secret");
+    94: 
+    95:     }
+    96: 
+    97: 
+    98: 
+    99:     try {
+   100: 
+   101:       const token = newOpaqueToken();
+   102: 
+   103:       const tokenHash = hashToken(token);
+   104: 
+   105: 
+   106: 
+   107:       // Look up existing agent by deviceId to avoid duplicates
+   108: 
+   109:       const existing = await this.pg.query<{ id: string }>(
+   110: 
+   111:         `SELECT id FROM agents WHERE device_id = $1 LIMIT 1`,
+   112: 
+   113:         [input.deviceId],
+   114: 
+   115:       );
+   116: 
+   117: 
+   118: 
+   119:       let agentId: string;
+   120: 
+   121: 
+   122: 
+   123:       if (existing.rows[0]) {
+   124: 
+   125:         const { rows } = await this.pg.query<{ id: string }>(
+   126: 
+   127:           `UPDATE agents
+   128: 
+   129:               SET hostname   = $2,
+   130: 
+   131:                   os         = $3,
+   132: 
+   133:                   arch       = $4,
+   134: 
+   135:                   version    = $5,
+   136: 
+   137:                   token_hash = $6,
+   138: 
+   139:                   updated_at = now()
+   140: 
+   141:             WHERE id = $1
+   142: 
+   143:           RETURNING id`,
+   144: 
+   145:           [
+   146: 
+   147:             existing.rows[0].id,
+   148: 
+   149:             input.hostname,
+   150: 
+   151:             input.os,
+   152: 
+   153:             input.arch,
+   154: 
+   155:             input.version,
+   156: 
+   157:             tokenHash,
+   158: 
+   159:           ],
+   160: 
+   161:         );
+   162: 
+   163:         agentId = rows[0].id;
+   164: 
+   165:         this.logger.log(`Re-enrolled agent ${agentId} (deviceId=${input.deviceId}).`);
+   166: 
+   167:       } else {
+   168: 
+   169:         const { rows } = await this.pg.query<{ id: string }>(
+   170: 
+   171:           `INSERT INTO agents (device_id, hostname, os, arch, version, token_hash, created_at, updated_at)
+   172: 
+   173:            VALUES ($1, $2, $3, $4, $5, $6, now(), now())
+   174: 
+   175:            RETURNING id`,
+   176: 
+   177:           [
+   178: 
+   179:             input.deviceId,
+   180: 
+   181:             input.hostname,
+   182: 
+   183:             input.os,
+   184: 
+   185:             input.arch,
+   186: 
+   187:             input.version,
+   188: 
+   189:             tokenHash,
+   190: 
+   191:           ],
+   192: 
+   193:         );
+   194: 
+   195:         agentId = rows[0].id;
+   196: 
+   197:         this.logger.log(`Enrolled new agent ${agentId} (deviceId=${input.deviceId}).`);
+   198: 
+   199:       }
+   200: 
+   201: 
+   202: 
+   203:       return { agentId, agentToken: token };
+   204: 
+   205:     } catch (e: any) {
+   206: 
+   207:       const msg = e?.message ?? String(e);
+   208: 
+   209:       this.logger.error(`Enroll failed: ${msg}`, e?.stack ?? undefined);
+   210: 
+   211:       const dev = (process.env.NODE_ENV || "").toLowerCase() === "development";
+   212: 
+   213:       throw new InternalServerErrorException(dev ? `Enroll failed: ${msg}` : "Enroll failed");
+   214: 
+   215:     }
+   216: 
+   217:   }
+   218: 
+   219: 
+   220: 
+   221:   /**
+   222: 
+   223:    * Validate an agent’s bearer token (opaque string).
+   224: 
+   225:    * Returns the agentId on success, or null on failure.
+   226: 
+   227:    */
+   228: 
+   229:   async validateAgentToken(rawToken: string): Promise<string | null> {
+   230: 
+   231:     const tokenHash = hashToken(rawToken);
+   232: 
+   233:     const { rows } = await this.pg.query<{ id: string }>(
+   234: 
+   235:       `SELECT id FROM agents WHERE token_hash = $1 LIMIT 1`,
+   236: 
+   237:       [tokenHash],
+   238: 
+   239:     );
+   240: 
+   241:     return rows[0]?.id ?? null;
+   242: 
+   243:   }
+   244: 
+   245: }
+   246: 
+   247: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\permissions.guard.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\permissions.guard.ts
+Size: 3691 bytes
+SHA256: 13CEFF362E6D9269D907254C3D397721049256FEE4A60ED549FD46C237BF5A0C
+----- BEGIN CONTENT -----
+     1: import {
+     2: 
+     3:     CanActivate,
+     4: 
+     5:     ExecutionContext,
+     6: 
+     7:     ForbiddenException,
+     8: 
+     9:     Injectable,
+    10: 
+    11: } from "@nestjs/common";
+    12: 
+    13: import { Reflector } from "@nestjs/core";
+    14: 
+    15: import { REQUIRE_PERM_KEY, RequirePermMetadata } from "./require-perm.decorator";
+    16: 
+    17: import { PgPoolService } from "../storage/pg-pool.service";
+    18: 
+    19: import { permsForRoles } from "./policy";
+    20: 
+    21: 
+    22: 
+    23: @Injectable()
+    24: 
+    25: export class PermissionsGuard implements CanActivate {
+    26: 
+    27:     constructor(
+    28: 
+    29:         private readonly reflector: Reflector,
+    30: 
+    31:         private readonly db: PgPoolService
+    32: 
+    33:     ) { }
+    34: 
+    35: 
+    36: 
+    37:     async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    38: 
+    39:         const req = ctx.switchToHttp().getRequest<any>();
+    40: 
+    41: 
+    42: 
+    43:         const required: RequirePermMetadata | undefined =
+    44: 
+    45:             this.reflector.getAllAndOverride<RequirePermMetadata>(REQUIRE_PERM_KEY, [
+    46: 
+    47:                 ctx.getHandler(),
+    48: 
+    49:                 ctx.getClass(),
+    50: 
+    51:             ]);
+    52: 
+    53: 
+    54: 
+    55:         const apiKey = req.header?.("x-admin-api-key") ?? req.headers?.["x-admin-api-key"];
+    56: 
+    57:         if (apiKey && process.env.ADMIN_API_KEY && apiKey === process.env.ADMIN_API_KEY) {
+    58: 
+    59:             return true;
+    60: 
+    61:         }
+    62: 
+    63: 
+    64: 
+    65:         const user = req.user;
+    66: 
+    67:         if (!user) throw new ForbiddenException("Not authenticated");
+    68: 
+    69: 
+    70: 
+    71:         if (!required || required.length === 0) return true;
+    72: 
+    73: 
+    74: 
+    75:         let userPerms = this.normalizePerms(user.permissions);
+    76: 
+    77: 
+    78: 
+    79:         if (userPerms.length === 0) {
+    80: 
+    81:             const roleHints = this.extractRoleNames(user);
+    82: 
+    83:             if (roleHints.length) {
+    84: 
+    85:                 const defaults = permsForRoles(roleHints);
+    86: 
+    87:                 if (defaults.size) {
+    88: 
+    89:                     userPerms = Array.from(defaults);
+    90: 
+    91:                 }
+    92: 
+    93:             }
+    94: 
+    95:         }
+    96: 
+    97: 
+    98: 
+    99:         if (userPerms.length === 0 && user.id) {
+   100: 
+   101:             userPerms = await this.loadPermsFromRoles(user.id);
+   102: 
+   103:         }
+   104: 
+   105: 
+   106: 
+   107:         const userSet = new Set(userPerms.map((p) => p.toLowerCase()));
+   108: 
+   109: 
+   110: 
+   111:         for (const r of required) {
+   112: 
+   113:             const key = String(r).toLowerCase();
+   114: 
+   115:             if (!userSet.has(key)) {
+   116: 
+   117:                 throw new ForbiddenException("Insufficient permissions");
+   118: 
+   119:             }
+   120: 
+   121:         }
+   122: 
+   123: 
+   124: 
+   125:         return true;
+   126: 
+   127:     }
+   128: 
+   129: 
+   130: 
+   131:     private normalizePerms(val: any): string[] {
+   132: 
+   133:         if (!val) return [];
+   134: 
+   135:         if (Array.isArray(val)) return val.map((x) => String(x).toLowerCase());
+   136: 
+   137:         if (typeof val === "object") return Object.keys(val).map((k) => k.toLowerCase());
+   138: 
+   139:         const s = String(val);
+   140: 
+   141:         if (s.includes(",")) {
+   142: 
+   143:             return s.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+   144: 
+   145:         }
+   146: 
+   147:         return [s.toLowerCase()];
+   148: 
+   149:     }
+   150: 
+   151: 
+   152: 
+   153:     private async loadPermsFromRoles(userId: string): Promise<string[]> {
+   154: 
+   155:         try {
+   156: 
+   157:             const { rows } = await this.db.query<{ permission_key: string }>(
+   158: 
+   159:                 `SELECT DISTINCT rp.permission_key
+   160: 
+   161:            FROM public.user_roles ur
+   162: 
+   163:            JOIN public.role_permissions rp ON rp.role_id = ur.role_id
+   164: 
+   165:           WHERE ur.user_id = $1`,
+   166: 
+   167:                 [userId],
+   168: 
+   169:             );
+   170: 
+   171:             return rows.map((r) => r.permission_key.toLowerCase());
+   172: 
+   173:         } catch {
+   174: 
+   175:             return [];
+   176: 
+   177:         }
+   178: 
+   179:     }
+   180: 
+   181: 
+   182: 
+   183:     private extractRoleNames(user: any): string[] {
+   184: 
+   185:         const out = new Set<string>();
+   186: 
+   187:         const push = (val: unknown) => {
+   188: 
+   189:             if (!val) return;
+   190: 
+   191:             const name = String(val).trim();
+   192: 
+   193:             if (name) out.add(name.toLowerCase());
+   194: 
+   195:         };
+   196: 
+   197: 
+   198: 
+   199:         if (Array.isArray(user?.roles)) user.roles.forEach(push);
+   200: 
+   201:         push(user?.role);
+   202: 
+   203:         push(user?.roleName);
+   204: 
+   205:         push(user?.role_name);
+   206: 
+   207:         if (user?.role?.name) push(user.role.name);
+   208: 
+   209: 
+   210: 
+   211:         return Array.from(out);
+   212: 
+   213:     }
+   214: 
+   215: }
+   216: 
+   217: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\policy.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\policy.ts
+Size: 3956 bytes
+SHA256: 6DF0ADC85356539F3C636B7B6E90BE655E8E0E91CDD25ECAEE1227BB642611CF
+----- BEGIN CONTENT -----
+     1: export type PermissionGroup = {
+     2: 
+     3:     key: string;
+     4: 
+     5:     label: string;
+     6: 
+     7:     items: readonly {
+     8: 
+     9:         key: string;
+    10: 
+    11:         label: string;
+    12: 
+    13:         description?: string;
+    14: 
+    15:     }[];
+    16: 
+    17: };
+    18: 
+    19: 
+    20: export const PERMISSION_GROUPS = [
+    21: 
+    22:     {
+    23: 
+    24:         key: "users",
+    25: 
+    26:         label: "Users",
+    27: 
+    28:         items: [
+    29: 
+    30:             { key: "users.read", label: "View users" },
+    31: 
+    32:             { key: "users.write", label: "Create/edit users" },
+    33: 
+    34:             { key: "users.delete", label: "Remove users" },
+    35: 
+    36:             { key: "users.2fa.reset", label: "Reset 2FA" },
+    37: 
+    38:         ] as const,
+    39: 
+    40:     },
+    41: 
+    42:     {
+    43: 
+    44:         key: "roles",
+    45: 
+    46:         label: "Roles",
+    47: 
+    48:         items: [
+    49: 
+    50:             { key: "roles.read", label: "View roles" },
+    51: 
+    52:             { key: "roles.write", label: "Create/edit roles" },
+    53: 
+    54:             { key: "roles.delete", label: "Delete roles" },
+    55: 
+    56:         ] as const,
+    57: 
+    58:     },
+    59: 
+    60:     {
+    61: 
+    62:         key: "teams",
+    63: 
+    64:         label: "Teams",
+    65: 
+    66:         items: [
+    67: 
+    68:             { key: "teams.read", label: "View teams" },
+    69: 
+    70:             { key: "teams.write", label: "Create/edit teams" },
+    71: 
+    72:             { key: "teams.delete", label: "Delete teams" },
+    73: 
+    74:         ] as const,
+    75: 
+    76:     },
+    77: 
+    78:     {
+    79: 
+    80:         key: "billing",
+    81: 
+    82:         label: "Billing",
+    83: 
+    84:         items: [
+    85: 
+    86:             { key: "billing.read", label: "View billing" },
+    87: 
+    88:             { key: "billing.write", label: "Manage billing" },
+    89: 
+    90:         ] as const,
+    91: 
+    92:     },
+    93: 
+    94:     {
+    95: 
+    96:         key: "settings",
+    97: 
+    98:         label: "Settings",
+    99: 
+   100:         items: [
+   101: 
+   102:             { key: "settings.read", label: "View settings" },
+   103: 
+   104:             { key: "settings.write", label: "Manage settings" },
+   105: 
+   106:         ] as const,
+   107: 
+   108:     },
+   109: 
+   110:     {
+   111: 
+   112:         key: "backups",
+   113: 
+   114:         label: "Backups",
+   115: 
+   116:         items: [
+   117: 
+   118:             { key: "backups.read", label: "View config and history" },
+   119: 
+   120:             { key: "backups.run", label: "Start, retry or cancel backups" },
+   121: 
+   122:             { key: "backups.prune", label: "Prune artifacts" },
+   123: 
+   124:             { key: "backups.manage", label: "Configure/test destinations" },
+   125: 
+   126:             { key: "backups.restore", label: "Initiate restores" },
+   127: 
+   128:             { key: "backups.download", label: "Download artifacts" },
+   129: 
+   130:         ] as const,
+   131: 
+   132:     },
+   133: 
+   134: ] as const satisfies readonly PermissionGroup[];
+   135: 
+   136: 
+   137: type PermissionItem = (typeof PERMISSION_GROUPS)[number]["items"][number];
+   138: 
+   139: 
+   140: export type Permission = PermissionItem["key"];
+   141: 
+   142: 
+   143: export type PermissionDefinition = PermissionItem & {
+   144: 
+   145:     groupKey: string;
+   146: 
+   147:     groupLabel: string;
+   148: 
+   149: };
+   150: 
+   151: 
+   152: export const PERMISSION_DEFINITIONS: PermissionDefinition[] = PERMISSION_GROUPS.flatMap(
+   153: 
+   154:     (group) =>
+   155: 
+   156:         group.items.map((item) => ({
+   157: 
+   158:             ...item,
+   159: 
+   160:             groupKey: group.key,
+   161: 
+   162:             groupLabel: group.label,
+   163: 
+   164:         }))
+   165: 
+   166: );
+   167: 
+   168: 
+   169: export const ALL_PERMISSIONS: Permission[] = PERMISSION_DEFINITIONS.map((d) => d.key);
+   170: 
+   171: 
+   172: // Optional role names if you still use a role -> default-permissions map somewhere
+   173: 
+   174: export type Role = "owner" | "admin" | "operator" | "viewer";
+   175: 
+   176: 
+   177: // Advisory defaults for built-in roles (guards still check req.user permissions).
+   178: 
+   179: export const rolePermissions: Record<Role, Permission[]> = {
+   180: 
+   181:     owner: [...ALL_PERMISSIONS],
+   182: 
+   183:     admin: [...ALL_PERMISSIONS],
+   184: 
+   185:     operator: [
+   186: 
+   187:         "users.read",
+   188: 
+   189:         "roles.read",
+   190: 
+   191:         "teams.read",
+   192: 
+   193:         "billing.read",
+   194: 
+   195:         "settings.read",
+   196: 
+   197:         "backups.read",
+   198: 
+   199:         "backups.run",
+   200: 
+   201:         "backups.download",
+   202: 
+   203:     ],
+   204: 
+   205:     viewer: [
+   206: 
+   207:         "users.read",
+   208: 
+   209:         "roles.read",
+   210: 
+   211:         "teams.read",
+   212: 
+   213:         "billing.read",
+   214: 
+   215:         "settings.read",
+   216: 
+   217:         "backups.read",
+   218: 
+   219:     ],
+   220: 
+   221: };
+   222: 
+   223: 
+   224: // ---- Helpers (optional, used by some older code paths) ----
+   225: 
+   226: export function permsForRoles(roles: string[] | undefined | null): Set<Permission> {
+   227: 
+   228:     const out = new Set<Permission>();
+   229: 
+   230:     if (!roles) return out;
+   231: 
+   232:     for (const r of roles) {
+   233: 
+   234:         const key = r as Role;
+   235: 
+   236:         const list = rolePermissions[key];
+   237: 
+   238:         if (list) list.forEach((p) => out.add(p));
+   239: 
+   240:     }
+   241: 
+   242:     return out;
+   243: 
+   244: }
+   245: 
+   246: 
+   247: export function hasPerm(roles: string[] | undefined | null, perm: Permission): boolean {
+   248: 
+   249:     return permsForRoles(roles).has(perm);
+   250: 
+   251: }
+   252: 
+   253: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\require-perm.decorator.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\require-perm.decorator.ts
+Size: 641 bytes
+SHA256: 1397018D81682B2C3559E30E3FCDE928814DC55D19E9A430120AE1D3E0CDA2C3
+----- BEGIN CONTENT -----
+     1: import { SetMetadata } from "@nestjs/common";
+     2: 
+     3: import type { Permission } from "./policy";
+     4: 
+     5: 
+     6: 
+     7: /**
+     8: 
+     9:  * Metadata key consumed by the PermissionsGuard.
+    10: 
+    11:  * Always normalized to an array of Permission strings.
+    12: 
+    13:  */
+    14: 
+    15: export const REQUIRE_PERM_KEY = "require_perm";
+    16: 
+    17: 
+    18: 
+    19: /**
+    20: 
+    21:  * Attach one or more required permissions to a route or controller.
+    22: 
+    23:  *
+    24: 
+    25:  * Usage:
+    26: 
+    27:  *   @RequirePerm("backups.manage")
+    28: 
+    29:  *   @RequirePerm(["backups.read", "backups.download"])
+    30: 
+    31:  */
+    32: 
+    33: export const RequirePerm = (perm: Permission | Permission[]) =>
+    34: 
+    35:     SetMetadata(REQUIRE_PERM_KEY, Array.isArray(perm) ? perm : [perm]);
+    36: 
+    37: 
+    38: 
+    39: export type RequirePermMetadata = Permission[];
+    40: 
+    41: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\session-heartbeat.interceptor.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\session-heartbeat.interceptor.ts
+Size: 2953 bytes
+SHA256: C555D7775DE4214410AF56FA4A2F192E27CE178DF1654BC2700C988BF6A3236C
+----- BEGIN CONTENT -----
+     1: // backend/src/auth/session-heartbeat.interceptor.ts
+     2: 
+     3: import {
+     4: 
+     5:     Injectable,
+     6: 
+     7:     NestInterceptor,
+     8: 
+     9:     ExecutionContext,
+    10: 
+    11:     CallHandler,
+    12: 
+    13: } from "@nestjs/common";
+    14: 
+    15: import type { Request } from "express";
+    16: 
+    17: import { Observable } from "rxjs";
+    18: 
+    19: import { finalize } from "rxjs/operators";
+    20: 
+    21: import { PgPoolService } from "../storage/pg-pool.service";
+    22: 
+    23: 
+    24: 
+    25: /**
+    26: 
+    27:  * Updates sessions.last_seen_at for authenticated web users.
+    28: 
+    29:  * - NO-OP when req.user or req.jti are missing
+    30: 
+    31:  * - NO-OP for non-API paths and obvious public routes
+    32: 
+    33:  * - Never throws; DB errors are swallowed
+    34: 
+    35:  */
+    36: 
+    37: @Injectable()
+    38: 
+    39: export class SessionHeartbeatInterceptor implements NestInterceptor {
+    40: 
+    41:     constructor(private readonly pg: PgPoolService) { }
+    42: 
+    43: 
+    44: 
+    45:     intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    46: 
+    47:         const http = context.switchToHttp();
+    48: 
+    49:         const req = http.getRequest<Request>();
+    50: 
+    51: 
+    52: 
+    53:         // Only touch HTTP requests
+    54: 
+    55:         if (!req || !req.url) return next.handle();
+    56: 
+    57: 
+    58: 
+    59:         const url = req.url;
+    60: 
+    61: 
+    62: 
+    63:         // Skip non-API requests and public/docs/static routes
+    64: 
+    65:         // (adjust if your app has different mounts)
+    66: 
+    67:         const skip =
+    68: 
+    69:             !url.startsWith("/api") ||
+    70: 
+    71:             url.startsWith("/docs") ||
+    72: 
+    73:             url.startsWith("/static") ||
+    74: 
+    75:             url === "/healthz";
+    76: 
+    77: 
+    78: 
+    79:         if (skip) return next.handle();
+    80: 
+    81: 
+    82: 
+    83:         const user: any = (req as any).user;
+    84: 
+    85:         const jti: any = (req as any).jti;
+    86: 
+    87: 
+    88: 
+    89:         // If not authenticated or no JTI, do nothing
+    90: 
+    91:         if (!user?.id || !jti) {
+    92: 
+    93:             return next.handle();
+    94: 
+    95:         }
+    96: 
+    97: 
+    98: 
+    99:         // Capture request metadata before the stream completes
+   100: 
+   101:         const userId = String(user.id);
+   102: 
+   103:         const jtiText = String(jti);
+   104: 
+   105:         const ua = String(req.headers["user-agent"] || "");
+   106: 
+   107:         const ip =
+   108: 
+   109:             (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+   110: 
+   111:             (req.socket as any)?.remoteAddress ||
+   112: 
+   113:             null;
+   114: 
+   115: 
+   116: 
+   117:         return next.handle().pipe(
+   118: 
+   119:             finalize(() => {
+   120: 
+   121:                 // Fire-and-forget: never block response, never throw
+   122: 
+   123:                 this.pg
+   124: 
+   125:                     .query(
+   126: 
+   127:                         `
+   128: 
+   129:             UPDATE sessions
+   130: 
+   131:                SET last_seen_at = now(),
+   132: 
+   133:                    user_agent   = COALESCE($3, user_agent),
+   134: 
+   135:                    ip_address   = COALESCE($4, ip_address)
+   136: 
+   137:              WHERE user_id = $1
+   138: 
+   139:                AND revoked_at IS NULL
+   140: 
+   141:                AND id::text = $2
+   142: 
+   143:             `,
+   144: 
+   145:                         [userId, jtiText, ua || null, ip || null],
+   146: 
+   147:                     )
+   148: 
+   149:                     .catch(() => {
+   150: 
+   151:                         // swallow errors; optionally add dev-only log:
+   152: 
+   153:                         if (process.env.NODE_ENV !== "production") {
+   154: 
+   155:                             // console.debug("Session heartbeat failed:", err?.message);
+   156: 
+   157:                         }
+   158: 
+   159:                     });
+   160: 
+   161:             }),
+   162: 
+   163:         );
+   164: 
+   165:     }
+   166: 
+   167: }
+   168: 
+   169: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\session-heartbeat.middleware.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\session-heartbeat.middleware.ts
+Size: 2079 bytes
+SHA256: AFB24E6380733E3BE18D4B69134C5B8DA901D7D42EFEDB88EE5E00931FB38A19
+----- BEGIN CONTENT -----
+     1: // backend/src/auth/session-heartbeat.middleware.ts
+     2: 
+     3: import { Injectable, NestMiddleware } from "@nestjs/common";
+     4: 
+     5: import type { Request, Response, NextFunction } from "express";
+     6: 
+     7: import { PgPoolService } from "../storage/pg-pool.service";
+     8: 
+     9: 
+    10: 
+    11: /**
+    12: 
+    13:  * SessionHeartbeatMiddleware
+    14: 
+    15:  * - Runs only where you register it (we’ll scope it to /api/users/me/* in AppModule)
+    16: 
+    17:  * - Requires req.user.id and req.jti (populated by your AuthCookieMiddleware)
+    18: 
+    19:  * - Updates sessions.last_seen_at AFTER the response to avoid blocking requests
+    20: 
+    21:  * - Never throws; errors are swallowed (optional debug log in dev)
+    22: 
+    23:  */
+    24: 
+    25: @Injectable()
+    26: 
+    27: export class SessionHeartbeatMiddleware implements NestMiddleware {
+    28: 
+    29:     constructor(private readonly pg: PgPoolService) { }
+    30: 
+    31: 
+    32: 
+    33:     use(req: Request, res: Response, next: NextFunction) {
+    34: 
+    35:         const user: any = (req as any).user;
+    36: 
+    37:         const jti: any = (req as any).jti;
+    38: 
+    39: 
+    40: 
+    41:         if (!user?.id || !jti) {
+    42: 
+    43:             return next();
+    44: 
+    45:         }
+    46: 
+    47: 
+    48: 
+    49:         const userId = String(user.id);
+    50: 
+    51:         const jtiText = String(jti);
+    52: 
+    53:         const ua = String(req.headers["user-agent"] || "");
+    54: 
+    55:         const ip =
+    56: 
+    57:             (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+    58: 
+    59:             (req.socket as any)?.remoteAddress ||
+    60: 
+    61:             null;
+    62: 
+    63: 
+    64: 
+    65:         // Fire-and-forget after response completes
+    66: 
+    67:         res.on("finish", () => {
+    68: 
+    69:             this.pg
+    70: 
+    71:                 .query(
+    72: 
+    73:                     `
+    74: 
+    75:           UPDATE sessions
+    76: 
+    77:              SET last_seen_at = now(),
+    78: 
+    79:                  user_agent   = COALESCE($3, user_agent),
+    80: 
+    81:                  ip_address   = COALESCE($4, ip_address)
+    82: 
+    83:            WHERE user_id = $1
+    84: 
+    85:              AND revoked_at IS NULL
+    86: 
+    87:              AND id::text = $2
+    88: 
+    89:           `,
+    90: 
+    91:                     [userId, jtiText, ua || null, ip || null],
+    92: 
+    93:                 )
+    94: 
+    95:                 .catch(() => {
+    96: 
+    97:                     // Optional dev log:
+    98: 
+    99:                     // if (process.env.NODE_ENV !== "production") console.debug("session heartbeat update failed");
+   100: 
+   101:                 });
+   102: 
+   103:         });
+   104: 
+   105: 
+   106: 
+   107:         next();
+   108: 
+   109:     }
+   110: 
+   111: }
+   112: 
+   113: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\user-auth.controller.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\user-auth.controller.ts
+Size: 5136 bytes
+SHA256: 84ED10881FD02FACB2CF20BDBACB7757F6378445BEF06B37ECF3970DF44FE723
+----- BEGIN CONTENT -----
+     1: import { Body, Controller, Get, Post, Req, Res, BadRequestException } from "@nestjs/common";
+     2: 
+     3: import { ApiOkResponse, ApiTags } from "@nestjs/swagger";
+     4: 
+     5: import type { Request, Response } from "express";
+     6: 
+     7: import { LoginDto } from "./dto/login.dto";
+     8: 
+     9: import { Verify2FADto } from "./dto/verify-2fa.dto";
+    10: 
+    11: import { UserAuthService } from "./user-auth.service";
+    12: 
+    13: 
+    14: 
+    15: @ApiTags("auth")
+    16: 
+    17: @Controller("api/auth")
+    18: 
+    19: export class AuthController {
+    20: 
+    21:     constructor(private readonly users: UserAuthService) { }
+    22: 
+    23: 
+    24: 
+    25:     @Post("login")
+    26: 
+    27:     @ApiOkResponse({ description: "Sets auth cookie on success or returns 2FA challenge when required" })
+    28: 
+    29:     async login(
+    30: 
+    31:         @Body() dto: LoginDto & { deviceFingerprint?: string },
+    32: 
+    33:         @Req() req: Request,
+    34: 
+    35:         @Res({ passthrough: true }) res: Response,
+    36: 
+    37:     ) {
+    38: 
+    39:         // 1) Validate user
+    40: 
+    41:         const user = await this.users.validateUser(dto.email, dto.password);
+    42: 
+    43: 
+    44: 
+    45:         // 2) 2FA gate
+    46: 
+    47:         const is2FAEnabled = await this.users.isTwoFactorEnabled(user.id);
+    48: 
+    49:         const deviceTrusted = await this.users.isDeviceTrusted(user.id, dto.deviceFingerprint ?? null);
+    50: 
+    51:         if (is2FAEnabled && !deviceTrusted) {
+    52: 
+    53:             const { token: challengeToken, jti } = await this.users.createChallengeToken(user.id);
+    54: 
+    55:             return { status: "2fa_required" as const, challengeToken, jti };
+    56: 
+    57:         }
+    58: 
+    59: 
+    60: 
+    61:         // 3) Issue JWT with JTI
+    62: 
+    63:         const { token, jti } = await this.users.signWithJti(user);
+    64: 
+    65: 
+    66: 
+    67:         // 4) Record session
+    68: 
+    69:         const ua = req.headers["user-agent"] || "";
+    70: 
+    71:         const ip =
+    72: 
+    73:             (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+    74: 
+    75:             (req.socket as any)?.remoteAddress ||
+    76: 
+    77:             "";
+    78: 
+    79:         await this.users.recordSessionOnLogin(user.id, jti, String(ua), String(ip));
+    80: 
+    81: 
+    82: 
+    83:         // 5) Set cookie
+    84: 
+    85:         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+    86: 
+    87:         const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000); // 7d
+    88: 
+    89:         res.cookie(cookieName, token, {
+    90: 
+    91:             httpOnly: true,
+    92: 
+    93:             sameSite: "lax",
+    94: 
+    95:             secure: process.env.NODE_ENV === "production",
+    96: 
+    97:             path: "/",
+    98: 
+    99:             maxAge: maxAgeMs,
+   100: 
+   101:         });
+   102: 
+   103: 
+   104: 
+   105:         return { user };
+   106: 
+   107:     }
+   108: 
+   109: 
+   110: 
+   111:     @Post("2fa/verify")
+   112: 
+   113:     @ApiOkResponse({ description: "Verifies TOTP or recovery code and sets auth cookie" })
+   114: 
+   115:     async verify2FA(@Body() dto: Verify2FADto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+   116: 
+   117:         // Normalize incoming values
+   118: 
+   119:         if (dto.code) dto.code = dto.code.trim();
+   120: 
+   121:         if (dto.recoveryCode) dto.recoveryCode = dto.recoveryCode.trim();
+   122: 
+   123: 
+   124: 
+   125:         if (!dto.code && !dto.recoveryCode) {
+   126: 
+   127:             throw new BadRequestException("Provide either 'code' or 'recoveryCode'.");
+   128: 
+   129:         }
+   130: 
+   131: 
+   132: 
+   133:         // 1) Validate challenge and extract userId + jti
+   134: 
+   135:         const { userId, jti } = await this.users.verifyChallengeToken(dto.challengeToken);
+   136: 
+   137: 
+   138: 
+   139:         // 2) Verify TOTP or recovery
+   140: 
+   141:         let ok = false;
+   142: 
+   143:         if (dto.code) ok = await this.users.verifyTOTP(userId, dto.code);
+   144: 
+   145:         else if (dto.recoveryCode) ok = await this.users.consumeRecoveryCode(userId, dto.recoveryCode);
+   146: 
+   147: 
+   148: 
+   149:         if (!ok) throw new BadRequestException("Invalid code");
+   150: 
+   151: 
+   152: 
+   153:         // 3) Sign normal auth token with JTI and set cookie
+   154: 
+   155:         const user = await this.users.findUserById(userId);
+   156: 
+   157:         const { token, jti: newJti } = await this.users.signWithJti(user);
+   158: 
+   159: 
+   160: 
+   161:         const ua = req.headers["user-agent"] || "";
+   162: 
+   163:         const ip =
+   164: 
+   165:             (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+   166: 
+   167:             (req.socket as any)?.remoteAddress ||
+   168: 
+   169:             "";
+   170: 
+   171:         await this.users.recordSessionOnLogin(userId, newJti, String(ua), String(ip));
+   172: 
+   173: 
+   174: 
+   175:         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+   176: 
+   177:         const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000);
+   178: 
+   179:         res.cookie(cookieName, token, {
+   180: 
+   181:             httpOnly: true,
+   182: 
+   183:             sameSite: "lax",
+   184: 
+   185:             secure: process.env.NODE_ENV === "production",
+   186: 
+   187:             path: "/",
+   188: 
+   189:             maxAge: maxAgeMs,
+   190: 
+   191:         });
+   192: 
+   193: 
+   194: 
+   195:         // 4) Trust device if requested
+   196: 
+   197:         if (dto.rememberDevice) {
+   198: 
+   199:             const fp = dto.deviceFingerprint ?? jti;
+   200: 
+   201:             await this.users.trustCurrentDevice(userId, fp);
+   202: 
+   203:         }
+   204: 
+   205: 
+   206: 
+   207:         return { ok: true };
+   208: 
+   209:     }
+   210: 
+   211: 
+   212: 
+   213:     @Post("logout")
+   214: 
+   215:     @ApiOkResponse({ description: "Clears auth cookie" })
+   216: 
+   217:     async logout(@Res({ passthrough: true }) res: Response) {
+   218: 
+   219:         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+   220: 
+   221:         res.clearCookie(cookieName, { path: "/" });
+   222: 
+   223:         return { ok: true };
+   224: 
+   225:     }
+   226: 
+   227: 
+   228: 
+   229:     @Get("me")
+   230: 
+   231:     @ApiOkResponse({ description: "Current user (if authenticated)" })
+   232: 
+   233:     async me(@Req() req: Request) {
+   234: 
+   235:         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+   236: 
+   237:         const token = (req as any).cookies?.[cookieName];
+   238: 
+   239:         if (!token) return { user: null };
+   240: 
+   241:         const user = await this.users.verify(token);
+   242: 
+   243:         return { user };
+   244: 
+   245:     }
+   246: 
+   247: }
+   248: 
+   249: 
+-----  END  CONTENT -----
+
+## FILE: src\auth\user-auth.service.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\user-auth.service.ts
+Size: 16833 bytes
+SHA256: 1FD6DE307CAEADA4E262862CFF8B487C760886BF55628D691376E088A4F69AD4
+----- BEGIN CONTENT -----
+     1: //remoteiq-minimal-e2e\backend\src\auth\user-auth.service.ts
+     2: 
+     3: 
+     4: 
+     5: import { Injectable, UnauthorizedException } from "@nestjs/common";
+     6: 
+     7: import { JwtService } from "@nestjs/jwt";
+     8: 
+     9: import * as bcrypt from "bcryptjs";
+    10: 
+    11: import { PgPoolService } from "../storage/pg-pool.service";
+    12: 
+    13: import { OrganizationContextService } from "../storage/organization-context.service";
+    14: 
+    15: import { randomUUID, createHash, createHmac } from "crypto";
+    16: 
+    17: 
+    18: 
+    19: export type RoleSummary = { id: string; name: string };
+    20: 
+    21: 
+    22: 
+    23: type WebUser = {
+    24: 
+    25:     id: string;
+    26: 
+    27:     organizationId: string;
+    28: 
+    29:     email: string;
+    30: 
+    31:     name: string | null;
+    32: 
+    33:     role: string;
+    34: 
+    35:     roles: RoleSummary[];
+    36: 
+    37:     permissions: string[];
+    38: 
+    39: };
+    40: 
+    41: 
+    42: 
+    43: type DbUserRow = {
+    44: 
+    45:     id: string;
+    46: 
+    47:     email: string;
+    48: 
+    49:     first_name: string | null;
+    50: 
+    51:     last_name: string | null;
+    52: 
+    53:     password_hash: string | null;
+    54: 
+    55:     status: string;
+    56: 
+    57:     organization_id: string;
+    58: 
+    59:     roles: any;
+    60: 
+    61:     permissions: string[] | null;
+    62: 
+    63: };
+    64: 
+    65: 
+    66: 
+    67: type UserSecurityRow = {
+    68: 
+    69:     user_id: string;
+    70: 
+    71:     two_factor_enabled: boolean | null;
+    72: 
+    73:     totp_secret: string | null;
+    74: 
+    75:     recovery_codes: string[] | null;
+    76: 
+    77: };
+    78: 
+    79: 
+    80: 
+    81: @Injectable()
+    82: 
+    83: export class UserAuthService {
+    84: 
+    85:     constructor(
+    86: 
+    87:         private readonly jwt: JwtService,
+    88: 
+    89:         private readonly pg: PgPoolService,
+    90: 
+    91:         private readonly orgs: OrganizationContextService,
+    92: 
+    93:     ) { }
+    94: 
+    95: 
+    96: 
+    97:     /** Validate against Postgres users table */
+    98: 
+    99:     async validateUser(email: string, password: string): Promise<WebUser> {
+   100: 
+   101:         const orgId = await this.orgs.getDefaultOrganizationId();
+   102: 
+   103:         const row = await this.loadUserByEmail(orgId, email);
+   104: 
+   105:         if (!row || row.status !== "active") {
+   106: 
+   107:             throw new UnauthorizedException("Invalid email or password");
+   108: 
+   109:         }
+   110: 
+   111:         if (!row.password_hash) {
+   112: 
+   113:             throw new UnauthorizedException("Invalid email or password");
+   114: 
+   115:         }
+   116: 
+   117: 
+   118: 
+   119:         const ok = await bcrypt.compare(password, row.password_hash);
+   120: 
+   121:         if (!ok) throw new UnauthorizedException("Invalid email or password");
+   122: 
+   123: 
+   124: 
+   125:         return this.mapDbRowToWebUser(row);
+   126: 
+   127:     }
+   128: 
+   129: 
+   130: 
+   131:     /** Issue a JWT **with JTI** (uses JwtModule config). */
+   132: 
+   133:     async signWithJti(user: WebUser): Promise<{ token: string; jti: string }> {
+   134: 
+   135:         const jti = randomUUID();
+   136: 
+   137:         const token = await this.jwt.signAsync({
+   138: 
+   139:             sub: user.id,
+   140: 
+   141:             email: user.email,
+   142: 
+   143:             name: user.name,
+   144: 
+   145:             role: user.role,
+   146: 
+   147:             org: user.organizationId,
+   148: 
+   149:             perms: user.permissions,
+   150: 
+   151:             roles: user.roles.map((r) => r.name),
+   152: 
+   153:             jti,
+   154: 
+   155:         });
+   156: 
+   157:         return { token, jti };
+   158: 
+   159:     }
+   160: 
+   161: 
+   162: 
+   163:     /** Back-compat signer without JTI (not used by login anymore) */
+   164: 
+   165:     async sign(user: WebUser): Promise<string> {
+   166: 
+   167:         return this.jwt.signAsync({
+   168: 
+   169:             sub: user.id,
+   170: 
+   171:             email: user.email,
+   172: 
+   173:             name: user.name,
+   174: 
+   175:             role: user.role,
+   176: 
+   177:             org: user.organizationId,
+   178: 
+   179:             perms: user.permissions,
+   180: 
+   181:             roles: user.roles.map((r) => r.name),
+   182: 
+   183:         });
+   184: 
+   185:     }
+   186: 
+   187: 
+   188: 
+   189:     /** Verify cookie token and re-hydrate a minimal user */
+   190: 
+   191:     async verify(token: string): Promise<WebUser | null> {
+   192: 
+   193:         try {
+   194: 
+   195:             const payload = await this.jwt.verifyAsync<{
+   196: 
+   197:                 sub: string;
+   198: 
+   199:                 email: string;
+   200: 
+   201:                 name?: string;
+   202: 
+   203:                 role: string;
+   204: 
+   205:             }>(token, { secret: process.env.JWT_SECRET ?? "dev-secret" });
+   206: 
+   207:             const row = await this.loadUserById(payload.sub);
+   208: 
+   209:             if (!row || row.status !== "active") return null;
+   210: 
+   211:             return this.mapDbRowToWebUser(row);
+   212: 
+   213:         } catch {
+   214: 
+   215:             return null;
+   216: 
+   217:         }
+   218: 
+   219:     }
+   220: 
+   221: 
+   222: 
+   223:     /** Record a session row keyed by JTI (upsert on jti). */
+   224: 
+   225:     async recordSessionOnLogin(userId: string, jti: string, ua?: string, ip?: string) {
+   226: 
+   227:         await this.pg.query(
+   228: 
+   229:             `
+   230: 
+   231:       INSERT INTO sessions (id, user_id, refresh_token, user_agent, ip_address)
+   232: 
+   233:       VALUES ($2, $1, $3, $4, $5)
+   234: 
+   235:       ON CONFLICT (id) DO UPDATE
+   236: 
+   237:          SET last_seen_at = now(),
+   238: 
+   239:              user_agent   = COALESCE(EXCLUDED.user_agent, sessions.user_agent),
+   240: 
+   241:              ip_address   = COALESCE(EXCLUDED.ip_address, sessions.ip_address),
+   242: 
+   243:              refresh_token = EXCLUDED.refresh_token
+   244: 
+   245:       `,
+   246: 
+   247:             [userId, jti, jti, ua || null, ip || null],
+   248: 
+   249:         );
+   250: 
+   251:     }
+   252: 
+   253: 
+   254: 
+   255:     // =============== 2FA: feature toggles & device trust =================
+   256: 
+   257: 
+   258: 
+   259:     async isTwoFactorEnabled(userId: string): Promise<boolean> {
+   260: 
+   261:         try {
+   262: 
+   263:             const { rows } = await this.pg.query<{ enabled: boolean }>(
+   264: 
+   265:                 `
+   266: 
+   267:       SELECT
+   268: 
+   269:         COALESCE(two_factor_enabled, false)
+   270: 
+   271:         AND (totp_secret IS NOT NULL AND length(trim(totp_secret)) > 0)
+   272: 
+   273:         AS enabled
+   274: 
+   275:       FROM user_security
+   276: 
+   277:       WHERE user_id = $1
+   278: 
+   279:       LIMIT 1
+   280: 
+   281:       `,
+   282: 
+   283:                 [userId],
+   284: 
+   285:             );
+   286: 
+   287:             return !!rows[0]?.enabled;
+   288: 
+   289:         } catch (e: any) {
+   290: 
+   291:             if (e?.code === "42P01" || e?.code === "42703") return false;
+   292: 
+   293:             throw e;
+   294: 
+   295:         }
+   296: 
+   297:     }
+   298: 
+   299: 
+   300: 
+   301:     async isDeviceTrusted(userId: string, deviceFingerprint: string | null): Promise<boolean> {
+   302: 
+   303:         if (!deviceFingerprint) return false;
+   304: 
+   305:         try {
+   306: 
+   307:             const { rows } = await this.pg.query(
+   308: 
+   309:                 `SELECT 1
+   310: 
+   311:            FROM trusted_devices
+   312: 
+   313:           WHERE user_id = $1
+   314: 
+   315:             AND device_fingerprint = $2
+   316: 
+   317:             AND last_seen_at > now() - interval '90 days'
+   318: 
+   319:           LIMIT 1`,
+   320: 
+   321:                 [userId, deviceFingerprint],
+   322: 
+   323:             );
+   324: 
+   325:             return !!rows[0];
+   326: 
+   327:         } catch {
+   328: 
+   329:             return false;
+   330: 
+   331:         }
+   332: 
+   333:     }
+   334: 
+   335: 
+   336: 
+   337:     async trustCurrentDevice(userId: string, deviceFingerprint: string) {
+   338: 
+   339:         try {
+   340: 
+   341:             await this.pg.query(`DELETE FROM trusted_devices WHERE user_id = $1 AND device_fingerprint = $2`, [
+   342: 
+   343:                 userId,
+   344: 
+   345:                 deviceFingerprint,
+   346: 
+   347:             ]);
+   348: 
+   349:             await this.pg.query(
+   350: 
+   351:                 `INSERT INTO trusted_devices (user_id, device_fingerprint)
+   352: 
+   353:          VALUES ($1, $2)`,
+   354: 
+   355:                 [userId, deviceFingerprint],
+   356: 
+   357:             );
+   358: 
+   359:         } catch {
+   360: 
+   361:             // ignore if table not present
+   362: 
+   363:         }
+   364: 
+   365:     }
+   366: 
+   367: 
+   368: 
+   369:     // =============== 2FA: challenge token (short-lived) ==================
+   370: 
+   371: 
+   372: 
+   373:     async createChallengeToken(userId: string): Promise<{ token: string; jti: string }> {
+   374: 
+   375:         const jti = randomUUID();
+   376: 
+   377:         const token = await this.jwt.signAsync(
+   378: 
+   379:             { sub: userId, typ: "2fa_challenge", jti },
+   380: 
+   381:             { expiresIn: "10m" },
+   382: 
+   383:         );
+   384: 
+   385:         try {
+   386: 
+   387:             const hash = this.sha256Hex(token);
+   388: 
+   389:             await this.pg.query(
+   390: 
+   391:                 `INSERT INTO login_challenges (id, user_id, challenge, expires_at)
+   392: 
+   393:          VALUES ($1, $2, $3, now() + interval '10 minutes')
+   394: 
+   395:          ON CONFLICT (id) DO UPDATE
+   396: 
+   397:            SET challenge = EXCLUDED.challenge,
+   398: 
+   399:                expires_at = EXCLUDED.expires_at,
+   400: 
+   401:                consumed_at = NULL`,
+   402: 
+   403:                 [jti, userId, hash],
+   404: 
+   405:             );
+   406: 
+   407:         } catch {
+   408: 
+   409:             // ignore if table not present
+   410: 
+   411:         }
+   412: 
+   413:         return { token, jti };
+   414: 
+   415:     }
+   416: 
+   417: 
+   418: 
+   419:     async verifyChallengeToken(challengeToken: string): Promise<{ userId: string; jti: string }> {
+   420: 
+   421:         let decoded: any;
+   422: 
+   423:         try {
+   424: 
+   425:             decoded = await this.jwt.verifyAsync(challengeToken);
+   426: 
+   427:         } catch {
+   428: 
+   429:             throw new UnauthorizedException("Invalid or expired challenge");
+   430: 
+   431:         }
+   432: 
+   433:         if (!decoded?.sub || decoded?.typ !== "2fa_challenge" || !decoded?.jti) {
+   434: 
+   435:             throw new UnauthorizedException("Invalid challenge");
+   436: 
+   437:         }
+   438: 
+   439: 
+   440: 
+   441:         try {
+   442: 
+   443:             const tokenHash = this.sha256Hex(challengeToken);
+   444: 
+   445:             const { rows } = await this.pg.query<{
+   446: 
+   447:                 challenge: string;
+   448: 
+   449:                 expires_at: string;
+   450: 
+   451:                 consumed_at: string | null;
+   452: 
+   453:             }>(
+   454: 
+   455:                 `SELECT challenge, expires_at, consumed_at
+   456: 
+   457:            FROM login_challenges
+   458: 
+   459:           WHERE id = $1 AND user_id = $2
+   460: 
+   461:           LIMIT 1`,
+   462: 
+   463:                 [decoded.jti, decoded.sub],
+   464: 
+   465:             );
+   466: 
+   467:             const challengeRow = rows[0];
+   468: 
+   469:             if (!challengeRow) throw new UnauthorizedException("Invalid challenge");
+   470: 
+   471:             if (challengeRow.consumed_at) throw new UnauthorizedException("Challenge already used");
+   472: 
+   473:             if (challengeRow.challenge !== tokenHash) throw new UnauthorizedException("Invalid challenge");
+   474: 
+   475:             if (new Date(challengeRow.expires_at).getTime() < Date.now()) {
+   476: 
+   477:                 throw new UnauthorizedException("Challenge expired");
+   478: 
+   479:             }
+   480: 
+   481:             await this.pg.query(`UPDATE login_challenges SET consumed_at = now() WHERE id = $1`, [decoded.jti]);
+   482: 
+   483:         } catch (err) {
+   484: 
+   485:             if (err instanceof UnauthorizedException) throw err;
+   486: 
+   487:             throw new UnauthorizedException("Invalid challenge");
+   488: 
+   489:         }
+   490: 
+   491: 
+   492: 
+   493:         return { userId: decoded.sub as string, jti: decoded.jti as string };
+   494: 
+   495:     }
+   496: 
+   497: 
+   498: 
+   499:     // =============== 2FA: verification (TOTP or recovery) =================
+   500: 
+   501: 
+   502: 
+   503:     async verifyTOTP(userId: string, code: string): Promise<boolean> {
+   504: 
+   505:         const u = await this.findUserTwoFactor(userId);
+   506: 
+   507:         if (!u?.two_factor_enabled || !u.totp_secret) return false;
+   508: 
+   509: 
+   510: 
+   511:         const normalized = this.normalizeTotpSecret(u.totp_secret);
+   512: 
+   513:         return this.verifyTotpBasic(normalized, code.trim());
+   514: 
+   515:     }
+   516: 
+   517: 
+   518: 
+   519:     async consumeRecoveryCode(userId: string, recoveryCode: string): Promise<boolean> {
+   520: 
+   521:         const u = await this.findUserTwoFactor(userId);
+   522: 
+   523:         if (!u) return false;
+   524: 
+   525:         const codes = u.recovery_codes || [];
+   526: 
+   527:         if (codes.length === 0) return false;
+   528: 
+   529: 
+   530: 
+   531:         const candidateHash = this.sha256Hex(recoveryCode.trim().toLowerCase());
+   532: 
+   533:         const idx = codes.findIndex((h) => h === candidateHash);
+   534: 
+   535:         if (idx === -1) return false;
+   536: 
+   537: 
+   538: 
+   539:         const next = [...codes.slice(0, idx), ...codes.slice(idx + 1)];
+   540: 
+   541:         await this.pg.query(
+   542: 
+   543:             `UPDATE user_security SET recovery_codes = $1 WHERE user_id = $2`,
+   544: 
+   545:             [next, userId],
+   546: 
+   547:         );
+   548: 
+   549:         return true;
+   550: 
+   551:     }
+   552: 
+   553: 
+   554: 
+   555:     // =============== Lookups =================
+   556: 
+   557: 
+   558: 
+   559:     async findUserById(userId: string): Promise<WebUser> {
+   560: 
+   561:         const row = await this.loadUserById(userId);
+   562: 
+   563:         if (!row || row.status !== "active") {
+   564: 
+   565:             throw new UnauthorizedException("User not found");
+   566: 
+   567:         }
+   568: 
+   569:         return this.mapDbRowToWebUser(row);
+   570: 
+   571:     }
+   572: 
+   573: 
+   574: 
+   575:     async findUserTwoFactor(userId: string): Promise<UserSecurityRow | null> {
+   576: 
+   577:         try {
+   578: 
+   579:             const { rows } = await this.pg.query<UserSecurityRow>(
+   580: 
+   581:                 `SELECT user_id, two_factor_enabled, totp_secret, recovery_codes
+   582: 
+   583:            FROM user_security
+   584: 
+   585:           WHERE user_id = $1
+   586: 
+   587:           LIMIT 1`,
+   588: 
+   589:                 [userId],
+   590: 
+   591:             );
+   592: 
+   593:             return rows[0] ?? null;
+   594: 
+   595:         } catch (e: any) {
+   596: 
+   597:             if (e?.code === "42P01" || e?.code === "42703") return null;
+   598: 
+   599:             throw e;
+   600: 
+   601:         }
+   602: 
+   603:     }
+   604: 
+   605: 
+   606: 
+   607:     // =============== Minimal TOTP (robust parsing) =================
+   608: 
+   609: 
+   610: 
+   611:     /** Accepts raw base32 or full otpauth:// URI; strips spaces and uppercases */
+   612: 
+   613:     private normalizeTotpSecret(input: string): string {
+   614: 
+   615:         try {
+   616: 
+   617:             if (input.toLowerCase().startsWith("otpauth://")) {
+   618: 
+   619:                 const u = new URL(input);
+   620: 
+   621:                 const secret = u.searchParams.get("secret") || "";
+   622: 
+   623:                 return secret.replace(/\s+/g, "").toUpperCase();
+   624: 
+   625:             }
+   626: 
+   627:         } catch {
+   628: 
+   629:             // not a valid URL; fall through
+   630: 
+   631:         }
+   632: 
+   633:         return input.replace(/\s+/g, "").toUpperCase();
+   634: 
+   635:     }
+   636: 
+   637: 
+   638: 
+   639:     private sha256Hex(s: string) {
+   640: 
+   641:         return createHash("sha256").update(s).digest("hex");
+   642: 
+   643:     }
+   644: 
+   645: 
+   646: 
+   647:     private verifyTotpBasic(base32Secret: string, code: string): boolean {
+   648: 
+   649:         try {
+   650: 
+   651:             const secret = this.base32Decode(base32Secret);
+   652: 
+   653:             const step = 30;
+   654: 
+   655:             const t = Math.floor(Date.now() / 1000 / step);
+   656: 
+   657: 
+   658: 
+   659:             for (const off of [-2, -1, 0, 1, 2]) {
+   660: 
+   661:                 const counter = Buffer.alloc(8);
+   662: 
+   663:                 counter.writeBigUInt64BE(BigInt(t + off));
+   664: 
+   665:                 const hmac = createHmac("sha1", secret).update(counter).digest();
+   666: 
+   667:                 const offset = hmac[hmac.length - 1] & 0xf;
+   668: 
+   669:                 const bin =
+   670: 
+   671:                     ((hmac[offset] & 0x7f) << 24) |
+   672: 
+   673:                     ((hmac[offset + 1] & 0xff) << 16) |
+   674: 
+   675:                     ((hmac[offset + 2] & 0xff) << 8) |
+   676: 
+   677:                     (hmac[offset + 3] & 0xff);
+   678: 
+   679:                 const otp = (bin % 1_000_000).toString().padStart(6, "0");
+   680: 
+   681:                 if (otp === code) return true;
+   682: 
+   683:             }
+   684: 
+   685:             return false;
+   686: 
+   687:         } catch {
+   688: 
+   689:             return false;
+   690: 
+   691:         }
+   692: 
+   693:     }
+   694: 
+   695: 
+   696: 
+   697:     private base32Decode(b32: string): Buffer {
+   698: 
+   699:         const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+   700: 
+   701:         const clean = b32.replace(/=+$/, "").toUpperCase().replace(/[^A-Z2-7]/g, "");
+   702: 
+   703:         let bits = "";
+   704: 
+   705:         for (const c of clean) {
+   706: 
+   707:             const v = alphabet.indexOf(c);
+   708: 
+   709:             if (v < 0) continue;
+   710: 
+   711:             bits += v.toString(2).padStart(5, "0");
+   712: 
+   713:         }
+   714: 
+   715:         const bytes: number[] = [];
+   716: 
+   717:         for (let i = 0; i + 8 <= bits.length; i += 8) {
+   718: 
+   719:             bytes.push(parseInt(bits.substring(i, i + 8), 2));
+   720: 
+   721:         }
+   722: 
+   723:         return Buffer.from(bytes);
+   724: 
+   725:     }
+   726: 
+   727: 
+   728: 
+   729:     private async loadUserByEmail(orgId: string, email: string): Promise<DbUserRow | null> {
+   730: 
+   731:         const { rows } = await this.pg.query<DbUserRow>(
+   732: 
+   733:             `SELECT
+   734: 
+   735:                 u.id,
+   736: 
+   737:                 u.email,
+   738: 
+   739:                 u.first_name,
+   740: 
+   741:                 u.last_name,
+   742: 
+   743:                 u.password_hash,
+   744: 
+   745:                 u.status,
+   746: 
+   747:                 u.organization_id,
+   748: 
+   749:                 COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
+   750: 
+   751:                          FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb) AS roles,
+   752: 
+   753:                 COALESCE(array_agg(DISTINCT rp.permission_key)
+   754: 
+   755:                          FILTER (WHERE rp.permission_key IS NOT NULL), '{}'::text[]) AS permissions
+   756: 
+   757:              FROM public.users u
+   758: 
+   759:              LEFT JOIN public.user_roles ur ON ur.user_id = u.id
+   760: 
+   761:              LEFT JOIN public.roles r ON r.id = ur.role_id
+   762: 
+   763:              LEFT JOIN public.role_permissions rp ON rp.role_id = r.id
+   764: 
+   765:              WHERE u.organization_id = $1 AND LOWER(u.email) = LOWER($2)
+   766: 
+   767:              GROUP BY u.id
+   768: 
+   769:              LIMIT 1`,
+   770: 
+   771:             [orgId, email],
+   772: 
+   773:         );
+   774: 
+   775:         return rows[0] ?? null;
+   776: 
+   777:     }
+   778: 
+   779: 
+   780: 
+   781:     private async loadUserById(userId: string): Promise<DbUserRow | null> {
+   782: 
+   783:         const { rows } = await this.pg.query<DbUserRow>(
+   784: 
+   785:             `SELECT
+   786: 
+   787:                 u.id,
+   788: 
+   789:                 u.email,
+   790: 
+   791:                 u.first_name,
+   792: 
+   793:                 u.last_name,
+   794: 
+   795:                 u.password_hash,
+   796: 
+   797:                 u.status,
+   798: 
+   799:                 u.organization_id,
+   800: 
+   801:                 COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
+   802: 
+   803:                          FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb) AS roles,
+   804: 
+   805:                 COALESCE(array_agg(DISTINCT rp.permission_key)
+   806: 
+   807:                          FILTER (WHERE rp.permission_key IS NOT NULL), '{}'::text[]) AS permissions
+   808: 
+   809:              FROM public.users u
+   810: 
+   811:              LEFT JOIN public.user_roles ur ON ur.user_id = u.id
+   812: 
+   813:              LEFT JOIN public.roles r ON r.id = ur.role_id
+   814: 
+   815:              LEFT JOIN public.role_permissions rp ON rp.role_id = r.id
+   816: 
+   817:              WHERE u.id = $1
+   818: 
+   819:              GROUP BY u.id
+   820: 
+   821:              LIMIT 1`,
+   822: 
+   823:             [userId],
+   824: 
+   825:         );
+   826: 
+   827:         return rows[0] ?? null;
+   828: 
+   829:     }
+   830: 
+   831: 
+   832: 
+   833:     private mapDbRowToWebUser(row: DbUserRow): WebUser {
+   834: 
+   835:         const roles: RoleSummary[] = Array.isArray(row.roles)
+   836: 
+   837:             ? row.roles
+   838: 
+   839:                   .map((r: any) => ({
+   840: 
+   841:                       id: String(r.id ?? ""),
+   842: 
+   843:                       name: String(r.name ?? "").trim(),
+   844: 
+   845:                   }))
+   846: 
+   847:                   .filter((r) => r.name.length > 0)
+   848: 
+   849:             : [];
+   850: 
+   851:         const primaryRole = roles[0]?.name || "user";
+   852: 
+   853:         const permissions = Array.isArray(row.permissions)
+   854: 
+   855:             ? row.permissions.map((p) => String(p).toLowerCase())
+   856: 
+   857:             : [];
+   858: 
+   859:         const displayName = this.buildDisplayName(row.first_name, row.last_name);
+   860: 
+   861: 
+   862: 
+   863:         return {
+   864: 
+   865:             id: row.id,
+   866: 
+   867:             organizationId: row.organization_id,
+   868: 
+   869:             email: row.email,
+   870: 
+   871:             name: displayName,
+   872: 
+   873:             role: primaryRole,
+   874: 
+   875:             roles,
+   876: 
+   877:             permissions,
+   878: 
+   879:         };
+   880: 
+   881:     }
+   882: 
+   883: 
+   884: 
+   885:     private buildDisplayName(first: string | null, last: string | null): string | null {
+   886: 
+   887:         const parts = [first?.trim(), last?.trim()].filter(Boolean) as string[];
+   888: 
+   889:         if (parts.length === 0) return null;
+   890: 
+   891:         return parts.join(" ");
+   892: 
+   893:     }
+   894: 
+   895: }
+   896: 
+   897: 
+-----  END  CONTENT -----
+
+## FILE: src\users\users.service.ts
+
+Path: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.service.ts
+Size: 20151 bytes
+SHA256: 837F88EF04C2888883B219BB69CC58DDD84F49AC5B9D512ED0AE495E84C524DA
+----- BEGIN CONTENT -----
+     1: // backend/src/users/users.service.ts
+     2: 
+     3: import {
+     4: 
+     5:     BadRequestException,
+     6: 
+     7:     ConflictException,
+     8: 
+     9:     Injectable,
+    10: 
+    11:     NotFoundException,
+    12: 
+    13: } from "@nestjs/common";
+    14: 
+    15: import * as bcrypt from "bcryptjs";
+    16: 
+    17: import { randomUUID } from "crypto";
+    18: 
+    19: import { PgPoolService } from "../storage/pg-pool.service";
+    20: 
+    21: import { OrganizationContextService } from "../storage/organization-context.service";
+    22: 
+    23: import {
+    24: 
+    25:     BulkInviteDto,
+    26: 
+    27:     CreateUserDto,
+    28: 
+    29:     InviteUserDto,
+    30: 
+    31:     ListUsersQuery,
+    32: 
+    33:     ResetPasswordDto,
+    34: 
+    35:     UpdateRoleDto,
+    36: 
+    37:     UpdateUserDto,
+    38: 
+    39:     UserRow,
+    40: 
+    41: } from "./users.dto";
+    42: 
+    43: 
+    44: 
+    45: const SALT_ROUNDS = 12;
+    46: 
+    47: const NAME_SPLIT_REGEX = /\s+/;
+    48: 
+    49: const DEFAULT_ROLE_CANDIDATES = ["user", "technician", "admin"];
+    50: 
+    51: 
+    52: 
+    53: function isUuid(value: string): boolean {
+    54: 
+    55:     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+    56: 
+    57: }
+    58: 
+    59: 
+    60: 
+    61: function coalesceString(v: unknown): string | null {
+    62: 
+    63:     if (typeof v !== "string") return null;
+    64: 
+    65:     const trimmed = v.trim();
+    66: 
+    67:     return trimmed.length ? trimmed : null;
+    68: 
+    69: }
+    70: 
+    71: 
+    72: 
+    73: function splitDisplayName(name: string | undefined | null): { first: string | null; last: string | null } {
+    74: 
+    75:     if (!name) return { first: null, last: null };
+    76: 
+    77:     const trimmed = name.trim();
+    78: 
+    79:     if (!trimmed) return { first: null, last: null };
+    80: 
+    81:     const parts = trimmed.split(NAME_SPLIT_REGEX).filter(Boolean);
+    82: 
+    83:     if (parts.length === 0) return { first: null, last: null };
+    84: 
+    85:     if (parts.length === 1) return { first: parts[0], last: null };
+    86: 
+    87:     const last = parts.pop() as string;
+    88: 
+    89:     return { first: parts.join(" "), last };
+    90: 
+    91: }
+    92: 
+    93: 
+    94: 
+    95: type DbUserRow = {
+    96: 
+    97:     id: string;
+    98: 
+    99:     email: string;
+   100: 
+   101:     first_name: string | null;
+   102: 
+   103:     last_name: string | null;
+   104: 
+   105:     status: string;
+   106: 
+   107:     last_seen_at: string | null;
+   108: 
+   109:     created_at: string;
+   110: 
+   111:     updated_at: string;
+   112: 
+   113:     two_factor_enabled: boolean;
+   114: 
+   115:     primary_role_id: string | null;
+   116: 
+   117:     primary_role_name: string | null;
+   118: 
+   119:     roles: any;
+   120: 
+   121: };
+   122: 
+   123: 
+   124: 
+   125: @Injectable()
+   126: 
+   127: export class UsersService {
+   128: 
+   129:     constructor(
+   130: 
+   131:         private readonly pg: PgPoolService,
+   132: 
+   133:         private readonly orgs: OrganizationContextService,
+   134: 
+   135:     ) { }
+   136: 
+   137: 
+   138: 
+   139:     private mapUserRow(row: DbUserRow): UserRow {
+   140: 
+   141:         const roles = Array.isArray(row.roles)
+   142: 
+   143:             ? row.roles
+   144: 
+   145:                   .map((r: any) => ({
+   146: 
+   147:                       id: String(r.id ?? ""),
+   148: 
+   149:                       name: String(r.name ?? "").trim(),
+   150: 
+   151:                   }))
+   152: 
+   153:                   .filter((r) => r.id && r.name)
+   154: 
+   155:             : [];
+   156: 
+   157: 
+   158: 
+   159:         const primaryRoleName = row.primary_role_name || roles[0]?.name || "";
+   160: 
+   161:         const displayNameParts = [row.first_name, row.last_name].map((v) => v?.trim()).filter(Boolean) as string[];
+   162: 
+   163:         const displayName = displayNameParts.length
+   164: 
+   165:             ? displayNameParts.join(" ")
+   166: 
+   167:             : row.email.split("@")[0];
+   168: 
+   169: 
+   170: 
+   171:         return {
+   172: 
+   173:             id: row.id,
+   174: 
+   175:             name: displayName,
+   176: 
+   177:             email: row.email,
+   178: 
+   179:             role: primaryRoleName,
+   180: 
+   181:             status: (row.status as UserRow["status"]) ?? "active",
+   182: 
+   183:             twoFactorEnabled: !!row.two_factor_enabled,
+   184: 
+   185:             suspended: row.status === "suspended",
+   186: 
+   187:             lastSeen: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : null,
+   188: 
+   189:             createdAt: new Date(row.created_at).toISOString(),
+   190: 
+   191:             updatedAt: new Date(row.updated_at).toISOString(),
+   192: 
+   193:             roleId: row.primary_role_id,
+   194: 
+   195:             roles,
+   196: 
+   197:         };
+   198: 
+   199:     }
+   200: 
+   201: 
+   202: 
+   203:     private async ensureUserExists(userId: string): Promise<{ organization_id: string }> {
+   204: 
+   205:         const { rows } = await this.pg.query<{ organization_id: string }>(
+   206: 
+   207:             `SELECT organization_id FROM public.users WHERE id = $1 LIMIT 1`,
+   208: 
+   209:             [userId],
+   210: 
+   211:         );
+   212: 
+   213:         if (!rows[0]) {
+   214: 
+   215:             throw new NotFoundException("User not found");
+   216: 
+   217:         }
+   218: 
+   219:         return rows[0];
+   220: 
+   221:     }
+   222: 
+   223: 
+   224: 
+   225:     private async ensureUserSecurityRow(userId: string): Promise<void> {
+   226: 
+   227:         await this.pg.query(
+   228: 
+   229:             `INSERT INTO public.user_security (user_id)
+   230: 
+   231:              VALUES ($1)
+   232: 
+   233:              ON CONFLICT (user_id) DO NOTHING`,
+   234: 
+   235:             [userId],
+   236: 
+   237:         );
+   238: 
+   239:     }
+   240: 
+   241: 
+   242: 
+   243:     private async replaceUserRoles(userId: string, roleIds: string[]): Promise<void> {
+   244: 
+   245:         await this.pg.query(`DELETE FROM public.user_roles WHERE user_id = $1`, [userId]);
+   246: 
+   247:         if (!roleIds.length) return;
+   248: 
+   249:         const values = roleIds.map((_, idx) => `($1, $${idx + 2})`).join(", ");
+   250: 
+   251:         await this.pg.query(
+   252: 
+   253:             `INSERT INTO public.user_roles (user_id, role_id)
+   254: 
+   255:              VALUES ${values}`,
+   256: 
+   257:             [userId, ...roleIds],
+   258: 
+   259:         );
+   260: 
+   261:     }
+   262: 
+   263: 
+   264: 
+   265:     private async findDefaultRoleId(orgId: string): Promise<string | null> {
+   266: 
+   267:         const { rows } = await this.pg.query<{ id: string }>(
+   268: 
+   269:             `SELECT id
+   270: 
+   271:              FROM public.roles
+   272: 
+   273:              WHERE (scope = 'organization' AND organization_id = $1)
+   274: 
+   275:                 OR scope = 'system'
+   276: 
+   277:              ORDER BY
+   278: 
+   279:                 CASE LOWER(name)
+   280: 
+   281:                     WHEN 'owner' THEN 0
+   282: 
+   283:                     WHEN 'admin' THEN 1
+   284: 
+   285:                     WHEN 'administrator' THEN 2
+   286: 
+   287:                     WHEN 'technician' THEN 3
+   288: 
+   289:                     WHEN 'user' THEN 4
+   290: 
+   291:                     ELSE 10
+   292: 
+   293:                 END,
+   294: 
+   295:                 scope DESC,
+   296: 
+   297:                 LOWER(name)
+   298: 
+   299:              LIMIT 1`,
+   300: 
+   301:             [orgId],
+   302: 
+   303:         );
+   304: 
+   305:         return rows[0]?.id ?? null;
+   306: 
+   307:     }
+   308: 
+   309: 
+   310: 
+   311:     private async resolveRoleId(orgId: string, input?: string | null): Promise<string | null> {
+   312: 
+   313:         const trimmed = input?.trim();
+   314: 
+   315:         if (trimmed) {
+   316: 
+   317:             if (isUuid(trimmed)) {
+   318: 
+   319:                 const { rows } = await this.pg.query<{ id: string }>(
+   320: 
+   321:                     `SELECT id
+   322: 
+   323:                      FROM public.roles
+   324: 
+   325:                      WHERE id = $1 AND ((scope = 'organization' AND organization_id = $2) OR scope = 'system')
+   326: 
+   327:                      LIMIT 1`,
+   328: 
+   329:                     [trimmed, orgId],
+   330: 
+   331:                 );
+   332: 
+   333:                 if (rows[0]?.id) return rows[0].id;
+   334: 
+   335:             } else {
+   336: 
+   337:                 const { rows } = await this.pg.query<{ id: string }>(
+   338: 
+   339:                     `SELECT id
+   340: 
+   341:                      FROM public.roles
+   342: 
+   343:                      WHERE LOWER(name) = LOWER($2)
+   344: 
+   345:                        AND ((scope = 'organization' AND organization_id = $1) OR scope = 'system')
+   346: 
+   347:                      ORDER BY scope DESC
+   348: 
+   349:                      LIMIT 1`,
+   350: 
+   351:                     [orgId, trimmed],
+   352: 
+   353:                 );
+   354: 
+   355:                 if (rows[0]?.id) return rows[0].id;
+   356: 
+   357:             }
+   358: 
+   359:         }
+   360: 
+   361: 
+   362: 
+   363:         // Attempt to fall back to a sensible default ("User" etc.)
+   364: 
+   365:         for (const candidate of DEFAULT_ROLE_CANDIDATES) {
+   366: 
+   367:             const { rows } = await this.pg.query<{ id: string }>(
+   368: 
+   369:                 `SELECT id
+   370: 
+   371:                  FROM public.roles
+   372: 
+   373:                  WHERE LOWER(name) = $2
+   374: 
+   375:                    AND ((scope = 'organization' AND organization_id = $1) OR scope = 'system')
+   376: 
+   377:                  ORDER BY scope DESC
+   378: 
+   379:                  LIMIT 1`,
+   380: 
+   381:                 [orgId, candidate],
+   382: 
+   383:             );
+   384: 
+   385:             if (rows[0]?.id) return rows[0].id;
+   386: 
+   387:         }
+   388: 
+   389: 
+   390: 
+   391:         return null;
+   392: 
+   393:     }
+   394: 
+   395: 
+   396: 
+   397:     private buildSearchClause(params: any[], value?: string | null): string | null {
+   398: 
+   399:         const term = value?.trim();
+   400: 
+   401:         if (!term) return null;
+   402: 
+   403:         params.push(`%${term.toLowerCase()}%`);
+   404: 
+   405:         const idx = params.length;
+   406: 
+   407:         return `(
+   408: 
+   409:             LOWER(u.email) LIKE $${idx}
+   410: 
+   411:             OR LOWER(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) LIKE $${idx}
+   412: 
+   413:         )`;
+   414: 
+   415:     }
+   416: 
+   417: 
+   418: 
+   419:     async list(q: ListUsersQuery): Promise<{ items: UserRow[]; total: number }> {
+   420: 
+   421:         const orgId = await this.orgs.getDefaultOrganizationId();
+   422: 
+   423:         const params: any[] = [orgId];
+   424: 
+   425:         const where: string[] = [`u.organization_id = $1`];
+   426: 
+   427: 
+   428: 
+   429:         const search = this.buildSearchClause(params, q.q);
+   430: 
+   431:         if (search) where.push(search);
+   432: 
+   433: 
+   434: 
+   435:         if (q.status && q.status !== "all") {
+   436: 
+   437:             params.push(q.status);
+   438: 
+   439:             where.push(`u.status = $${params.length}`);
+   440: 
+   441:         }
+   442: 
+   443: 
+   444: 
+   445:         if (q.role && q.role !== "all") {
+   446: 
+   447:             params.push(q.role);
+   448: 
+   449:             const idx = params.length;
+   450: 
+   451:             const clause = isUuid(q.role)
+   452: 
+   453:                 ? `EXISTS (
+   454: 
+   455:                         SELECT 1
+   456: 
+   457:                         FROM public.user_roles urf
+   458: 
+   459:                         WHERE urf.user_id = u.id AND urf.role_id = $${idx}
+   460: 
+   461:                     )`
+   462: 
+   463:                 : `EXISTS (
+   464: 
+   465:                         SELECT 1
+   466: 
+   467:                         FROM public.user_roles urf
+   468: 
+   469:                         JOIN public.roles rf ON rf.id = urf.role_id
+   470: 
+   471:                         WHERE urf.user_id = u.id AND LOWER(rf.name) = LOWER($${idx})
+   472: 
+   473:                     )`;
+   474: 
+   475:             where.push(clause);
+   476: 
+   477:         }
+   478: 
+   479: 
+   480: 
+   481:         const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+   482: 
+   483: 
+   484: 
+   485:         const countSql = `SELECT COUNT(*)::int AS c FROM public.users u ${whereSql}`;
+   486: 
+   487:         const { rows: countRows } = await this.pg.query<{ c: number }>(countSql, params);
+   488: 
+   489:         const total = countRows[0]?.c ?? 0;
+   490: 
+   491: 
+   492: 
+   493:         const sortKeyMap: Record<string, string> = {
+   494: 
+   495:             name: "display_name",
+   496: 
+   497:             email: "LOWER(u.email)",
+   498: 
+   499:             role: "LOWER(COALESCE(pr.name, ''))",
+   500: 
+   501:             lastSeen: "u.last_seen_at",
+   502: 
+   503:         };
+   504: 
+   505:         const sortKey = sortKeyMap[q.sortKey ?? "name"] || sortKeyMap.name;
+   506: 
+   507:         const sortDir = q.sortDir?.toUpperCase() === "DESC" ? "DESC" : "ASC";
+   508: 
+   509: 
+   510: 
+   511:         const page = Math.max(1, q.page ?? 1);
+   512: 
+   513:         const pageSize = Math.max(1, q.pageSize ?? 25);
+   514: 
+   515:         const offset = (page - 1) * pageSize;
+   516: 
+   517: 
+   518: 
+   519:         const dataSql = `
+   520: 
+   521:             SELECT
+   522: 
+   523:                 u.id,
+   524: 
+   525:                 u.email,
+   526: 
+   527:                 u.first_name,
+   528: 
+   529:                 u.last_name,
+   530: 
+   531:                 u.status,
+   532: 
+   533:                 u.last_seen_at,
+   534: 
+   535:                 u.created_at,
+   536: 
+   537:                 u.updated_at,
+   538: 
+   539:                 COALESCE(us.two_factor_enabled, false) AS two_factor_enabled,
+   540: 
+   541:                 pr.id AS primary_role_id,
+   542: 
+   543:                 pr.name AS primary_role_name,
+   544: 
+   545:                 COALESCE(
+   546: 
+   547:                     jsonb_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
+   548: 
+   549:                     FILTER (WHERE r.id IS NOT NULL),
+   550: 
+   551:                     '[]'::jsonb
+   552: 
+   553:                 ) AS roles,
+   554: 
+   555:                 COALESCE(NULLIF(CONCAT_WS(' ', NULLIF(u.first_name, ''), NULLIF(u.last_name, '')), ''), u.email) AS display_name
+   556: 
+   557:             FROM public.users u
+   558: 
+   559:             LEFT JOIN public.user_security us ON us.user_id = u.id
+   560: 
+   561:             LEFT JOIN public.user_roles ur ON ur.user_id = u.id
+   562: 
+   563:             LEFT JOIN public.roles r ON r.id = ur.role_id
+   564: 
+   565:             LEFT JOIN LATERAL (
+   566: 
+   567:                 SELECT r2.id, r2.name
+   568: 
+   569:                 FROM public.user_roles ur2
+   570: 
+   571:                 JOIN public.roles r2 ON r2.id = ur2.role_id
+   572: 
+   573:                 WHERE ur2.user_id = u.id
+   574: 
+   575:                 ORDER BY r2.scope DESC, LOWER(r2.name) ASC
+   576: 
+   577:                 LIMIT 1
+   578: 
+   579:             ) pr ON TRUE
+   580: 
+   581:             ${whereSql}
+   582: 
+   583:             GROUP BY u.id, us.two_factor_enabled, pr.id, pr.name
+   584: 
+   585:             ORDER BY ${sortKey} ${sortDir}, display_name ASC
+   586: 
+   587:             LIMIT $${params.length + 1}
+   588: 
+   589:             OFFSET $${params.length + 2}
+   590: 
+   591:         `;
+   592: 
+   593: 
+   594: 
+   595:         const { rows } = await this.pg.query<DbUserRow>(dataSql, [...params, pageSize, offset]);
+   596: 
+   597:         return {
+   598: 
+   599:             items: rows.map((row) => this.mapUserRow(row)),
+   600: 
+   601:             total,
+   602: 
+   603:         };
+   604: 
+   605:     }
+   606: 
+   607: 
+   608: 
+   609:     async roles(): Promise<{ id: string; name: string }[]> {
+   610: 
+   611:         const orgId = await this.orgs.getDefaultOrganizationId();
+   612: 
+   613:         const { rows } = await this.pg.query(
+   614: 
+   615:             `SELECT id, name
+   616: 
+   617:              FROM public.roles
+   618: 
+   619:              WHERE scope = 'system' OR organization_id = $1
+   620: 
+   621:              ORDER BY scope DESC, LOWER(name) ASC`,
+   622: 
+   623:             [orgId],
+   624: 
+   625:         );
+   626: 
+   627:         return rows.map((r: any) => ({ id: r.id, name: r.name }));
+   628: 
+   629:     }
+   630: 
+   631: 
+   632: 
+   633:     async inviteOne(dto: InviteUserDto): Promise<{ id: string }> {
+   634: 
+   635:         const orgId = await this.orgs.getDefaultOrganizationId();
+   636: 
+   637:         const email = dto.email.toLowerCase().trim();
+   638: 
+   639:         const fallbackName = email.split("@")[0];
+   640: 
+   641:         const displayName = coalesceString(dto.name) || fallbackName;
+   642: 
+   643:         const { first, last } = splitDisplayName(displayName);
+   644: 
+   645:         const passwordHash = await bcrypt.hash(randomUUID(), SALT_ROUNDS);
+   646: 
+   647:         const roleId = await this.resolveRoleId(orgId, dto.role);
+   648: 
+   649: 
+   650: 
+   651:         const { rows } = await this.pg.query<{ id: string }>(
+   652: 
+   653:             `INSERT INTO public.users (organization_id, email, password_hash, first_name, last_name, status)
+   654: 
+   655:              VALUES ($1, $2, $3, $4, $5, 'invited')
+   656: 
+   657:              ON CONFLICT (organization_id, email) DO UPDATE
+   658: 
+   659:                SET first_name = EXCLUDED.first_name,
+   660: 
+   661:                    last_name = EXCLUDED.last_name,
+   662: 
+   663:                    status = 'invited'
+   664: 
+   665:              RETURNING id`,
+   666: 
+   667:             [orgId, email, passwordHash, first, last],
+   668: 
+   669:         );
+   670: 
+   671: 
+   672: 
+   673:         const id = rows[0]?.id;
+   674: 
+   675:         if (!id) return { id: "" };
+   676: 
+   677: 
+   678: 
+   679:         await this.ensureUserSecurityRow(id);
+   680: 
+   681:         if (roleId) await this.replaceUserRoles(id, [roleId]);
+   682: 
+   683: 
+   684: 
+   685:         return { id };
+   686: 
+   687:     }
+   688: 
+   689: 
+   690: 
+   691:     async inviteBulk(dto: BulkInviteDto): Promise<{ created: number }> {
+   692: 
+   693:         let created = 0;
+   694: 
+   695:         for (const inv of dto.invites || []) {
+   696: 
+   697:             const res = await this.inviteOne(inv);
+   698: 
+   699:             if (res.id) created++;
+   700: 
+   701:         }
+   702: 
+   703:         return { created };
+   704: 
+   705:     }
+   706: 
+   707: 
+   708: 
+   709:     async updateRole(id: string, dto: UpdateRoleDto): Promise<void> {
+   710: 
+   711:         const user = await this.ensureUserExists(id);
+   712: 
+   713:         const roleId = await this.resolveRoleId(user.organization_id, dto.role);
+   714: 
+   715:         if (!roleId) {
+   716: 
+   717:             await this.replaceUserRoles(id, []);
+   718: 
+   719:             return;
+   720: 
+   721:         }
+   722: 
+   723:         await this.replaceUserRoles(id, [roleId]);
+   724: 
+   725:     }
+   726: 
+   727: 
+   728: 
+   729:     async setSuspended(id: string, suspended: boolean): Promise<void> {
+   730: 
+   731:         await this.ensureUserExists(id);
+   732: 
+   733:         const status = suspended ? "suspended" : "active";
+   734: 
+   735:         const { rowCount } = await this.pg.query(
+   736: 
+   737:             `UPDATE public.users
+   738: 
+   739:              SET status = $2,
+   740: 
+   741:                  updated_at = NOW()
+   742: 
+   743:              WHERE id = $1`,
+   744: 
+   745:             [id, status],
+   746: 
+   747:         );
+   748: 
+   749:         if (rowCount === 0) throw new NotFoundException("User not found");
+   750: 
+   751:     }
+   752: 
+   753: 
+   754: 
+   755:     async reset2fa(id: string): Promise<void> {
+   756: 
+   757:         await this.ensureUserExists(id);
+   758: 
+   759:         const { rowCount } = await this.pg.query(
+   760: 
+   761:             `INSERT INTO public.user_security (user_id, two_factor_enabled, totp_secret, recovery_codes)
+   762: 
+   763:              VALUES ($1, false, NULL, '{}'::text[])
+   764: 
+   765:              ON CONFLICT (user_id) DO UPDATE
+   766: 
+   767:                SET two_factor_enabled = false,
+   768: 
+   769:                    totp_secret = NULL,
+   770: 
+   771:                    recovery_codes = '{}'::text[]`,
+   772: 
+   773:             [id],
+   774: 
+   775:         );
+   776: 
+   777:         if (rowCount === 0) throw new NotFoundException("User not found");
+   778: 
+   779:     }
+   780: 
+   781: 
+   782: 
+   783:     async remove(id: string): Promise<void> {
+   784: 
+   785:         const { rowCount } = await this.pg.query(`DELETE FROM public.users WHERE id = $1`, [id]);
+   786: 
+   787:         if (rowCount === 0) throw new NotFoundException("User not found");
+   788: 
+   789:     }
+   790: 
+   791: 
+   792: 
+   793:     async createOne(dto: CreateUserDto): Promise<{ id: string }> {
+   794: 
+   795:         const orgId = await this.orgs.getDefaultOrganizationId();
+   796: 
+   797:         const email = dto.email.toLowerCase().trim();
+   798: 
+   799:         const status = dto.status ?? "active";
+   800: 
+   801:         if (!["active", "invited", "suspended"].includes(status)) {
+   802: 
+   803:             throw new BadRequestException("Invalid status");
+   804: 
+   805:         }
+   806: 
+   807: 
+   808: 
+   809:         const displayName = coalesceString(dto.name) || email.split("@")[0];
+   810: 
+   811:         const { first, last } = splitDisplayName(displayName);
+   812: 
+   813:         const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
+   814: 
+   815:         const roleId = await this.resolveRoleId(orgId, dto.role);
+   816: 
+   817: 
+   818: 
+   819:         const { rows } = await this.pg.query<{ id: string }>(
+   820: 
+   821:             `INSERT INTO public.users (organization_id, email, password_hash, first_name, last_name, status)
+   822: 
+   823:              VALUES ($1, $2, $3, $4, $5, $6)
+   824: 
+   825:              ON CONFLICT (organization_id, email) DO UPDATE
+   826: 
+   827:                SET first_name = EXCLUDED.first_name,
+   828: 
+   829:                    last_name = EXCLUDED.last_name,
+   830: 
+   831:                    status = EXCLUDED.status,
+   832: 
+   833:                    password_hash = EXCLUDED.password_hash,
+   834: 
+   835:                    updated_at = NOW()
+   836: 
+   837:              RETURNING id`,
+   838: 
+   839:             [orgId, email, passwordHash, first, last, status],
+   840: 
+   841:         );
+   842: 
+   843: 
+   844: 
+   845:         const id = rows[0]?.id;
+   846: 
+   847:         if (!id) {
+   848: 
+   849:             throw new ConflictException("Unable to create user");
+   850: 
+   851:         }
+   852: 
+   853: 
+   854: 
+   855:         await this.ensureUserSecurityRow(id);
+   856: 
+   857:         await this.pg.query(
+   858: 
+   859:             `UPDATE public.user_security
+   860: 
+   861:              SET password_changed_at = NOW()
+   862: 
+   863:              WHERE user_id = $1`,
+   864: 
+   865:             [id],
+   866: 
+   867:         );
+   868: 
+   869: 
+   870: 
+   871:         if (roleId) await this.replaceUserRoles(id, [roleId]);
+   872: 
+   873: 
+   874: 
+   875:         return { id };
+   876: 
+   877:     }
+   878: 
+   879: 
+   880: 
+   881:     async setPassword(id: string, body: ResetPasswordDto): Promise<void> {
+   882: 
+   883:         await this.ensureUserExists(id);
+   884: 
+   885:         const hash = await bcrypt.hash(body.password, SALT_ROUNDS);
+   886: 
+   887:         const { rowCount } = await this.pg.query(
+   888: 
+   889:             `UPDATE public.users
+   890: 
+   891:              SET password_hash = $2,
+   892: 
+   893:                  updated_at = NOW()
+   894: 
+   895:              WHERE id = $1`,
+   896: 
+   897:             [id, hash],
+   898: 
+   899:         );
+   900: 
+   901:         if (rowCount === 0) throw new NotFoundException("User not found");
+   902: 
+   903: 
+   904: 
+   905:         await this.pg.query(
+   906: 
+   907:             `INSERT INTO public.user_security (user_id, password_changed_at)
+   908: 
+   909:              VALUES ($1, NOW())
+   910: 
+   911:              ON CONFLICT (user_id) DO UPDATE
+   912: 
+   913:                SET password_changed_at = EXCLUDED.password_changed_at`,
+   914: 
+   915:             [id],
+   916: 
+   917:         );
+   918: 
+   919:     }
+   920: 
+   921: 
+   922: 
+   923:     private async getUserColumns(): Promise<Set<string>> {
+   924: 
+   925:         const { rows } = await this.pg.query(
+   926: 
+   927:             `SELECT column_name
+   928: 
+   929:              FROM information_schema.columns
+   930: 
+   931:              WHERE table_schema = 'public' AND table_name = 'users'`,
+   932: 
+   933:         );
+   934: 
+   935:         return new Set(rows.map((r: any) => r.column_name));
+   936: 
+   937:     }
+   938: 
+   939: 
+   940: 
+   941:     async updateUser(id: string, dto: UpdateUserDto): Promise<void> {
+   942: 
+   943:         await this.ensureUserExists(id);
+   944: 
+   945:         const cols = await this.getUserColumns();
+   946: 
+   947:         const params: any[] = [id];
+   948: 
+   949:         const sets: string[] = [];
+   950: 
+   951: 
+   952: 
+   953:         if (dto.role !== undefined) {
+   954: 
+   955:             await this.updateRole(id, { role: dto.role });
+   956: 
+   957:         }
+   958: 
+   959: 
+   960: 
+   961:         if (dto.name !== undefined) {
+   962: 
+   963:             const { first, last } = splitDisplayName(dto.name);
+   964: 
+   965:             if (cols.has("first_name")) {
+   966: 
+   967:                 params.push(first);
+   968: 
+   969:                 sets.push(`first_name = $${params.length}`);
+   970: 
+   971:             }
+   972: 
+   973:             if (cols.has("last_name")) {
+   974: 
+   975:                 params.push(last);
+   976: 
+   977:                 sets.push(`last_name = $${params.length}`);
+   978: 
+   979:             }
+   980: 
+   981:         }
+   982: 
+   983: 
+   984: 
+   985:         if (dto.email !== undefined) {
+   986: 
+   987:             params.push(dto.email.trim().toLowerCase());
+   988: 
+   989:             sets.push(`email = $${params.length}`);
+   990: 
+   991:         }
+   992: 
+   993: 
+   994: 
+   995:         const optionalMap: Record<string, string> = {
+   996: 
+   997:             phone: "phone",
+   998: 
+   999:             address1: "address1",
+  1000: 
+  1001:             address2: "address2",
+  1002: 
+  1003:             city: "city",
+  1004: 
+  1005:             state: "state",
+  1006: 
+  1007:             postal: "postal",
+  1008: 
+  1009:             country: "country",
+  1010: 
+  1011:             avatarUrl: "avatar_url",
+  1012: 
+  1013:             avatarThumbUrl: "avatar_thumb_url",
+  1014: 
+  1015:         };
+  1016: 
+  1017: 
+  1018: 
+  1019:         for (const [key, column] of Object.entries(optionalMap)) {
+  1020: 
+  1021:             const value = (dto as any)[key];
+  1022: 
+  1023:             if (value !== undefined && cols.has(column)) {
+  1024: 
+  1025:                 params.push(value);
+  1026: 
+  1027:                 sets.push(`${column} = $${params.length}`);
+  1028: 
+  1029:             }
+  1030: 
+  1031:         }
+  1032: 
+  1033: 
+  1034: 
+  1035:         if (sets.length === 0) {
+  1036: 
+  1037:             return;
+  1038: 
+  1039:         }
+  1040: 
+  1041: 
+  1042: 
+  1043:         params.push(new Date());
+  1044: 
+  1045:         sets.push(`updated_at = $${params.length}`);
+  1046: 
+  1047: 
+  1048: 
+  1049:         const sql = `
+  1050: 
+  1051:             UPDATE public.users
+  1052: 
+  1053:             SET ${sets.join(", ")}
+  1054: 
+  1055:             WHERE id = $1
+  1056: 
+  1057:             RETURNING id
+  1058: 
+  1059:         `;
+  1060: 
+  1061:         const { rows } = await this.pg.query(sql, params);
+  1062: 
+  1063:         if (!rows[0]) throw new NotFoundException("User not found");
+  1064: 
+  1065:     }
+  1066: 
+  1067: }
+  1068: 
+  1069: 
+-----  END  CONTENT -----

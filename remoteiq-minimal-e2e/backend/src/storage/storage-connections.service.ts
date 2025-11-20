@@ -5,6 +5,7 @@ import {
 } from "@nestjs/common";
 import { PgPoolService } from "./pg-pool.service";
 import { OrganizationContextService } from "./organization-context.service";
+import { s3PutObject, s3Head, s3Delete, webdavProbe, webdavListDirs, sftpProbe } from "../backups/storage-clients";
 
 type StorageKind = "s3" | "nextcloud" | "gdrive" | "sftp";
 
@@ -64,7 +65,6 @@ export class StorageConnectionsService {
         private readonly orgCtx: OrganizationContextService,
     ) { }
 
-    /* ----------------------------- helpers ----------------------------- */
     private async orgId(): Promise<string> {
         return this.orgCtx.getDefaultOrganizationId();
     }
@@ -89,23 +89,12 @@ export class StorageConnectionsService {
         };
         const tags = Array.isArray(incoming.tags) ? incoming.tags : [];
         return {
-
             ...incoming,
             environment: incoming.environment ?? "dev",
             defaultFor,
             tags,
             encryptionAtRest: incoming.encryptionAtRest ?? false,
             compression: incoming.compression ?? "none",
-
-            environment: incoming.environment ?? "dev",
-            tags,
-            defaultFor,
-            encryptionAtRest: incoming.encryptionAtRest ?? false,
-            compression: incoming.compression ?? "none",
-            ...incoming,
-            defaultFor,
-            tags,
-
         };
     }
 
@@ -257,8 +246,6 @@ export class StorageConnectionsService {
         }
     }
 
-    /* ----------------------------- queries ----------------------------- */
-
     async list(): Promise<{ items: StorageConnectionDto[] }> {
         const orgId = await this.orgId();
         const { rows } = await this.db.query<StorageConnectionRow>(
@@ -373,23 +360,131 @@ export class StorageConnectionsService {
         return { features: deps };
     }
 
-    async test(body: { kind: StorageKind; config: Record<string, any> }): Promise<{ ok: boolean; phases: Record<string, boolean> }> {
+    async test(body: { id?: string; kind: StorageKind; config: Record<string, any> }): Promise<{ ok: boolean; phases: Record<string, boolean> }> {
         this.ensureKind(body.kind);
-        this.validatePayload({ name: "test", kind: body.kind, config: body.config });
-        const phases: Record<string, boolean> = {
-            validate: true,
-            connect: true,
-        };
-        return { ok: true, phases };
+        let cfg = { ...(body.config || {}) };
+
+        if (body.id) {
+            const orgId = await this.orgId();
+            const res = await this.db.query<StorageConnectionRow>(
+                `SELECT id, kind, config, secrets
+                   FROM storage_connections
+                  WHERE id=$1 AND organization_id=$2`,
+                [body.id, orgId],
+            );
+            const row = res.rows[0];
+            if (row && row.kind === body.kind) {
+                const savedCfg = row.config || {};
+                const secrets = row.secrets || {};
+                cfg = { ...savedCfg, ...cfg };
+                if (body.kind === "nextcloud") {
+                    if (!cfg.password && secrets.password) cfg.password = secrets.password;
+                }
+                if (body.kind === "s3") {
+                    if (!cfg.accessKeyId && secrets.accessKeyId) cfg.accessKeyId = secrets.accessKeyId;
+                    if (!cfg.secretAccessKey && secrets.secretAccessKey) cfg.secretAccessKey = secrets.secretAccessKey;
+                    if (!cfg.roleArn && secrets.roleArn) cfg.roleArn = secrets.roleArn;
+                    if (!cfg.externalId && secrets.externalId) cfg.externalId = secrets.externalId;
+                }
+                if (body.kind === "sftp") {
+                    if (!cfg.password && secrets.password) cfg.password = secrets.password;
+                    if (!cfg.privateKeyPem && secrets.privateKeyPem) cfg.privateKeyPem = secrets.privateKeyPem;
+                    if (!cfg.passphrase && secrets.passphrase) cfg.passphrase = secrets.passphrase;
+                }
+            }
+        }
+
+        this.validatePayload({ name: "test", kind: body.kind, config: cfg });
+
+        if (body.kind === "s3") {
+            const bucket = cfg.bucket;
+            const prefix = (cfg.prefix || "").replace(/^\/+|\/+$/g, "");
+            const key = (prefix ? `${prefix}/` : "") + `.remoteiq_probe_${Date.now()}.txt`;
+            const secret = {
+                region: cfg.region,
+                endpoint: cfg.endpoint,
+                accessKeyId: cfg.accessKeyId,
+                secretAccessKey: cfg.secretAccessKey,
+                forcePathStyle: !!cfg.pathStyle,
+            };
+            await s3PutObject(secret, bucket, key, Buffer.from("probe"));
+            const head = await s3Head(secret, bucket, key);
+            const ok = !!head;
+            await s3Delete(secret, bucket, key);
+            return { ok, phases: { validate: true, write: true, read: ok, delete: true } };
+        }
+
+        if (body.kind === "nextcloud") {
+            const phases = await webdavProbe({
+                url: cfg.webdavUrl,
+                username: cfg.username,
+                password: cfg.password,
+                path: cfg.path,
+            });
+            return { ok: phases.write && phases.read && phases.delete, phases: { validate: true, ...phases } };
+        }
+
+        if (body.kind === "sftp") {
+            const phases = await sftpProbe({
+                host: cfg.host,
+                port: cfg.port ?? 22,
+                username: cfg.username,
+                password: cfg.password,
+                privateKey: cfg.privateKeyPem,
+                passphrase: cfg.passphrase,
+                testPath: cfg.path,
+            });
+            return { ok: phases.write && phases.read && phases.delete, phases: { validate: true, ...phases } };
+        }
+
+        return { ok: true, phases: { validate: true, connect: true } };
     }
 
-    async browseNextcloud(body: { config: Record<string, any>; path: string }): Promise<{ ok: boolean; dirs: string[] }> {
+    // === UPDATED: hydrate secrets when browsing ===
+    // backend/src/storage/storage-connections.service.ts
+    async browseNextcloud(body: {
+        connectionId?: string;
+        config?: Record<string, any>;
+        path: string;
+    }): Promise<{ ok: boolean; dirs: string[] }> {
         if (!body?.path || !String(body.path).startsWith("/")) {
             throw new BadRequestException("Path must start with '/'");
         }
-        if (!body.config?.webdavUrl) {
-            throw new BadRequestException("webdavUrl required");
+
+        const cfg = { ...(body.config ?? {}) };
+
+        if (body.connectionId) {
+            const orgId = await this.orgId();
+            const { rows } = await this.db.query<{
+                id: string; kind: string; config: any; secrets: any;
+            }>(
+                `SELECT id, kind, config, secrets
+       FROM storage_connections
+       WHERE id=$1 AND organization_id=$2`,
+                [body.connectionId, orgId],
+            );
+            const row = rows[0];
+            if (!row) throw new NotFoundException("Connection not found");
+            if (row.kind !== "nextcloud") throw new BadRequestException("Connection is not Nextcloud/WebDAV");
+
+            // Always prefer stored config + secret when id is provided
+            const storedCfg = this.sanitizeConfig("nextcloud", row.config || {});
+            cfg.webdavUrl = storedCfg.webdavUrl;
+            cfg.username = storedCfg.username;
+            cfg.password = row.secrets?.password; // <- use saved secret
         }
-        return { ok: true, dirs: [] };
+
+        if (!cfg.webdavUrl || !cfg.username || !cfg.password) {
+            throw new BadRequestException("webdavUrl, username, and password are required to browse.");
+        }
+
+        const dirs = await webdavListDirs({
+            url: cfg.webdavUrl,
+            username: cfg.username,
+            password: cfg.password,
+            basePath: body.path,
+        });
+        return { ok: true, dirs };
     }
+
 }

@@ -16,18 +16,21 @@ import { existsSync, mkdirSync } from 'fs';
 import { join, extname } from 'path';
 import type { Request } from 'express';
 
-import { BrandingService } from "./branding.service";
+import { BrandingService } from './branding.service';
 import { UpdateBrandingDto } from './dto/update-branding.dto';
 
+// Remove trailing slashes and a trailing /static if present
+function sanitizeBaseUrl(raw: string) {
+    let base = (raw || '').trim();
+    base = base.replace(/\/+$/, '');          // trim trailing slashes
+    base = base.replace(/\/static\/?$/i, ''); // drop trailing /static
+    return base;
+}
 
 @ApiTags('branding')
 @Controller('api/branding')
 export class BrandingController {
     constructor(private readonly service: BrandingService) { }
-
-    /* ------------------------------------------------------------------ */
-    /* Read / Write settings                                               */
-    /* ------------------------------------------------------------------ */
 
     @Get()
     @ApiOkResponse({ description: 'Current branding settings' })
@@ -40,13 +43,6 @@ export class BrandingController {
     updateBranding(@Body() dto: UpdateBrandingDto) {
         return this.service.updateBranding(dto);
     }
-
-    /* ------------------------------------------------------------------ */
-    /* Uploads                                                             */
-    /* - General images (logos, backgrounds) -> /api/branding/upload       */
-    /* - Favicon (.ico only)             -> /api/branding/upload-favicon   */
-    /* Files are written to ./public/uploads and served at /static/uploads */
-    /* ------------------------------------------------------------------ */
 
     /** Upload general image (logos, login backgrounds). Field name: `file` */
     @Post('upload')
@@ -71,17 +67,17 @@ export class BrandingController {
                 }
                 cb(null, true);
             },
-            limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+            limits: { fileSize: 5 * 1024 * 1024 },
         }),
     )
     uploadImage(@UploadedFile() file: Express.Multer.File, @Req() req: Request) {
         if (!file) throw new BadRequestException('No file uploaded');
 
-        const base =
-            process.env.PUBLIC_BASE_URL ||
-            `${req.protocol}://${req.get('host')}`;
+        const rawBase =
+            process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+        const base = sanitizeBaseUrl(rawBase);
 
-        // NOTE: main.ts must call app.useStaticAssets(..., { prefix: '/static/' })
+        // main.ts serves ./public at /static
         return { url: `${base}/static/uploads/${file.filename}` };
     }
 
@@ -112,15 +108,15 @@ export class BrandingController {
                 }
                 cb(null, true);
             },
-            limits: { fileSize: 512 * 1024 }, // 512KB
+            limits: { fileSize: 512 * 1024 },
         }),
     )
     uploadFavicon(@UploadedFile() file: Express.Multer.File, @Req() req: Request) {
         if (!file) throw new BadRequestException('No file uploaded');
 
-        const base =
-            process.env.PUBLIC_BASE_URL ||
-            `${req.protocol}://${req.get('host')}`;
+        const rawBase =
+            process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+        const base = sanitizeBaseUrl(rawBase);
 
         return { url: `${base}/static/uploads/${file.filename}` };
     }

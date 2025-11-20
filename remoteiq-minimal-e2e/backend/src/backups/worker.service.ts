@@ -5,20 +5,31 @@ import * as os from "os";
 import * as path from "path";
 import archiver from "archiver";
 import { PgPoolService } from "../storage/pg-pool.service";
-import { s3PutObject, s3Head, ensureDir } from "./storage-clients";
+import { s3PutObject, s3Head, ensureDir, webdavUpload, gdriveUpload } from "./storage-clients";
 import { NotifierService } from "./notifier.service";
 
 type Job = { id: string; status: string; cancelled: boolean };
 
+type FanoutDest =
+    | { kind: "local"; path: string; priority?: number }
+    | { kind: "s3"; connectionId: string; bucket?: string; prefix?: string; priority?: number }
+    | { kind: "nextcloud"; connectionId: string; path: string; priority?: number }
+    | { kind: "gdrive"; connectionId: string; subfolder?: string; priority?: number }
+    | { kind: "remote"; connectionId: string; path: string; priority?: number };
+
 type JobConfig = {
     targets: string[];
     destination:
-        | { kind: "local"; path: string }
-        | { kind: "s3"; connectionId: string; bucket?: string; prefix?: string }
-        | { kind: "nextcloud"; connectionId: string; path: string }
-        | { kind: "gdrive"; connectionId: string; subfolder?: string }
-        | { kind: "remote"; connectionId: string; path: string };
+    | { kind: "local"; path: string }
+    | { kind: "s3"; connectionId: string; bucket?: string; prefix?: string }
+    | { kind: "nextcloud"; connectionId: string; path: string }
+    | { kind: "gdrive"; connectionId: string; subfolder?: string }
+    | { kind: "remote"; connectionId: string; path: string };
+    extras: FanoutDest[]; // additional destinations (fan-out)
     notifications: { email?: boolean; slack?: boolean; webhook?: boolean };
+    /** Runner hints (from policy.options) */
+    minSuccess?: number;
+    parallelism?: number;
 };
 
 @Injectable()
@@ -31,10 +42,7 @@ export class WorkerService {
         private readonly notifier: NotifierService
     ) { }
 
-    /**
-     * Picks the oldest running job (inserted as 'running' by BackupsService.startBackupNow)
-     * and processes it. Re-entrant safe; returns immediately if a run is in progress.
-     */
+    /** Picks the oldest running job and processes it (re-entrant safe). */
     async runOneIfAny() {
         if (this.running) return;
         const job = await this.pickJob();
@@ -49,7 +57,6 @@ export class WorkerService {
     }
 
     private async pickJob(): Promise<Job | null> {
-        // Select oldest running job (already set to 'running' by the service)
         const { rows } = await this.db.query(
             `SELECT id, status, cancelled
          FROM backup_jobs
@@ -69,13 +76,31 @@ export class WorkerService {
         );
     }
 
+    /** simple bounded-concurrency helper */
+    private async pLimit<T>(limit: number, tasks: (() => Promise<T>)[]) {
+        const results: Promise<T>[] = [];
+        const pool: Promise<void>[] = [];
+        let i = 0;
+        const run = async () => {
+            while (i < tasks.length) {
+                const idx = i++;
+                results[idx] = tasks[idx]();
+                await results[idx].then(() => void 0, () => void 0);
+            }
+        };
+        for (let k = 0; k < Math.max(1, limit); k++) pool.push(run());
+        await Promise.all(pool);
+        return Promise.allSettled(results);
+    }
+
     /**
      * Process a single job:
      *  - export selected targets to NDJSON (skip missing)
      *  - tar.gz into an archive
-     *  - write to local path or upload to S3
+     *  - write to local path or upload to remote destination(s)
+     *  - fan-out to extra destinations
      *  - persist manifest/log
-     *  - mark success
+     *  - mark success (respecting minSuccess)
      */
     async process(jobId: string) {
         const started = Date.now();
@@ -105,18 +130,13 @@ export class WorkerService {
             await this.appendLog(jobId, `Exporting targets: ${targets.join(", ")}\n`);
 
             for (const t of targets) {
-                // Resolve an existing table/view for this logical target (or skip)
                 const table = await this.resolveExistingTableForTarget(jobId, t);
                 if (!table) {
-                    await this.appendLog(
-                        jobId,
-                        `  - ${t}: skipped (no mapped table/view exists)\n`
-                    );
+                    await this.appendLog(jobId, `  - ${t}: skipped (no mapped table/view exists)\n`);
                     manifest.counts[t] = 0;
                     continue;
                 }
 
-                // Export rows to NDJSON
                 const file = path.join(exportDir, `${t}.ndjson`);
                 const ws = fs.createWriteStream(file, { flags: "w" });
 
@@ -132,12 +152,8 @@ export class WorkerService {
                     manifest.counts[t] = count;
                     await this.appendLog(jobId, `  - ${t}: ${count} rows (from ${table})\n`);
                 } catch (e: any) {
-                    // If the table disappeared between resolve and select, log and skip
                     await new Promise((r) => ws.end(r));
-                    await this.appendLog(
-                        jobId,
-                        `  - ${t}: error reading ${table} → ${e?.message || e}; skipped\n`
-                    );
+                    await this.appendLog(jobId, `  - ${t}: error reading ${table} → ${e?.message || e}; skipped\n`);
                     manifest.counts[t] = 0;
                 }
             }
@@ -151,14 +167,12 @@ export class WorkerService {
             await this.createTarGz(exportDir, archivePath);
 
             const stat = await fsp.stat(archivePath);
-            await this.appendLog(
-                jobId,
-                `Archive created: ${archiveName} (${stat.size} bytes)\n`
-            );
+            await this.appendLog(jobId, `Archive created: ${archiveName} (${stat.size} bytes)\n`);
 
-            // Upload per destination
+            // Upload primary destination
             const dest = cfg.destination as any;
             let artifactLoc: any = null;
+            let successCount = 0;
 
             if (dest.kind === "local") {
                 const full = path.join(dest.path, path.basename(archivePath));
@@ -166,8 +180,8 @@ export class WorkerService {
                 await fsp.copyFile(archivePath, full);
                 artifactLoc = { kind: "local", path: full };
                 await this.appendLog(jobId, `Saved to local path: ${full}\n`);
+                successCount += 1;
             } else if (dest.kind === "s3") {
-                // Pull secrets from storage_connections
                 const cid = dest.connectionId;
                 const conn = (
                     await this.db.query(
@@ -194,10 +208,88 @@ export class WorkerService {
                     endpoint: cfgS3.endpoint,
                 };
                 await this.appendLog(jobId, `Uploaded to s3://${bucket}/${key}\n`);
+                successCount += 1;
+            } else if (dest.kind === "nextcloud") {
+                const cid = dest.connectionId;
+                const conn = (
+                    await this.db.query(
+                        `SELECT config, secrets
+               FROM storage_connections
+              WHERE id=$1 AND kind='nextcloud'`,
+                        [cid]
+                    )
+                ).rows[0];
+                if (!conn) throw new Error("Nextcloud connection not found");
+                const webdavUrl = conn.config?.webdavUrl;
+                const username = conn.config?.username;
+                const password = conn.secrets?.password;
+                const directory = String(dest.path || conn.config?.path || "/").trim();
+                if (!webdavUrl || !username || !password) {
+                    throw new Error("Nextcloud connection incomplete (need webdavUrl, username, password)");
+                }
+                const remotePath = await webdavUpload({
+                    url: webdavUrl,
+                    username,
+                    password,
+                    directory,
+                    filename: path.basename(archivePath),
+                    body: fs.createReadStream(archivePath),
+                });
+                artifactLoc = { kind: "nextcloud", connectionId: cid, path: remotePath };
+                await this.appendLog(jobId, `Uploaded to Nextcloud ${remotePath}\n`);
+                successCount += 1;
+            } else if (dest.kind === "gdrive") {
+                const cid = dest.connectionId;
+                const conn = (
+                    await this.db.query(
+                        `SELECT config, secrets
+               FROM storage_connections
+              WHERE id=$1 AND kind='gdrive'`,
+                        [cid]
+                    )
+                ).rows[0];
+                if (!conn) throw new Error("GDrive connection not found");
+
+                const credentialsJson = conn.secrets?.serviceAccountJson;
+                const folderId: string | undefined = conn.config?.folderId;
+                if (!credentialsJson || !folderId) {
+                    throw new Error("GDrive connection incomplete (missing service account JSON or folderId)");
+                }
+
+                const { fileId } = await gdriveUpload({
+                    credentialsJson,
+                    folderId,
+                    subfolder: dest.subfolder || undefined,
+                    name: path.basename(archivePath),
+                    body: fs.createReadStream(archivePath),
+                });
+
+                artifactLoc = {
+                    kind: "gdrive",
+                    connectionId: cid,
+                    fileId,
+                    name: path.basename(archivePath),
+                };
+                await this.appendLog(jobId, `Uploaded to Google Drive fileId=${fileId}\n`);
+                successCount += 1;
             } else {
-                throw new Error(
-                    `Destination kind '${dest.kind}' not supported for upload yet`
-                );
+                // Primary kinds not supported (guarded by service), but double-check here
+                throw new Error(`Destination kind '${dest.kind}' not supported for primary upload`);
+            }
+
+            // ---- Fan-out to extra destinations (replication) ----
+            const replicaOk = await this.replicateExtras(
+                jobId,
+                cfg.extras || [],
+                archivePath,
+                path.basename(archivePath),
+                cfg.parallelism ?? 2
+            );
+            successCount += replicaOk;
+
+            // Enforce minSuccess if provided
+            if (cfg.minSuccess && successCount < cfg.minSuccess) {
+                throw new Error(`Only ${successCount} destination(s) succeeded; required minSuccess=${cfg.minSuccess}`);
             }
 
             // Save manifest & finalize
@@ -226,12 +318,11 @@ export class WorkerService {
             await this.notify(
                 cfg.notifications,
                 `Backup ${jobId} success`,
-                `Size=${stat.size} Duration=${durationSec}s`
+                `Size=${stat.size} Duration=${durationSec}s DestinationsOK=${successCount}`
             );
         } catch (e: any) {
             this.log.error(`Backup job ${jobId} failed: ${e?.message || e}`);
             await this.fail(jobId, e?.message || "Worker error");
-            // try to notify failure, best-effort
             try {
                 await this.notify(
                     cfg?.notifications ?? {},
@@ -272,11 +363,8 @@ export class WorkerService {
 
     /**
      * Map a logical target to candidate DB objects and return the first that exists.
-     * Uses to_regclass to test existence safely (prevents injection via fixed mapping).
      */
     private async resolveExistingTableForTarget(jobId: string, target: string): Promise<string | null> {
-        // Strict, explicit mapping only (no user input becomes SQL identifiers).
-        // Add/adjust candidates here to match your schema names.
         const candidatesByTarget: Record<string, string[]> = {
             users: ["public.users", "users"],
             roles: ["public.roles", "roles"],
@@ -293,47 +381,54 @@ export class WorkerService {
             const exists = !!reg.rows?.[0]?.oid;
             if (exists) return ident;
         }
-        // log a one-liner for visibility
         await this.appendLog(jobId, `    (no table/view found for target "${target}")\n`);
         return null;
     }
 
+    /**
+     * Load job config including the primary destination and fan-out destinations.
+     */
     private async loadJobConfig(jobId: string): Promise<JobConfig | null> {
-        const { rows } = await this.db.query(
+        const head = await this.db.query(
             `SELECT j.id,
-                    p.options,
-                    d.configuration AS destination_configuration
-               FROM backup_jobs j
-          LEFT JOIN backup_policies p ON j.policy_id = p.id
-          LEFT JOIN backup_destinations d ON d.id = p.destination_id
-              WHERE j.id=$1`,
+              p.options,
+              d.configuration AS destination_configuration
+         FROM backup_jobs j
+    LEFT JOIN backup_policies p ON j.policy_id = p.id
+    LEFT JOIN backup_destinations d ON d.id = p.destination_id
+        WHERE j.id=$1`,
             [jobId]
         );
-        if (!rows.length) {
-            return null;
-        }
+        if (!head.rows.length) return null;
 
-        const options = rows[0].options && typeof rows[0].options === "object" ? rows[0].options : {};
-        if (options.enabled === false) {
-            return null;
-        }
+        const options = head.rows[0].options && typeof head.rows[0].options === "object" ? head.rows[0].options : {};
+        if (options.enabled === false) return null;
 
-        const destination = rows[0].destination_configuration || {};
-        if (!destination.kind) {
-            return null;
-        }
+        const destination = head.rows[0].destination_configuration || {};
+        if (!destination.kind) return null;
 
         const targets = Array.isArray(options.targets) ? options.targets.filter(Boolean) : [];
         const notifications =
-            options.notifications && typeof options.notifications === "object"
-                ? options.notifications
-                : {};
+            options.notifications && typeof options.notifications === "object" ? options.notifications : {};
+        const minSuccess =
+            options.minSuccess != null ? Number(options.minSuccess) : undefined;
+        const parallelism =
+            options.parallelism != null ? Number(options.parallelism) : undefined;
 
-        return {
-            targets,
-            destination,
-            notifications,
-        };
+        const extraRows = await this.db.query(
+            `SELECT bjd.is_primary, bd.configuration
+         FROM backup_job_destinations bjd
+         JOIN backup_destinations bd ON bd.id = bjd.destination_id
+        WHERE bjd.job_id=$1
+        ORDER BY bjd.is_primary DESC, bjd.priority ASC`,
+            [jobId]
+        );
+
+        const extras: FanoutDest[] = extraRows.rows
+            .filter((r) => !r.is_primary)
+            .map((r) => r.configuration as FanoutDest);
+
+        return { targets, destination, notifications, extras, minSuccess, parallelism };
     }
 
     private async notify(
@@ -346,5 +441,109 @@ export class WorkerService {
         } catch (e) {
             this.log.warn(`Notify failed: ${e}`);
         }
+    }
+
+    /**
+     * Copy/upload the finished archive to each extra destination. Best-effort:
+     * returns how many succeeded. Runs with bounded concurrency.
+     */
+    private async replicateExtras(
+        jobId: string,
+        extras: FanoutDest[],
+        localArchivePath: string,
+        finalFileName: string,
+        parallelism = 2
+    ): Promise<number> {
+        if (!extras?.length) return 0;
+
+        const ordered = [...extras].sort((a, b) => (a.priority ?? 1000) - (b.priority ?? 1000));
+
+        const tasks = ordered.map((dest) => async () => {
+            try {
+                if (dest.kind === "local") {
+                    const out = path.join(dest.path, finalFileName);
+                    await ensureDir(dest.path);
+                    await fsp.copyFile(localArchivePath, out);
+                    await this.appendLog(jobId, `[replica:local] ${out}\n`);
+                    return true;
+                } else if (dest.kind === "s3") {
+                    const row = (
+                        await this.db.query(
+                            `SELECT config, secrets FROM storage_connections WHERE id=$1 AND kind='s3'`,
+                            [dest.connectionId]
+                        )
+                    ).rows[0];
+                    if (!row) throw new Error("S3 connection not found");
+                    const s3Cfg = { ...(row.config || {}), ...(row.secrets || {}) };
+                    const bucket = dest.bucket || s3Cfg.bucket;
+                    if (!bucket) throw new Error("S3 bucket missing");
+                    const prefix = (dest.prefix || s3Cfg.prefix || "").replace(/^\/+|\/+$/g, "");
+                    const key = (prefix ? `${prefix}/` : "") + finalFileName;
+                    await s3PutObject(s3Cfg, bucket, key, fs.createReadStream(localArchivePath));
+                    await this.appendLog(jobId, `[replica:s3] s3://${bucket}/${key}\n`);
+                    return true;
+                } else if (dest.kind === "nextcloud") {
+                    const row = (
+                        await this.db.query(
+                            `SELECT config, secrets FROM storage_connections WHERE id=$1 AND kind='nextcloud'`,
+                            [dest.connectionId]
+                        )
+                    ).rows[0];
+                    if (!row) throw new Error("Nextcloud connection not found");
+                    const webdavUrl = row.config?.webdavUrl;
+                    const username = row.config?.username;
+                    const password = row.secrets?.password;
+                    if (!webdavUrl || !username || !password || !dest.path) {
+                        throw new Error("Nextcloud config incomplete");
+                    }
+                    await webdavUpload({
+                        url: webdavUrl,
+                        username,
+                        password,
+                        directory: dest.path,
+                        filename: finalFileName,
+                        body: fs.createReadStream(localArchivePath),
+                    });
+                    await this.appendLog(jobId, `[replica:nextcloud] ${dest.path}/${finalFileName}\n`);
+                    return true;
+                } else if (dest.kind === "gdrive") {
+                    const row = (
+                        await this.db.query(
+                            `SELECT config, secrets FROM storage_connections WHERE id=$1 AND kind='gdrive'`,
+                            [dest.connectionId]
+                        )
+                    ).rows[0];
+                    if (!row) throw new Error("GDrive connection not found");
+                    const credentialsJson = row.secrets?.serviceAccountJson;
+                    const folderId: string | undefined = row.config?.folderId;
+                    if (!credentialsJson || !folderId) throw new Error("GDrive connection incomplete");
+
+                    await gdriveUpload({
+                        credentialsJson,
+                        folderId,
+                        subfolder: dest.subfolder || undefined,
+                        name: finalFileName,
+                        body: fs.createReadStream(localArchivePath),
+                    });
+                    await this.appendLog(jobId, `[replica:gdrive] folderId=${folderId}${dest.subfolder ? `/${dest.subfolder}` : ""}/${finalFileName}\n`);
+                    return true;
+                } else if (dest.kind === "remote") {
+                    await this.appendLog(jobId, `[replica:sftp] NOT IMPLEMENTED (skipped)\n`);
+                    return false;
+                } else {
+                    await this.appendLog(jobId, `[replica:${(dest as any).kind}] Unknown kind (skipped)\n`);
+                    return false;
+                }
+            } catch (err: any) {
+                await this.appendLog(
+                    jobId,
+                    `[replica:${(dest as any).kind}] ERROR: ${(err?.message || String(err)).slice(0, 500)}\n`
+                );
+                return false;
+            }
+        });
+
+        const settled = await this.pLimit(Math.max(1, Number(parallelism) || 2), tasks);
+        return settled.reduce((ok, r) => ok + (r.status === "fulfilled" && r.value ? 1 : 0), 0);
     }
 }

@@ -8,19 +8,25 @@ const PUBLIC_PATHS = new Set<string>([
     "/sitemap.xml",
 ]);
 
-export function middleware(req: NextRequest) {
+function getApiBase(req: NextRequest) {
+    const env = process.env.NEXT_PUBLIC_API_BASE?.replace(/\/+$/, "");
+    if (env) return env;
+    // fallback: assume API on same origin at /api
+    return req.nextUrl.origin.replace(/\/+$/, "");
+}
+
+export async function middleware(req: NextRequest) {
     const { pathname } = req.nextUrl;
 
-    // Normalize legacy route to the new one
+    // Normalize old path
     if (pathname === "/auth/login") {
         const url = req.nextUrl.clone();
         url.pathname = "/login";
-        // default to home after login
         url.searchParams.set("next", "/");
         return NextResponse.redirect(url);
     }
 
-    // Never run on /login or static assets (avoid loops)
+    // Skip static & login
     if (
         pathname === "/login" ||
         pathname.startsWith("/_next/") ||
@@ -31,7 +37,7 @@ export function middleware(req: NextRequest) {
         return NextResponse.next();
     }
 
-    // Allow any frontend /api if you have them
+    // Allow FE-only API routes
     if (pathname.startsWith("/api/")) {
         return NextResponse.next();
     }
@@ -40,21 +46,47 @@ export function middleware(req: NextRequest) {
         return NextResponse.next();
     }
 
+    // Require auth cookie in general
     const token = req.cookies.get("auth_token")?.value;
-
     if (!token) {
         const url = req.nextUrl.clone();
         url.pathname = "/login";
-        // set next to the requested path; it’s sanitized on the login page
         url.searchParams.set("next", pathname || "/");
         return NextResponse.redirect(url);
+    }
+
+    // Hard-gate Administration
+    if (pathname.startsWith("/administration")) {
+        try {
+            const apiBase = getApiBase(req);
+            const res = await fetch(`${apiBase}/api/auth/me`, {
+                headers: { cookie: req.headers.get("cookie") ?? "" },
+                cache: "no-store",
+            });
+            if (!res.ok) throw new Error(`auth/me ${res.status}`);
+            const data = await res.json();
+            const perms: string[] =
+                data?.user?.permissions ??
+                data?.permissions ??
+                [];
+            const hasAdmin = Array.isArray(perms) && perms.includes("admin.access");
+            if (!hasAdmin) {
+                const url = req.nextUrl.clone();
+                url.pathname = "/";
+                url.searchParams.set("denied", "admin");
+                return NextResponse.redirect(url);
+            }
+        } catch {
+            const url = req.nextUrl.clone();
+            url.pathname = "/login";
+            url.searchParams.set("next", pathname || "/");
+            return NextResponse.redirect(url);
+        }
     }
 
     return NextResponse.next();
 }
 
 export const config = {
-    matcher: [
-        "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|login).*)",
-    ],
+    matcher: ["/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|login).*)"],
 };

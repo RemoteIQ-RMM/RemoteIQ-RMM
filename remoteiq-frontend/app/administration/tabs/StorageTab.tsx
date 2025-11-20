@@ -35,6 +35,8 @@ import {
     Download as DownloadIcon,
     ShieldCheck,
     AlertTriangle,
+    Eye,
+    EyeOff,
 } from "lucide-react";
 import { LabeledInput, LabeledNumber, CheckToggle } from "../helpers";
 import { jfetch } from "@/lib/api";
@@ -61,20 +63,18 @@ import {
     type DependentsResp,
 } from "@/lib/storage";
 
-// --- Toast helper: auto-dismiss + (optional) dedupe by id ---
+// --- Toast helper
 type ToastOpts = Parameters<ReturnType<typeof useToast>["toast"]>[0];
 function toastWithDefaults(
     t: ReturnType<typeof useToast>["toast"],
     opts: ToastOpts
 ) {
-    t({ duration: 6000, ...opts } as any); // 6s default
+    t({ duration: 6000, ...opts } as any);
 }
 
-/* ----------------------------- Local type aliases (no conflicts) ----------------------------- */
 type StorageKind = "s3" | "nextcloud" | "gdrive" | "sftp";
 type Env = "dev" | "staging" | "prod";
 
-/* ----------------------------- Helpers ----------------------------- */
 function looksLikeUrl(u: string) {
     try {
         const url = new URL(u);
@@ -89,18 +89,9 @@ function isAbsPath(p: string) {
 function toCsv(arr?: string[]) {
     return (arr ?? []).join(", ");
 }
-function fromCsv(s: string) {
-    return s
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean);
-}
 
-/* ----------------------------- Component ----------------------------- */
 export default function StorageTab() {
     const { toast } = useToast();
-
-    /* Prevent StrictMode double-invoke in dev from firing refresh() twice */
     const didInitRef = React.useRef(false);
 
     const [loading, setLoading] = React.useState(true);
@@ -111,11 +102,12 @@ export default function StorageTab() {
     const [connections, setConnections] = React.useState<StorageConnection[]>([]);
     const [selectedId, setSelectedId] = React.useState<string | null>(null);
 
-    /* delete confirm */
     const [confirmDeleteOpen, setConfirmDeleteOpen] = React.useState(false);
-
-    /* last validation errors for inline display */
     const [errors, setErrors] = React.useState<string[]>([]);
+    const [showNcPassword, setShowNcPassword] = React.useState(false);
+
+    // raw text state for tags so commas/spaces aren't eaten while typing
+    const [tagsRaw, setTagsRaw] = React.useState<string>("");
 
     const [draft, setDraft] = React.useState<StorageConnection>({
         id: "",
@@ -174,7 +166,7 @@ export default function StorageTab() {
     }, [toast]);
 
     React.useEffect(() => {
-        if (didInitRef.current) return; // prevents StrictMode double call
+        if (didInitRef.current) return;
         didInitRef.current = true;
         refresh();
     }, [refresh]);
@@ -216,6 +208,7 @@ export default function StorageTab() {
             health: selected.health ?? { status: "unknown" },
             hasSecret: selected.hasSecret,
         });
+        setTagsRaw(toCsv(selected.meta?.tags ?? []));
         setErrors([]);
     }, [selected]);
 
@@ -282,12 +275,13 @@ export default function StorageTab() {
             } as SftpConnConfig;
         }
         setDraft(base);
+        setTagsRaw("");
         setErrors([]);
     }
 
     function validate(): string[] {
         const errs: string[] = [];
-        if (!draft.name.trim()) errs.push("Name is required.");
+        if (!draft.name?.trim()) errs.push("Name is required.");
         if (draft.kind === "s3") {
             const c = draft.config as S3ConnConfig;
             if (!c.bucket?.trim()) errs.push("S3 bucket is required.");
@@ -319,17 +313,13 @@ export default function StorageTab() {
                 errs.push("SFTP path must be an absolute path.");
             if (c.privateKeyPem && c.privateKeyPem.length < 64)
                 errs.push("SFTP private key looks too short.");
-            if (
-                c.hostKeyFingerprint &&
-                !/^SHA256:[A-Za-z0-9+/=]+$/.test(c.hostKeyFingerprint)
-            ) {
+            if (c.hostKeyFingerprint && !/^SHA256:[A-Za-z0-9+/=]+$/.test(c.hostKeyFingerprint)) {
                 errs.push("Host key fingerprint must look like 'SHA256:xxxx'.");
             }
         }
         return errs;
     }
 
-    /* prevent editing when !canEdit without needing readOnly props on helpers */
     const canEdit = draft.capabilities?.canEdit !== false;
     const canDelete = draft.capabilities?.canDelete !== false;
     const onIfEditable =
@@ -367,6 +357,8 @@ export default function StorageTab() {
                 if (!cfg.externalId) delete cfg.externalId;
                 if (!cfg.sessionDurationSec) delete cfg.sessionDurationSec;
             }
+            // gdrive: we intentionally keep serviceAccountJson in config on save;
+            // backend will move it to secrets.
 
             const payload = {
                 id: asCopy ? undefined : draft.id || undefined,
@@ -406,6 +398,7 @@ export default function StorageTab() {
                     (clean.config as S3ConnConfig).accessKeyId = "";
                     (clean.config as S3ConnConfig).secretAccessKey = "";
                 }
+                // gdrive: leave as-is; sensitive JSON is already moved server-side
                 return clean;
             });
             setErrors([]);
@@ -455,6 +448,7 @@ export default function StorageTab() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: {
+                    id: draft.id || undefined,
                     kind: draft.kind,
                     config: cfg,
                     meta: draft.meta,
@@ -552,30 +546,108 @@ export default function StorageTab() {
         a.click();
         URL.revokeObjectURL(url);
     }
+
     function importFile(e: React.ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0];
         if (!file) return;
         const reader = new FileReader();
         reader.onload = () => {
             try {
-                const obj = JSON.parse(String(reader.result));
-                if (obj.kind === "nextcloud" && obj.config) obj.config.password = "";
-                if (obj.kind === "sftp" && obj.config) {
-                    obj.config.password = "";
-                    obj.config.privateKeyPem = "";
-                    obj.config.passphrase = "";
+                const obj = JSON.parse(String(reader.result) || "{}");
+
+                // --- Branch 1: Imported an exported StorageConnection JSON (our own format)
+                const looksLikeConnection =
+                    obj &&
+                    typeof obj === "object" &&
+                    obj.kind &&
+                    obj.config &&
+                    (typeof obj.name === "string" || obj.name === "");
+
+                // --- Branch 2: Imported a raw Google service account JSON
+                const looksLikeGService =
+                    obj &&
+                    typeof obj === "object" &&
+                    obj.type === "service_account" &&
+                    typeof obj.client_email === "string" &&
+                    typeof obj.private_key === "string";
+
+                if (looksLikeConnection) {
+                    // sanitize secrets as usual
+                    if (obj.kind === "nextcloud" && obj.config) obj.config.password = "";
+                    if (obj.kind === "sftp" && obj.config) {
+                        obj.config.password = "";
+                        obj.config.privateKeyPem = "";
+                        obj.config.passphrase = "";
+                    }
+                    if (obj.kind === "s3" && obj.config) {
+                        obj.config.accessKeyId = "";
+                        obj.config.secretAccessKey = "";
+                    }
+                    setDraft(obj);
+                    setTagsRaw(toCsv(obj?.meta?.tags ?? []));
+                    setErrors([]);
+                    toast({
+                        title: "Imported connection JSON",
+                        variant: "success",
+                        kind: "success",
+                    });
+                    return;
                 }
-                if (obj.kind === "s3" && obj.config) {
-                    obj.config.accessKeyId = "";
-                    obj.config.secretAccessKey = "";
+
+                if (looksLikeGService) {
+                    // Build a brand-new GDrive draft using the service account JSON
+                    const suggestedName =
+                        (obj.client_email as string)
+                            ?.replace("@", " @ ")
+                            ?.replace(".iam.gserviceaccount.com", "") ||
+                        obj.project_id ||
+                        "Google Drive (Service Account)";
+
+                    const newDraft: StorageConnection = {
+                        id: "",
+                        name: suggestedName,
+                        kind: "gdrive",
+                        config: {
+                            folderId: "",
+                            // Let backend move this into secrets via partitionSecrets
+                            serviceAccountJson: obj,
+                            accountEmail: obj.client_email,
+                            authMode: "service_account",
+                        } as unknown as GDriveConnConfig,
+                        meta: {
+                            environment: "dev",
+                            tags: ["gdrive", "backups"],
+                            defaultFor: { backups: false, exports: false, artifacts: false },
+                            encryptionAtRest: false,
+                            compression: "none",
+                        },
+                        capabilities: {
+                            canUse: true,
+                            canEdit: true,
+                            canRotate: true,
+                            canDelete: true,
+                        },
+                        health: { status: "unknown" },
+                    };
+
+                    setDraft(newDraft);
+                    setTagsRaw(toCsv(newDraft.meta?.tags ?? []));
+                    setErrors([]);
+
+                    toast({
+                        title: "Google service account imported",
+                        description:
+                            "Paste the Drive Folder ID and click Save. Remember to share that folder with this service account email.",
+                        variant: "success",
+                        kind: "success",
+                    });
+                    return;
                 }
-                setDraft(obj);
-                setErrors([]);
-                toast({
-                    title: "Imported",
-                    variant: "success",
-                    kind: "success",
-                });
+
+                // Fallback: not recognized
+                throw new Error(
+                    "Unsupported JSON. Import an exported connection JSON or a Google service account JSON."
+                );
             } catch (err: any) {
                 toast({
                     title: "Invalid JSON",
@@ -594,7 +666,8 @@ export default function StorageTab() {
         setBrowsing("nextcloud");
         try {
             const cfg: any = { ...(draft.config as any) };
-            if (!cfg.password) delete cfg.password;
+            delete cfg.password; // ensure server reads stored secret
+
             const res = await jfetch<{
                 ok: boolean;
                 dirs?: string[];
@@ -604,14 +677,16 @@ export default function StorageTab() {
                 headers: { "Content-Type": "application/json" },
                 body: {
                     kind: "nextcloud",
+                    connectionId: draft.id || undefined,
                     config: cfg,
-                    path: (draft.config as NextcloudConnConfig).path || "/",
+                    path: (draft.config as any).path || "/",
                 },
             });
+
             const dirs = res?.dirs ?? [];
             setDraft((d) => ({
                 ...d,
-                config: { ...(d.config as NextcloudConnConfig), _browse: dirs },
+                config: { ...(d.config as any), _browse: dirs },
             }));
             if (!res?.ok) throw new Error(res?.error || "Browse failed");
         } catch (e: any) {
@@ -668,9 +743,7 @@ export default function StorageTab() {
                     </CardDescription>
                 </CardHeader>
 
-                {/* More breathing room */}
                 <CardContent className="space-y-8">
-                    {/* Global validation callout (if any) */}
                     {errors.length > 0 && (
                         <div className="rounded-md border border-red-300/60 bg-red-50/40 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
                             <div className="font-medium mb-1">Please fix the following:</div>
@@ -682,7 +755,6 @@ export default function StorageTab() {
                         </div>
                     )}
 
-                    {/* Connections row */}
                     <div className="rounded-md border p-4 space-y-4 bg-muted/30">
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
@@ -741,10 +813,8 @@ export default function StorageTab() {
                         </div>
 
                         <div className="grid gap-4 md:grid-cols-12 items-start">
-                            {/* Left cluster */}
                             <div className="md:col-span-9">
                                 <div className="grid gap-3 md:grid-cols-12 items-start">
-                                    {/* Edit existing */}
                                     <div className="md:col-span-4 self-start">
                                         <Label className="text-sm">Edit existing connection</Label>
                                         {loading ? (
@@ -782,7 +852,6 @@ export default function StorageTab() {
                                         )}
                                     </div>
 
-                                    {/* Kind */}
                                     <div className="md:col-span-4 self-start">
                                         <Label className="text-sm">Kind</Label>
                                         <Select
@@ -801,7 +870,6 @@ export default function StorageTab() {
                                         </Select>
                                     </div>
 
-                                    {/* Name */}
                                     <div className="md:col-span-4 self-start">
                                         <LabeledInput
                                             label="Name"
@@ -809,11 +877,10 @@ export default function StorageTab() {
                                             onChange={onIfEditable<string>((v) =>
                                                 setDraft((d) => ({ ...d, name: v }))
                                             )}
-                                            placeholder="e.g. Prod S3, Offsite Nextcloud"
+                                            placeholder="e.g. Prod S3, Offsite Nextcloud, GDrive Backups"
                                         />
                                     </div>
 
-                                    {/* Env */}
                                     <div className="md:col-span-4 self-start">
                                         <Label className="text-sm">Environment</Label>
                                         <Select
@@ -836,22 +903,37 @@ export default function StorageTab() {
                                         </Select>
                                     </div>
 
-                                    {/* Tags */}
+                                    {/* TAGS */}
                                     <div className="md:col-span-8 self-start">
-                                        <LabeledInput
-                                            label="Tags (comma-separated)"
-                                            value={toCsv(draft.meta?.tags)}
-                                            onChange={onIfEditable<string>((v) =>
-                                                setDraft((d) => ({
-                                                    ...d,
-                                                    meta: { ...(d.meta || {}), tags: fromCsv(v) },
-                                                }))
-                                            )}
-                                            placeholder="backup, offsite, cost-optimized"
-                                        />
+                                        <div className="grid gap-1">
+                                            <Label className="text-sm">Tags (comma-separated)</Label>
+                                            <Input
+                                                type="text"
+                                                inputMode="text"
+                                                autoComplete="off"
+                                                spellCheck={false}
+                                                value={tagsRaw}
+                                                onChange={(e) => {
+                                                    if (!canEdit) return;
+                                                    const v = e.currentTarget.value;
+                                                    setTagsRaw(v);
+                                                    const parsed = v
+                                                        .split(",")
+                                                        .map((x) => x.trim())
+                                                        .filter(Boolean);
+                                                    setDraft((d) => ({
+                                                        ...d,
+                                                        meta: { ...(d.meta || {}), tags: parsed },
+                                                    }));
+                                                }}
+                                                placeholder="backup, offsite, cost-optimized"
+                                            />
+                                            <span className="text-[11px] text-muted-foreground">
+                                                Separate tags with commas. Spaces are OK.
+                                            </span>
+                                        </div>
                                     </div>
 
-                                    {/* Helper text row */}
                                     <div className="md:col-span-12">
                                         <p className="text-xs text-muted-foreground">
                                             Backups choose a connection in the{" "}
@@ -862,7 +944,6 @@ export default function StorageTab() {
                                 </div>
                             </div>
 
-                            {/* Defaults panel */}
                             <div className="md:col-span-3 md:self-stretch">
                                 <div className="rounded-md border p-3 h-full">
                                     <div className="text-xs font-medium uppercase text-muted-foreground tracking-wide">
@@ -923,7 +1004,7 @@ export default function StorageTab() {
                         </div>
                     </div>
 
-                    {/* Per-kind form in a soft panel */}
+                    {/* Per-kind form */}
                     <div className="rounded-md border p-4 bg-muted/20 space-y-6">
                         {draft.kind === "s3" && (
                             <div className="space-y-6">
@@ -1151,7 +1232,7 @@ export default function StorageTab() {
                                                 },
                                             }))
                                         )}
-                                        placeholder="https:/*cloud.example.com/remote.php/dav/files/username/"
+                                        placeholder="https://cloud.example.com/remote.php/dav/files/username/"
                                     />
                                     <LabeledInput
                                         label="Username"
@@ -1166,21 +1247,50 @@ export default function StorageTab() {
                                             }))
                                         )}
                                     />
-                                    <LabeledInput
-                                        label="Password"
-                                        type="password"
-                                        value={(draft.config as NextcloudConnConfig)?.password ?? ""}
-                                        onChange={onIfEditable<string>((v) =>
-                                            setDraft((d) => ({
-                                                ...d,
-                                                config: {
-                                                    ...(d.config as NextcloudConnConfig),
-                                                    password: v,
-                                                },
-                                            }))
-                                        )}
-                                        placeholder={draft.hasSecret?.nextcloudPassword ? "•••••••• (set)" : ""}
-                                    />
+
+                                    {/* Password with eye toggle */}
+                                    <div className="grid gap-1">
+                                        <Label className="text-sm">Password</Label>
+                                        <div className="relative">
+                                            <Input
+                                                type={showNcPassword ? "text" : "password"}
+                                                autoComplete="new-password"
+                                                name="nc-password"
+                                                data-lpignore="true"
+                                                data-1p-ignore
+                                                value={(draft.config as NextcloudConnConfig)?.password ?? ""}
+                                                onChange={(e) => {
+                                                    if (!canEdit) return;
+                                                    const v = e.currentTarget.value;
+                                                    setDraft((d) => ({
+                                                        ...d,
+                                                        config: {
+                                                            ...(d.config as NextcloudConnConfig),
+                                                            password: v,
+                                                        },
+                                                    }));
+                                                }}
+                                                placeholder={
+                                                    draft.hasSecret?.nextcloudPassword ? "•••••••• (set)" : ""
+                                                }
+                                                className="pr-10"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowNcPassword((s) => !s)}
+                                                className="absolute inset-y-0 right-2 inline-flex items-center text-muted-foreground hover:text-foreground"
+                                                aria-label={showNcPassword ? "Hide password" : "Show password"}
+                                                tabIndex={0}
+                                            >
+                                                {showNcPassword ? (
+                                                    <EyeOff className="h-4 w-4" />
+                                                ) : (
+                                                    <Eye className="h-4 w-4" />
+                                                )}
+                                            </button>
+                                        </div>
+                                    </div>
+
                                     <LabeledInput
                                         label="Folder path"
                                         value={(draft.config as NextcloudConnConfig)?.path ?? ""}
@@ -1258,7 +1368,7 @@ export default function StorageTab() {
                                     <Input
                                         value={(draft.config as GDriveConnConfig)?.accountEmail ?? ""}
                                         readOnly
-                                        placeholder="(server provided)"
+                                        placeholder="(from service account JSON)"
                                     />
                                 </div>
                                 <div className="grid gap-1">
@@ -1270,8 +1380,10 @@ export default function StorageTab() {
                                     />
                                 </div>
                                 <p className="text-xs text-muted-foreground md:col-span-3">
-                                    OAuth / Service Account is managed server-side. This connection
-                                    points to a Drive folder ID.
+                                    Import your Google <span className="font-medium">service account</span> JSON using
+                                    the <span className="font-medium">Import JSON</span> button. Then paste the
+                                    target Drive <span className="font-medium">Folder ID</span> and save. Be sure
+                                    to share that folder with the service account email.
                                 </p>
                             </div>
                         )}
@@ -1395,7 +1507,6 @@ export default function StorageTab() {
                         )}
                     </div>
 
-                    {/* Performance & cost */}
                     <div className="rounded-md border p-4">
                         <div className="grid gap-4 md:grid-cols-4">
                             <LabeledNumber
@@ -1530,14 +1641,16 @@ export default function StorageTab() {
                                     <AlertTriangle className="h-3.5 w-3.5" /> You don’t have edit permission.
                                 </span>
                             )}
-                            <Button onClick={() => saveDraft(false)} disabled={saving || !canEdit || hasBlockingErrors}>
+                            <Button
+                                onClick={() => saveDraft(false)}
+                                disabled={saving || !canEdit || hasBlockingErrors}
+                            >
                                 <Save className="h-4 w-4 mr-2" />
                                 {saving ? "Saving…" : "Save connection"}
                             </Button>
                         </div>
                     </div>
 
-                    {/* Guidance */}
                     <div className="rounded-md border p-3">
                         <div className="flex items-center gap-2 text-sm font-medium">
                             <Cable className="h-4 w-4" /> How it integrates

@@ -24,6 +24,16 @@ const SALT_ROUNDS = 12;
 const NAME_SPLIT_REGEX = /\s+/;
 const DEFAULT_ROLE_CANDIDATES = ["user", "technician", "admin"];
 
+// DB status values (canonical)
+type DbUserStatus = "active" | "invited" | "disabled";
+
+// Helpers to map API/FE <-> DB
+const apiToDbStatus = (input: "active" | "invited" | "suspended"): DbUserStatus =>
+    input === "suspended" ? "disabled" : input;
+
+const dbToApiStatus = (db: string): UserRow["status"] =>
+    db === "disabled" ? "suspended" : (db as any);
+
 function isUuid(value: string): boolean {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -36,7 +46,7 @@ function coalesceString(v: unknown): string | null {
 
 function splitDisplayName(name: string | undefined | null): { first: string | null; last: string | null } {
     if (!name) return { first: null, last: null };
-    const trimmed = name.trim();
+    const trimmed = name?.trim();
     if (!trimmed) return { first: null, last: null };
     const parts = trimmed.split(NAME_SPLIT_REGEX).filter(Boolean);
     if (parts.length === 0) return { first: null, last: null };
@@ -50,7 +60,7 @@ type DbUserRow = {
     email: string;
     first_name: string | null;
     last_name: string | null;
-    status: string;
+    status: DbUserStatus; // <- DB enum values only
     last_seen_at: string | null;
     created_at: string;
     updated_at: string;
@@ -58,6 +68,16 @@ type DbUserRow = {
     primary_role_id: string | null;
     primary_role_name: string | null;
     roles: any;
+    // extended profile fields (nullable)
+    phone?: string | null;
+    address1?: string | null;
+    address2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postal?: string | null;
+    country?: string | null;
+    avatar_url?: string | null;
+    avatar_thumb_url?: string | null;
 };
 
 @Injectable()
@@ -70,11 +90,11 @@ export class UsersService {
     private mapUserRow(row: DbUserRow): UserRow {
         const roles = Array.isArray(row.roles)
             ? row.roles
-                  .map((r: any) => ({
-                      id: String(r.id ?? ""),
-                      name: String(r.name ?? "").trim(),
-                  }))
-                  .filter((r) => r.id && r.name)
+                .map((r: any) => ({
+                    id: String(r.id ?? ""),
+                    name: String(r.name ?? "").trim(),
+                }))
+                .filter((r) => r.id && r.name)
             : [];
 
         const primaryRoleName = row.primary_role_name || roles[0]?.name || "";
@@ -83,19 +103,31 @@ export class UsersService {
             ? displayNameParts.join(" ")
             : row.email.split("@")[0];
 
+        const apiStatus = dbToApiStatus(row.status);
+
         return {
             id: row.id,
             name: displayName,
             email: row.email,
             role: primaryRoleName,
-            status: (row.status as UserRow["status"]) ?? "active",
+            roleId: row.primary_role_id,
+            roles,
+            status: apiStatus, // expose "suspended" to API/FE
             twoFactorEnabled: !!row.two_factor_enabled,
-            suspended: row.status === "suspended",
+            suspended: row.status === "disabled", // boolean convenience
             lastSeen: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : null,
             createdAt: new Date(row.created_at).toISOString(),
             updatedAt: new Date(row.updated_at).toISOString(),
-            roleId: row.primary_role_id,
-            roles,
+            // include optional profile fields for Admin UI
+            phone: row.phone ?? null,
+            address1: row.address1 ?? null,
+            address2: row.address2 ?? null,
+            city: row.city ?? null,
+            state: row.state ?? null,
+            postal: row.postal ?? null,
+            country: row.country ?? null,
+            avatarUrl: row.avatar_url ?? null,
+            avatarThumbUrl: row.avatar_thumb_url ?? null,
         };
     }
 
@@ -179,7 +211,6 @@ export class UsersService {
             }
         }
 
-        // Attempt to fall back to a sensible default ("User" etc.)
         for (const candidate of DEFAULT_ROLE_CANDIDATES) {
             const { rows } = await this.pg.query<{ id: string }>(
                 `SELECT id
@@ -207,6 +238,61 @@ export class UsersService {
         )`;
     }
 
+    // Return a single user with extended profile fields for Admin Edit
+    async getOne(id: string): Promise<UserRow> {
+        const orgId = await this.orgs.getDefaultOrganizationId();
+        const params: any[] = [orgId, id];
+
+        const sql = `
+            SELECT
+                u.id,
+                u.email,
+                u.first_name,
+                u.last_name,
+                u.status,
+                u.last_seen_at,
+                u.created_at,
+                u.updated_at,
+                COALESCE(us.two_factor_enabled, false) AS two_factor_enabled,
+                pr.id AS primary_role_id,
+                pr.name AS primary_role_name,
+                COALESCE(
+                    jsonb_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
+                    FILTER (WHERE r.id IS NOT NULL),
+                    '[]'::jsonb
+                ) AS roles,
+                -- extended profile fields (nullable)
+                u.phone,
+                u.address1,
+                u.address2,
+                u.city,
+                u.state,
+                u.postal,
+                u.country,
+                u.avatar_url,
+                u.avatar_thumb_url
+            FROM public.users u
+            LEFT JOIN public.user_security us ON us.user_id = u.id
+            LEFT JOIN public.user_roles ur ON ur.user_id = u.id
+            LEFT JOIN public.roles r ON r.id = ur.role_id
+            LEFT JOIN LATERAL (
+                SELECT r2.id, r2.name
+                FROM public.user_roles ur2
+                JOIN public.roles r2 ON r2.id = ur2.role_id
+                WHERE ur2.user_id = u.id
+                ORDER BY r2.scope DESC, LOWER(r2.name) ASC
+                LIMIT 1
+            ) pr ON TRUE
+            WHERE u.organization_id = $1 AND u.id = $2
+            GROUP BY u.id, us.two_factor_enabled, pr.id, pr.name
+            LIMIT 1
+        `;
+
+        const { rows } = await this.pg.query<DbUserRow>(sql, params);
+        if (!rows[0]) throw new NotFoundException("User not found");
+        return this.mapUserRow(rows[0]);
+    }
+
     async list(q: ListUsersQuery): Promise<{ items: UserRow[]; total: number }> {
         const orgId = await this.orgs.getDefaultOrganizationId();
         const params: any[] = [orgId];
@@ -216,7 +302,9 @@ export class UsersService {
         if (search) where.push(search);
 
         if (q.status && q.status !== "all") {
-            params.push(q.status);
+            // Map API 'suspended' -> DB 'disabled'
+            const dbStatus: DbUserStatus = apiToDbStatus(q.status as any);
+            params.push(dbStatus);
             where.push(`u.status = $${params.length}`);
         }
 
@@ -275,7 +363,17 @@ export class UsersService {
                     FILTER (WHERE r.id IS NOT NULL),
                     '[]'::jsonb
                 ) AS roles,
-                COALESCE(NULLIF(CONCAT_WS(' ', NULLIF(u.first_name, ''), NULLIF(u.last_name, '')), ''), u.email) AS display_name
+                COALESCE(NULLIF(CONCAT_WS(' ', NULLIF(u.first_name, ''), NULLIF(u.last_name, '')), ''), u.email) AS display_name,
+                -- extended profile fields (nullable) so Admin Edit can prefill even if UI uses list preload
+                u.phone,
+                u.address1,
+                u.address2,
+                u.city,
+                u.state,
+                u.postal,
+                u.country,
+                u.avatar_url,
+                u.avatar_thumb_url
             FROM public.users u
             LEFT JOIN public.user_security us ON us.user_id = u.id
             LEFT JOIN public.user_roles ur ON ur.user_id = u.id
@@ -364,7 +462,7 @@ export class UsersService {
 
     async setSuspended(id: string, suspended: boolean): Promise<void> {
         await this.ensureUserExists(id);
-        const status = suspended ? "suspended" : "active";
+        const status: DbUserStatus = suspended ? "disabled" : "active"; // <- WRITE DB-SAFE VALUE
         const { rowCount } = await this.pg.query(
             `UPDATE public.users
              SET status = $2,
@@ -397,10 +495,12 @@ export class UsersService {
     async createOne(dto: CreateUserDto): Promise<{ id: string }> {
         const orgId = await this.orgs.getDefaultOrganizationId();
         const email = dto.email.toLowerCase().trim();
-        const status = dto.status ?? "active";
-        if (!["active", "invited", "suspended"].includes(status)) {
+        const inputStatus = dto.status ?? "active";
+        // Validate API status, then map to DB-safe
+        if (!["active", "invited", "suspended"].includes(inputStatus)) {
             throw new BadRequestException("Invalid status");
         }
+        const dbStatus: DbUserStatus = apiToDbStatus(inputStatus);
 
         const displayName = coalesceString(dto.name) || email.split("@")[0];
         const { first, last } = splitDisplayName(displayName);
@@ -417,7 +517,7 @@ export class UsersService {
                    password_hash = EXCLUDED.password_hash,
                    updated_at = NOW()
              RETURNING id`,
-            [orgId, email, passwordHash, first, last, status],
+            [orgId, email, passwordHash, first, last, dbStatus],
         );
 
         const id = rows[0]?.id;
@@ -438,13 +538,15 @@ export class UsersService {
         return { id };
     }
 
+    // === NEW: Used by UsersController.resetPassword(PATCH/POST) ===
     async setPassword(id: string, body: ResetPasswordDto): Promise<void> {
         await this.ensureUserExists(id);
+
         const hash = await bcrypt.hash(body.password, SALT_ROUNDS);
         const { rowCount } = await this.pg.query(
             `UPDATE public.users
-             SET password_hash = $2,
-                 updated_at = NOW()
+               SET password_hash = $2,
+                   updated_at     = NOW()
              WHERE id = $1`,
             [id, hash],
         );

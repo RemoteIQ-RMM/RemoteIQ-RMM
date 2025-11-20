@@ -6,16 +6,16 @@ import * as React from "react";
  * Branding shape coming from GET /api/branding
  */
 export interface Branding {
-    primaryColor: string;
-    secondaryColor: string;
-    logoLightUrl: string;
-    logoDarkUrl: string;
-    loginBackgroundUrl: string;
-    faviconUrl: string; // may be empty
-    emailHeader: string;
-    emailFooter: string;
-    customCss: string;
-    allowClientThemeToggle: boolean;
+    primaryColor: string | null;
+    secondaryColor: string | null;
+    logoLightUrl: string | null;
+    logoDarkUrl: string | null;
+    loginBackgroundUrl: string | null;
+    faviconUrl: string | null;
+    emailHeader: string | null;
+    emailFooter: string | null;
+    customCss: string | null;
+    allowClientThemeToggle: boolean | null;
 }
 
 type PreviewPatch = Partial<Pick<Branding, "primaryColor" | "secondaryColor" | "faviconUrl">>;
@@ -100,6 +100,23 @@ function setFavicon(href: string) {
     link.href = href || DEFAULT_FAVICON;
 }
 
+/* ====================== Normalizer ====================== */
+
+function normalizeBranding(b: Branding | null): Branding {
+    return {
+        primaryColor: b?.primaryColor ?? DEFAULT_PRIMARY,
+        secondaryColor: b?.secondaryColor ?? DEFAULT_SECONDARY,
+        logoLightUrl: b?.logoLightUrl ?? "",
+        logoDarkUrl: b?.logoDarkUrl ?? "",
+        loginBackgroundUrl: b?.loginBackgroundUrl ?? "",
+        faviconUrl: b?.faviconUrl ?? "",
+        emailHeader: b?.emailHeader ?? "<h1>{{org_name}}</h1>",
+        emailFooter: b?.emailFooter ?? "<p>Copyright 2025. All rights reserved.</p>",
+        customCss: b?.customCss ?? "/* ... */",
+        allowClientThemeToggle: b?.allowClientThemeToggle ?? true,
+    };
+}
+
 /* ====================== Provider ====================== */
 
 export function BrandingProvider({ children }: { children: React.ReactNode }) {
@@ -123,32 +140,23 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE}/api/branding`, {
                 method: "GET",
                 credentials: "include",
-                headers: { "Accept": "application/json" },
+                headers: { Accept: "application/json" },
             });
             if (!res.ok) {
                 throw new Error(`GET /api/branding failed: ${res.status}`);
             }
             const data = (await res.json()) as Branding;
-            setBranding(data);
+            const norm = normalizeBranding(data);
+            setBranding(norm);
             // apply CSS + favicon
-            applyThemeVars(data);
-            applyInitialFavicon(data);
+            applyThemeVars(norm);
+            applyInitialFavicon(norm);
         } catch (e) {
             // fall back to defaults if fetch fails
-            setBranding({
-                primaryColor: DEFAULT_PRIMARY,
-                secondaryColor: DEFAULT_SECONDARY,
-                logoLightUrl: "",
-                logoDarkUrl: "",
-                loginBackgroundUrl: "",
-                faviconUrl: "",
-                emailHeader: "<h1>{{org_name}}</h1>",
-                emailFooter: "<p>Copyright 2025. All rights reserved.</p>",
-                customCss: "/* ... */",
-                allowClientThemeToggle: true,
-            });
-            applyThemeVars(null);
-            applyInitialFavicon(null);
+            const norm = normalizeBranding(null);
+            setBranding(norm);
+            applyThemeVars(norm);
+            applyInitialFavicon(norm);
             // eslint-disable-next-line no-console
             console.warn(e);
         } finally {
@@ -165,20 +173,17 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
      * - Accepts partial { primaryColor?, secondaryColor?, faviconUrl? }
      * - Applies CSS vars and/or favicon temporarily without mutating `branding`.
      */
-    const applyPreview = React.useCallback(
-        (patch: PreviewPatch) => {
-            if (patch.primaryColor) {
-                setCssVar("--primary", hexToHslTuple(patch.primaryColor));
-            }
-            if (patch.secondaryColor) {
-                setCssVar("--secondary", hexToHslTuple(patch.secondaryColor));
-            }
-            if (patch.faviconUrl !== undefined) {
-                setFavicon(patch.faviconUrl?.trim() || DEFAULT_FAVICON);
-            }
-        },
-        []
-    );
+    const applyPreview = React.useCallback((patch: PreviewPatch) => {
+        if (patch.primaryColor) {
+            setCssVar("--primary", hexToHslTuple(patch.primaryColor));
+        }
+        if (patch.secondaryColor) {
+            setCssVar("--secondary", hexToHslTuple(patch.secondaryColor));
+        }
+        if (patch.faviconUrl !== undefined) {
+            setFavicon(patch.faviconUrl?.trim() || DEFAULT_FAVICON);
+        }
+    }, []);
 
     /**
      * clearPreview:

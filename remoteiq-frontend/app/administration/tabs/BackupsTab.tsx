@@ -14,7 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import {
     ArchiveRestore, Download, RefreshCcw, FileText, Shield, RotateCcw,
-    XCircle, Repeat2, Filter, Trash2, Info, ListChecks, MoreVertical,
+    XCircle, Repeat2, Filter, Trash2, Info, ListChecks, MoreVertical, Plus, Trash,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LabeledInput, LabeledNumber, CheckToggle } from "../helpers";
@@ -43,12 +43,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 type Dest = ApiDestination;
-
-interface BackupsTabProps {
-    push?: (opts: ToastOptions) => void;
-}
-
 type HistoryStatus = "any" | "success" | "failed" | "running";
+
+type FanoutDest =
+    | { kind: "local"; path: string; isPrimary?: boolean; priority?: number }
+    | { kind: "s3"; connectionId: string; bucket?: string; prefix?: string; isPrimary?: boolean; priority?: number }
+    | { kind: "nextcloud"; connectionId: string; path: string; isPrimary?: boolean; priority?: number }
+    | { kind: "gdrive"; connectionId: string; subfolder?: string; isPrimary?: boolean; priority?: number }
+    | { kind: "remote"; connectionId: string; path: string; isPrimary?: boolean; priority?: number };
 
 type ConfigState = {
     enabled: boolean;
@@ -58,12 +60,17 @@ type ConfigState = {
     retentionDays: number | "";
     encrypt: boolean;
     destination: Dest;
+    /** NEW */
+    extraDestinations: FanoutDest[];
     notifications?: { email?: boolean; webhook?: boolean; slack?: boolean };
+    /** hints */
+    minSuccess?: number | "";
+    parallelism?: number | "";
 };
 
 const TZ = "America/New_York";
 
-/* -------------------------- helpers -------------------------- */
+/* ---------------- helpers ---------------- */
 
 function isValidCron(expr: string) {
     return /^(\S+\s+){4}\S+$/.test((expr || "").trim());
@@ -105,12 +112,17 @@ function humanNextRun(schedule: ScheduleKind) {
 
         if (schedule === "weekly") {
             const list: string[] = [];
-            let cursor = new Date(localNow);
+            const localNow = new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
+            const cursor = new Date(localNow);
             cursor.setHours(3, 0, 0, 0);
-            const day = cursor.getDay();
-            const add = (7 - day) % 7 || (localNow >= cursor ? 7 : 0);
-            cursor.setDate(cursor.getDate() + add);
+
+            // Next Sunday 03:00 local
+            const day = cursor.getDay(); // 0 = Sun
+            const daysUntilSunday = (7 - day) % 7;
+            cursor.setDate(cursor.getDate() + daysUntilSunday);
+
             if (localNow >= cursor) cursor.setDate(cursor.getDate() + 7);
+
             for (let i = 0; i < 5; i++) {
                 list.push(cursor.toLocaleString("en-US", {
                     timeZone: TZ, weekday: "long", hour: "2-digit", minute: "2-digit",
@@ -120,9 +132,42 @@ function humanNextRun(schedule: ScheduleKind) {
             return list;
         }
 
+
         if (schedule === "cron") return null;
     } catch { }
     return [];
+}
+
+function validateDest(d: FanoutDest): string[] {
+    const errs: string[] = [];
+    switch (d.kind) {
+        case "local":
+            if (!d.path) errs.push("Local path required");
+            else {
+                const abs = d.path.startsWith("/") || /^[A-Za-z]:\\/.test(d.path);
+                if (!abs) errs.push("Local path must be absolute");
+            }
+            break;
+        case "nextcloud":
+            if (!("connectionId" in d) || !d.connectionId) errs.push("Nextcloud connection required");
+            if (!d.path || !d.path.startsWith("/")) errs.push("Nextcloud path should start with '/'");
+            break;
+        case "remote":
+            if (!("connectionId" in d) || !d.connectionId) errs.push("SFTP connection required");
+            if (!d.path) errs.push("Remote directory path required");
+            else {
+                const abs = d.path.startsWith("/") || /^[A-Za-z]:\\/.test(d.path);
+                if (!abs) errs.push("Remote directory path must be absolute");
+            }
+            break;
+        case "s3":
+            if (!("connectionId" in d) || !d.connectionId) errs.push("S3 connection required");
+            break;
+        case "gdrive":
+            if (!("connectionId" in d) || !d.connectionId) errs.push("Google Drive connection required");
+            break;
+    }
+    return errs;
 }
 
 function validateConfig(c: ConfigState): string[] {
@@ -134,45 +179,20 @@ function validateConfig(c: ConfigState): string[] {
         errs.push("Cron expression looks invalid.");
     if (!c.targets.length) errs.push("Select at least one backup target.");
 
-    switch (c.destination.kind) {
-        case "local": {
-            const p = c.destination.path.trim();
-            if (!p) errs.push("Local backup directory is required.");
-            else {
-                const abs = p.startsWith("/") || /^[A-Za-z]:\\/.test(p);
-                if (!abs) errs.push("Local backup directory must be an absolute path.");
-                if (p.includes("..") || p.includes("\0"))
-                    errs.push("Local backup directory cannot contain '..' or NUL.");
-            }
-            break;
-        }
-        case "s3":
-            if (!c.destination.connectionId) errs.push("Select an S3 connection.");
-            break;
-        case "nextcloud":
-            if (!c.destination.connectionId) errs.push("Select a Nextcloud connection.");
-            if (!(c.destination.path?.trim() ?? "").startsWith("/"))
-                errs.push("Nextcloud folder path should start with '/'.");
-            break;
-        case "gdrive":
-            if (!c.destination.connectionId) errs.push("Select a Google Drive connection.");
-            break;
-        case "remote": {
-            if (!c.destination.connectionId) errs.push("Select an SFTP connection.");
-            const path = c.destination.path?.trim() ?? "";
-            const abs = path.startsWith("/") || /^[A-Za-z]:\\/.test(path);
-            if (!path) errs.push("Remote directory path is required.");
-            else if (!abs) errs.push("Remote directory path must be an absolute path.");
-            break;
-        }
-    }
+    // primary
+    errs.push(...validateDest(c.destination as FanoutDest));
 
+    // extras
+    for (const e of c.extraDestinations) errs.push(...validateDest(e));
+
+    if (c.minSuccess != null && Number(c.minSuccess) < 1) errs.push("Min success must be >= 1");
+    if (c.parallelism != null && Number(c.parallelism) < 1) errs.push("Parallelism must be >= 1");
     return errs;
 }
 
-/* -------------------------- component -------------------------- */
+/* ---------------- component ---------------- */
 
-export default function BackupsTab({ push }: BackupsTabProps) {
+export default function BackupsTab({ push }: { push?: (opts: ToastOptions) => void; }) {
     const { toast } = useToast();
     const notify = React.useMemo(() => push ?? toast, [push, toast]);
 
@@ -187,18 +207,19 @@ export default function BackupsTab({ push }: BackupsTabProps) {
 
     const [backups, setBackups] = React.useState<ConfigState>({
         enabled: false,
-        targets: [] as BackupTarget[],                // start empty; no assumptions
+        targets: [],
         schedule: "daily",
         cronExpr: "0 3 * * *",
         retentionDays: 30,
         encrypt: true,
         destination: { kind: "local", path: "/var/remoteiq/backups" } as LocalDest,
+        extraDestinations: [],
         notifications: { email: false, webhook: false, slack: false },
+        minSuccess: 1,
+        parallelism: 2,
     });
 
-    // SAFE defaults – no phantom capabilities
     const [perms, setPerms] = React.useState<Permissions>({ restore: false, download: false });
-
     const [connAll, setConnAll] = React.useState<ConnectionLite[]>([]);
     const [selectedConnId, setSelectedConnId] = React.useState<string>("");
 
@@ -210,7 +231,6 @@ export default function BackupsTab({ push }: BackupsTabProps) {
     const [cursorStack, setCursorStack] = React.useState<string[]>([]);
     const [nextCursor, setNextCursor] = React.useState<string | null>(null);
 
-    // filters
     const [statusFilter, setStatusFilter] = React.useState<HistoryStatus>("any");
     const [search, setSearch] = React.useState("");
     const [dateFrom, setDateFrom] = React.useState<string>("");
@@ -219,45 +239,54 @@ export default function BackupsTab({ push }: BackupsTabProps) {
     const nextRunList = humanNextRun(backups.schedule);
     const [cronNextRuns, setCronNextRuns] = React.useState<string[] | null>(null);
 
-    /* ---------- load config + perms + connections ---------- */
+    /* ------ load config + perms + connections ------ */
+    const connsFor = (k: Dest["kind"]) => {
+        const map: Record<Dest["kind"], StorageKind | null> = {
+            local: null, s3: "s3", nextcloud: "nextcloud", gdrive: "gdrive", remote: "sftp",
+        };
+        const want = map[k];
+        if (!want) return [];
+        return connAll.filter((c) => c.kind === want);
+    };
+
     const loadConfig = React.useCallback(async () => {
         try {
             const cfg = await getBackupConfig();
             const inDest: any = (cfg as any).destination || {};
-            let dest: Dest;
+            const extras: any[] = Array.isArray((cfg as any).extraDestinations) ? (cfg as any).extraDestinations : [];
 
-            switch (inDest.kind) {
-                case "s3":
-                    dest = { kind: "s3", connectionId: inDest.connectionId ?? "", bucket: inDest.bucket ?? "", prefix: inDest.prefix ?? "" } as S3Dest;
-                    setSelectedConnId(inDest.connectionId ?? "");
-                    break;
-                case "nextcloud":
-                    dest = { kind: "nextcloud", connectionId: inDest.connectionId ?? "", path: inDest.path ?? "/Backups/RemoteIQ" } as NextcloudDest;
-                    setSelectedConnId(inDest.connectionId ?? "");
-                    break;
-                case "gdrive":
-                    dest = { kind: "gdrive", connectionId: inDest.connectionId ?? "", subfolder: inDest.subfolder ?? "" } as GDriveDest;
-                    setSelectedConnId(inDest.connectionId ?? "");
-                    break;
-                case "remote":
-                    dest = { kind: "remote", connectionId: inDest.connectionId ?? "", path: inDest.path ?? "/srv/remoteiq/backups" } as RemoteSFTPDest;
-                    setSelectedConnId(inDest.connectionId ?? "");
-                    break;
-                case "local":
-                default:
-                    dest = { kind: "local", path: inDest.path ?? "/var/remoteiq/backups" } as LocalDest;
+            function mapIn(d: any): FanoutDest {
+                switch (d?.kind) {
+                    case "s3": return { kind: "s3", connectionId: d.connectionId ?? "", bucket: d.bucket ?? "", prefix: d.prefix ?? "" };
+                    case "nextcloud": return { kind: "nextcloud", connectionId: d.connectionId ?? "", path: d.path ?? "/Backups/RemoteIQ" };
+                    case "gdrive": return { kind: "gdrive", connectionId: d.connectionId ?? "", subfolder: d.subfolder ?? "" };
+                    case "remote": return { kind: "remote", connectionId: d.connectionId ?? "", path: d.path ?? "/srv/remoteiq/backups" };
+                    case "local":
+                    default: return { kind: "local", path: d?.path ?? "/var/remoteiq/backups" };
+                }
             }
 
+            const dest = mapIn(inDest) as Dest;
+            const extrasMapped = extras.map(mapIn);
+
+            // set selectedConnId only for connection-backed kinds
+            const connId =
+                ("connectionId" in dest && (dest as any).connectionId) ? (dest as any).connectionId : "";
+
             setBackups({
-                enabled: cfg.enabled,
+                enabled: !!cfg.enabled,
                 targets: (cfg.targets as BackupTarget[]) ?? [],
                 schedule: (cfg.schedule as ScheduleKind) ?? "daily",
                 cronExpr: cfg.cronExpr || "0 3 * * *",
                 retentionDays: typeof cfg.retentionDays === "number" ? cfg.retentionDays : 30,
                 encrypt: !!cfg.encrypt,
                 destination: dest,
+                extraDestinations: extrasMapped,
                 notifications: (cfg as any).notifications ?? { email: false, webhook: false, slack: false },
+                minSuccess: (cfg as any).minSuccess ?? 1,
+                parallelism: (cfg as any).parallelism ?? 2,
             });
+            setSelectedConnId(connId);
             setErrors([]);
         } catch (e: any) {
             notify({ title: e?.message || "Failed to load backup config", kind: "destructive", variant: "destructive" });
@@ -271,7 +300,6 @@ export default function BackupsTab({ push }: BackupsTabProps) {
             const p = await getBackupPermissions();
             if (p) setPerms({ restore: !!p.restore, download: !!p.download });
         } catch (e: any) {
-            // keep restrictive defaults
             notify({ title: e?.message || "Failed to load backup permissions", kind: "destructive", variant: "destructive" });
         }
     }, [notify]);
@@ -291,7 +319,7 @@ export default function BackupsTab({ push }: BackupsTabProps) {
         loadConnections();
     }, [loadConfig, loadPerms, loadConnections]);
 
-    /* ---------- fetch history (NO DUMMY FALLBACK) ---------- */
+    /* ---------- history ---------- */
     const loadHistory = React.useCallback(
         async (cur?: string | null) => {
             setHistoryLoading(true);
@@ -306,7 +334,6 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                 setHistoryRaw(res?.items ?? []);
                 setNextCursor(res?.nextCursor ?? null);
             } catch (e: any) {
-                // absolutely no fabricated rows
                 setHistoryRaw([]);
                 setNextCursor(null);
                 notify({ title: e?.message || "Failed to load backup history", kind: "destructive", variant: "destructive" });
@@ -321,7 +348,6 @@ export default function BackupsTab({ push }: BackupsTabProps) {
         loadHistory(cursor);
     }, [cursor, loadHistory]);
 
-    /* ---------- client-side filtering ---------- */
     React.useEffect(() => {
         const from = dateFrom ? Date.parse(dateFrom) : null;
         const to = dateTo ? Date.parse(dateTo) : null;
@@ -366,6 +392,14 @@ export default function BackupsTab({ push }: BackupsTabProps) {
         })();
     }, [backups.schedule, backups.cronExpr]);
 
+    /* ---------- UI helpers ---------- */
+    const hasBlockingErrors = errors.length > 0;
+    const typeLabel = (k: FanoutDest["kind"]) =>
+        k === "remote" ? "Remote (SFTP)" :
+            k === "gdrive" ? "Google Drive" :
+                k === "nextcloud" ? "Nextcloud (WebDAV)" :
+                    k.toUpperCase();
+
     /* ---------- actions ---------- */
 
     const saveConfig = async () => {
@@ -385,7 +419,7 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                 case "s3":
                     destination = {
                         kind: "s3",
-                        connectionId: selectedConnId || (backups.destination as S3Dest).connectionId,
+                        connectionId: (backups.destination as S3Dest).connectionId,
                         bucket: (backups.destination as S3Dest).bucket || undefined,
                         prefix: (backups.destination as S3Dest).prefix || undefined,
                     };
@@ -393,14 +427,14 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                 case "nextcloud":
                     destination = {
                         kind: "nextcloud",
-                        connectionId: selectedConnId || (backups.destination as NextcloudDest).connectionId,
+                        connectionId: (backups.destination as NextcloudDest).connectionId,
                         path: (backups.destination as NextcloudDest).path,
                     };
                     break;
                 case "gdrive":
                     destination = {
                         kind: "gdrive",
-                        connectionId: selectedConnId || (backups.destination as GDriveDest).connectionId,
+                        connectionId: (backups.destination as GDriveDest).connectionId,
                         subfolder: (backups.destination as GDriveDest).subfolder || undefined,
                     };
                     break;
@@ -408,13 +442,17 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                 default:
                     destination = {
                         kind: "remote",
-                        connectionId: selectedConnId || (backups.destination as RemoteSFTPDest).connectionId,
+                        connectionId: (backups.destination as RemoteSFTPDest).connectionId,
                         path: (backups.destination as RemoteSFTPDest).path,
                     };
                     break;
             }
 
-            const payload: ApiBackupConfig = {
+            const payload: ApiBackupConfig & {
+                extraDestinations?: FanoutDest[];
+                minSuccess?: number;
+                parallelism?: number;
+            } = {
                 enabled: backups.enabled,
                 targets: backups.targets,
                 schedule: backups.schedule,
@@ -422,12 +460,16 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                 retentionDays: Number(backups.retentionDays) || 0,
                 encrypt: backups.encrypt,
                 destination,
+                extraDestinations: backups.extraDestinations,
                 ...(backups.notifications ? { notifications: backups.notifications } : {}),
+                ...(backups.minSuccess ? { minSuccess: Number(backups.minSuccess) } : {}),
+                ...(backups.parallelism ? { parallelism: Number(backups.parallelism) } : {}),
             };
 
-            await updateBackupConfig(payload);
+            await updateBackupConfig(payload as any);
             notify({ title: "Backup settings saved", kind: "success", variant: "success" });
             setErrors([]);
+            await loadConfig();
         } catch (e: any) {
             notify({ title: e?.message || "Failed to save backup settings", kind: "destructive", variant: "destructive" });
         } finally {
@@ -446,7 +488,6 @@ export default function BackupsTab({ push }: BackupsTabProps) {
         setRunning(true);
         try {
             const res = await apiRunBackupNow();
-            // Only add an optimistic row if the server returned an id
             if (res?.id) {
                 const at = (res?.startedAt || new Date().toISOString()).slice(0, 16).replace("T", " ");
                 setHistoryRaw((prev) => [{ id: res.id, at, status: "running" }, ...prev]);
@@ -470,8 +511,8 @@ export default function BackupsTab({ push }: BackupsTabProps) {
         }
     };
 
-    const testDestination = async () => {
-        const errs = validateConfig(backups).filter((e) => !e.toLowerCase().includes("retention"));
+    const testPrimaryDestination = async () => {
+        const errs = validateDest(backups.destination as any);
         setErrors(errs);
         if (errs.length) {
             errs.forEach((e) => notify({ title: e, kind: "destructive", variant: "destructive" }));
@@ -479,44 +520,7 @@ export default function BackupsTab({ push }: BackupsTabProps) {
         }
         setTestingDest(true);
         try {
-            let destination: ApiDestination;
-            switch (backups.destination.kind) {
-                case "local":
-                    destination = { kind: "local", path: (backups.destination as LocalDest).path };
-                    break;
-                case "s3":
-                    destination = {
-                        kind: "s3",
-                        connectionId: selectedConnId || (backups.destination as S3Dest).connectionId,
-                        bucket: (backups.destination as S3Dest).bucket || undefined,
-                        prefix: (backups.destination as S3Dest).prefix || undefined,
-                    };
-                    break;
-                case "nextcloud":
-                    destination = {
-                        kind: "nextcloud",
-                        connectionId: selectedConnId || (backups.destination as NextcloudDest).connectionId,
-                        path: (backups.destination as NextcloudDest).path,
-                    };
-                    break;
-                case "gdrive":
-                    destination = {
-                        kind: "gdrive",
-                        connectionId: selectedConnId || (backups.destination as GDriveDest).connectionId,
-                        subfolder: (backups.destination as GDriveDest).subfolder || undefined,
-                    };
-                    break;
-                case "remote":
-                default:
-                    destination = {
-                        kind: "remote",
-                        connectionId: selectedConnId || (backups.destination as RemoteSFTPDest).connectionId,
-                        path: (backups.destination as RemoteSFTPDest).path,
-                    };
-                    break;
-            }
-
-            const res = await testBackupDestination(destination);
+            const res = await testBackupDestination(backups.destination as ApiDestination);
             const detail = res?.phases
                 ? ` (${Object.entries(res.phases).map(([k, v]) => `${k}:${v ? "ok" : "fail"}`).join(", ")})`
                 : "";
@@ -572,16 +576,9 @@ export default function BackupsTab({ push }: BackupsTabProps) {
         }
     };
 
-    const connsFor = (k: Dest["kind"]) => {
-        const map: Record<Dest["kind"], StorageKind | null> = {
-            local: null, s3: "s3", nextcloud: "nextcloud", gdrive: "gdrive", remote: "sftp",
-        };
-        const want = map[k];
-        if (!want) return [];
-        return connAll.filter((c) => c.kind === want);
-    };
+    /* ---------- render ---------- */
 
-    const hasBlockingErrors = errors.length > 0;
+    const scheduleNext = nextRunList;
 
     return (
         <TabsContent value="backups" className="mt-0">
@@ -595,11 +592,12 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                         </Badge>
                     </CardTitle>
                     <CardDescription>
-                        Configure backup targets, schedule, retention, destination (Local / S3 / Nextcloud / Google Drive / Remote SFTP), notifications, and manage history.
+                        Configure targets, schedule, retention, <b>multiple destinations</b> (Local / S3 / Nextcloud / Google Drive / SFTP), and notifications. Runs write to all selected destinations.
                     </CardDescription>
                 </CardHeader>
 
                 <CardContent className="space-y-6">
+
                     {errors.length > 0 && (
                         <div className="rounded-md border border-amber-300/60 bg-amber-50/40 p-3 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
                             <div className="font-medium mb-1">Please review:</div>
@@ -647,9 +645,6 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                                     </button>
                                 ))}
                             </div>
-                            {!backups.targets.length && (
-                                <div className="text-[11px] text-red-600">Select at least one target.</div>
-                            )}
                         </div>
 
                         {/* Schedule */}
@@ -683,7 +678,7 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                                     ) : (
                                         <div className="grid gap-1">
                                             <Label className="text-sm">Next runs (example)</Label>
-                                            <Input readOnly value={(nextRunList || []).slice(0, 5).join(" · ")} />
+                                            <Input readOnly value={(scheduleNext || []).slice(0, 5).join(" · ")} />
                                         </div>
                                     )}
                                 </div>
@@ -705,12 +700,10 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                             {backups.schedule === "cron" && (
                                 <div className="md:col-span-12">
                                     <div className="flex flex-wrap gap-2 mb-2">
-                                        {[
-                                            { label: "Every day 03:00", val: "0 3 * * *" },
-                                            { label: "Every Sun 03:00", val: "0 3 * * 0" },
-                                            { label: "Every hour", val: "0 * * * *" },
-                                            { label: "Weekdays 02:00", val: "0 2 * * 1-5" },
-                                        ].map((p) => (
+                                        {[{ label: "Every day 03:00", val: "0 3 * * *" },
+                                        { label: "Every Sun 03:00", val: "0 3 * * 0" },
+                                        { label: "Every hour", val: "0 * * * *" },
+                                        { label: "Weekdays 02:00", val: "0 2 * * 1-5" }].map((p) => (
                                             <Button key={p.val} variant="outline" size="sm" onClick={() => setBackups({ ...backups, cronExpr: p.val })}>
                                                 <ListChecks className="h-4 w-4 mr-1" /> {p.label}
                                             </Button>
@@ -726,12 +719,30 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                             )}
                         </div>
 
-                        {/* Destination */}
+                        {/* Runner hints */}
+                        <div className="grid md:grid-cols-6 gap-3">
+                            <div className="md:col-span-3">
+                                <LabeledNumber
+                                    label="Min destinations that must succeed"
+                                    value={backups.minSuccess ?? ""}
+                                    onChange={(v) => setBackups({ ...backups, minSuccess: v })}
+                                />
+                            </div>
+                            <div className="md:col-span-3">
+                                <LabeledNumber
+                                    label="Parallelism (workers)"
+                                    value={backups.parallelism ?? ""}
+                                    onChange={(v) => setBackups({ ...backups, parallelism: v })}
+                                />
+                            </div>
+                        </div>
+
+                        {/* PRIMARY Destination */}
                         <div className="rounded-md border p-3 space-y-3">
                             <div className="flex items-center justify-between">
-                                <div className="font-medium">Destination</div>
+                                <div className="font-medium">Primary destination</div>
                                 <div className="flex items-center gap-2">
-                                    <Button type="button" variant="outline" size="sm" onClick={testDestination} disabled={testingDest}>
+                                    <Button type="button" variant="outline" size="sm" onClick={testPrimaryDestination} disabled={testingDest}>
                                         <RefreshCcw className="mr-2 h-4 w-4" />
                                         {testingDest ? "Testing..." : "Test destination"}
                                     </Button>
@@ -752,13 +763,13 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                                             if (v === "local") {
                                                 setBackups({ ...backups, destination: { kind: "local", path: "/var/remoteiq/backups" } as LocalDest });
                                             } else if (v === "s3") {
-                                                setBackups({ ...backups, destination: { kind: "s3", connectionId: selectedConnId || "", bucket: "", prefix: "" } as S3Dest });
+                                                setBackups({ ...backups, destination: { kind: "s3", connectionId: "", bucket: "", prefix: "" } as S3Dest });
                                             } else if (v === "nextcloud") {
-                                                setBackups({ ...backups, destination: { kind: "nextcloud", connectionId: selectedConnId || "", path: "/Backups/RemoteIQ" } as NextcloudDest });
+                                                setBackups({ ...backups, destination: { kind: "nextcloud", connectionId: "", path: "/Backups/RemoteIQ" } as NextcloudDest });
                                             } else if (v === "gdrive") {
-                                                setBackups({ ...backups, destination: { kind: "gdrive", connectionId: selectedConnId || "", subfolder: "" } as GDriveDest });
+                                                setBackups({ ...backups, destination: { kind: "gdrive", connectionId: "", subfolder: "" } as GDriveDest });
                                             } else {
-                                                setBackups({ ...backups, destination: { kind: "remote", connectionId: selectedConnId || "", path: "/srv/remoteiq/backups" } as RemoteSFTPDest });
+                                                setBackups({ ...backups, destination: { kind: "remote", connectionId: "", path: "/srv/remoteiq/backups" } as RemoteSFTPDest });
                                             }
                                             setErrors([]);
                                         }}
@@ -774,14 +785,13 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                                     </Select>
                                 </div>
 
-                                {/* Connection */}
+                                {/* Connection (if needed) */}
                                 {backups.destination.kind !== "local" ? (
                                     <div className="grid gap-1 md:col-span-5">
                                         <Label className="text-sm">Connection</Label>
                                         <Select
-                                            value={selectedConnId}
+                                            value={("connectionId" in backups.destination ? (backups.destination as any).connectionId : "") || ""}
                                             onValueChange={(v) => {
-                                                setSelectedConnId(v);
                                                 setBackups((prev) => {
                                                     const d = prev.destination as any;
                                                     return { ...prev, destination: { ...d, connectionId: v } };
@@ -801,13 +811,8 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                                                 )}
                                             </SelectContent>
                                         </Select>
-                                        <p className="text-xs text-muted-foreground leading-tight">
-                                            Manage connections in the <span className="font-medium">Storage</span> tab.
-                                        </p>
                                     </div>
-                                ) : (
-                                    <div className="hidden md:block md:col-span-5" />
-                                )}
+                                ) : (<div className="hidden md:block md:col-span-5" />)}
 
                                 {/* Per-kind fields */}
                                 {backups.destination.kind === "local" && (
@@ -815,103 +820,57 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                                         <LabeledInput
                                             label="Directory (server path)"
                                             value={(backups.destination as LocalDest).path}
-                                            onChange={(v) => {
-                                                setBackups({ ...backups, destination: { kind: "local", path: v } as LocalDest });
-                                                setErrors([]);
-                                            }}
+                                            onChange={(v) => setBackups({ ...backups, destination: { kind: "local", path: v } as LocalDest })}
                                             placeholder="/var/remoteiq/backups"
                                         />
-                                        {!((backups.destination as LocalDest).path && /^(\/|[A-Za-z]:\\)/.test((backups.destination as LocalDest).path)) && (
-                                            <span className="text-[11px] text-muted-foreground">Absolute path required.</span>
-                                        )}
                                     </div>
                                 )}
-
                                 {backups.destination.kind === "s3" && (
                                     <>
                                         <div className="md:col-span-2">
                                             <LabeledInput
                                                 label="Bucket (override)"
                                                 value={(backups.destination as S3Dest).bucket ?? ""}
-                                                onChange={(v) => {
-                                                    setBackups({
-                                                        ...backups,
-                                                        destination: { ...(backups.destination as S3Dest), kind: "s3", bucket: v } as S3Dest,
-                                                    });
-                                                    setErrors([]);
-                                                }}
+                                                onChange={(v) => setBackups({ ...backups, destination: { ...(backups.destination as S3Dest), kind: "s3", bucket: v } as S3Dest })}
                                             />
                                         </div>
                                         <div className="md:col-span-2">
                                             <LabeledInput
                                                 label="Prefix (override)"
                                                 value={(backups.destination as S3Dest).prefix ?? ""}
-                                                onChange={(v) => {
-                                                    setBackups({
-                                                        ...backups,
-                                                        destination: { ...(backups.destination as S3Dest), kind: "s3", prefix: v } as S3Dest,
-                                                    });
-                                                    setErrors([]);
-                                                }}
+                                                onChange={(v) => setBackups({ ...backups, destination: { ...(backups.destination as S3Dest), kind: "s3", prefix: v } as S3Dest })}
                                             />
                                         </div>
                                     </>
                                 )}
-
                                 {backups.destination.kind === "nextcloud" && (
                                     <div className="grid gap-1 md:col-span-4">
                                         <LabeledInput
                                             label="Folder path"
                                             value={(backups.destination as NextcloudDest).path}
-                                            onChange={(v) => {
-                                                setBackups({
-                                                    ...backups,
-                                                    destination: { ...(backups.destination as NextcloudDest), kind: "nextcloud", path: v } as NextcloudDest,
-                                                });
-                                                setErrors([]);
-                                            }}
+                                            onChange={(v) => setBackups({ ...backups, destination: { ...(backups.destination as NextcloudDest), kind: "nextcloud", path: v } as NextcloudDest })}
                                             placeholder="/Backups/RemoteIQ"
                                         />
-                                        {!((backups.destination as NextcloudDest).path || "").startsWith("/") && (
-                                            <span className="text-[11px] text-red-600">Should start with &#39;/&#39;.</span>
-                                        )}
                                     </div>
                                 )}
-
                                 {backups.destination.kind === "gdrive" && (
                                     <div className="md:col-span-4">
                                         <LabeledInput
                                             label="Subfolder (optional)"
                                             value={(backups.destination as GDriveDest).subfolder ?? ""}
-                                            onChange={(v) => {
-                                                setBackups({
-                                                    ...backups,
-                                                    destination: { ...(backups.destination as GDriveDest), kind: "gdrive", subfolder: v } as GDriveDest,
-                                                });
-                                                setErrors([]);
-                                            }}
+                                            onChange={(v) => setBackups({ ...backups, destination: { ...(backups.destination as GDriveDest), kind: "gdrive", subfolder: v } as GDriveDest })}
                                             placeholder="e.g., nightly-dumps"
                                         />
                                     </div>
                                 )}
-
                                 {backups.destination.kind === "remote" && (
                                     <div className="grid gap-1 md:col-span-4">
                                         <LabeledInput
                                             label="Directory (remote absolute path)"
                                             value={(backups.destination as RemoteSFTPDest).path}
-                                            onChange={(v) => {
-                                                setBackups({
-                                                    ...backups,
-                                                    destination: { ...(backups.destination as RemoteSFTPDest), kind: "remote", path: v } as RemoteSFTPDest,
-                                                });
-                                                setErrors([]);
-                                            }}
+                                            onChange={(v) => setBackups({ ...backups, destination: { ...(backups.destination as RemoteSFTPDest), kind: "remote", path: v } as RemoteSFTPDest })}
                                             placeholder="/srv/remoteiq/backups"
                                         />
-                                        {!(backups.destination as RemoteSFTPDest).path && (
-                                            <span className="text-[11px] text-red-600">Path required.</span>
-                                        )}
                                     </div>
                                 )}
                             </div>
@@ -924,6 +883,183 @@ export default function BackupsTab({ push }: BackupsTabProps) {
                             <p className="text-xs text-muted-foreground flex items-center gap-1">
                                 <Info className="h-3.5 w-3.5" /> Secrets live in Storage connections; the Backups UI never stores credentials.
                             </p>
+                        </div>
+
+                        {/* ADDITIONAL DESTINATIONS */}
+                        <div className="rounded-md border p-3 space-y-3">
+                            <div className="flex items-center justify-between">
+                                <div className="font-medium">Additional destinations (redundancy)</div>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() =>
+                                        setBackups((prev) => ({
+                                            ...prev,
+                                            extraDestinations: [...prev.extraDestinations, { kind: "s3", connectionId: "" }],
+                                        }))
+                                    }
+                                >
+                                    <Plus className="h-4 w-4 mr-1" /> Add destination
+                                </Button>
+                            </div>
+
+                            {backups.extraDestinations.length === 0 ? (
+                                <div className="text-xs text-muted-foreground">
+                                    No additional destinations. Add S3, Nextcloud, Google Drive, SFTP or Local to write the same backup to multiple locations.
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {backups.extraDestinations.map((d, i) => {
+                                        const update = (patch: Partial<FanoutDest>) =>
+                                            setBackups((prev) => {
+                                                const arr = [...prev.extraDestinations];
+                                                arr[i] = { ...arr[i], ...patch } as FanoutDest;
+                                                return { ...prev, extraDestinations: arr };
+                                            });
+                                        const remove = () =>
+                                            setBackups((prev) => {
+                                                const arr = [...prev.extraDestinations];
+                                                arr.splice(i, 1);
+                                                return { ...prev, extraDestinations: arr };
+                                            });
+
+                                        const fields = (
+                                            <>
+                                                {/* Type */}
+                                                <div className="grid gap-1 md:col-span-2">
+                                                    <Label className="text-xs">Type</Label>
+                                                    <Select
+                                                        value={d.kind}
+                                                        onValueChange={(v: FanoutDest["kind"]) => {
+                                                            if (v === "local") update({ kind: "local", path: "/var/remoteiq/backups" });
+                                                            else if (v === "s3") update({ kind: "s3", connectionId: "", bucket: "", prefix: "" });
+                                                            else if (v === "nextcloud") update({ kind: "nextcloud", connectionId: "", path: "/Backups/RemoteIQ" });
+                                                            else if (v === "gdrive") update({ kind: "gdrive", connectionId: "", subfolder: "" });
+                                                            else update({ kind: "remote", connectionId: "", path: "/srv/remoteiq/backups" });
+                                                        }}
+                                                    >
+                                                        <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                                                        <SelectContent>
+                                                            <SelectItem value="local">Local</SelectItem>
+                                                            <SelectItem value="s3">S3</SelectItem>
+                                                            <SelectItem value="nextcloud">Nextcloud</SelectItem>
+                                                            <SelectItem value="gdrive">Google Drive</SelectItem>
+                                                            <SelectItem value="remote">Remote (SFTP)</SelectItem>
+                                                        </SelectContent>
+                                                    </Select>
+                                                </div>
+
+                                                {/* Connection if needed */}
+                                                {d.kind !== "local" && (
+                                                    <div className="grid gap-1 md:col-span-3">
+                                                        <Label className="text-xs">Connection</Label>
+                                                        <Select
+                                                            value={("connectionId" in d ? (d as any).connectionId : "") || ""}
+                                                            onValueChange={(v) => update({ ...(d as any), connectionId: v } as any)}
+                                                        >
+                                                            <SelectTrigger><SelectValue placeholder={connsFor(d.kind as any).length ? "Select connection" : "No connections"} /></SelectTrigger>
+                                                            <SelectContent>
+                                                                {connsFor(d.kind as any).map((c) => (
+                                                                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                                                                ))}
+                                                                {connsFor(d.kind as any).length === 0 && (
+                                                                    <SelectItem value="__none" disabled>No connections</SelectItem>
+                                                                )}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </div>
+                                                )}
+
+                                                {/* Per-kind fields */}
+                                                {d.kind === "local" && (
+                                                    <div className="grid gap-1 md:col-span-4">
+                                                        <LabeledInput
+                                                            label="Directory"
+                                                            value={(d as any).path ?? ""}
+                                                            onChange={(v) => update({ ...(d as any), path: v } as any)}
+                                                            placeholder="/var/remoteiq/backups"
+                                                        />
+                                                    </div>
+                                                )}
+                                                {d.kind === "s3" && (
+                                                    <>
+                                                        <div className="md:col-span-2">
+                                                            <LabeledInput
+                                                                label="Bucket (override)"
+                                                                value={(d as any).bucket ?? ""}
+                                                                onChange={(v) => update({ ...(d as any), bucket: v } as any)}
+                                                            />
+                                                        </div>
+                                                        <div className="md:col-span-2">
+                                                            <LabeledInput
+                                                                label="Prefix (override)"
+                                                                value={(d as any).prefix ?? ""}
+                                                                onChange={(v) => update({ ...(d as any), prefix: v } as any)}
+                                                            />
+                                                        </div>
+                                                    </>
+                                                )}
+                                                {d.kind === "nextcloud" && (
+                                                    <div className="grid gap-1 md:col-span-4">
+                                                        <LabeledInput
+                                                            label="Folder path"
+                                                            value={(d as any).path ?? "/Backups/RemoteIQ"}
+                                                            onChange={(v) => update({ ...(d as any), path: v } as any)}
+                                                            placeholder="/Backups/RemoteIQ"
+                                                        />
+                                                    </div>
+                                                )}
+                                                {d.kind === "gdrive" && (
+                                                    <div className="md:col-span-4">
+                                                        <LabeledInput
+                                                            label="Subfolder (optional)"
+                                                            value={(d as any).subfolder ?? ""}
+                                                            onChange={(v) => update({ ...(d as any), subfolder: v } as any)}
+                                                            placeholder="e.g., nightly-dumps"
+                                                        />
+                                                    </div>
+                                                )}
+                                                {d.kind === "remote" && (
+                                                    <div className="grid gap-1 md:col-span-4">
+                                                        <LabeledInput
+                                                            label="Directory"
+                                                            value={(d as any).path ?? "/srv/remoteiq/backups"}
+                                                            onChange={(v) => update({ ...(d as any), path: v } as any)}
+                                                            placeholder="/srv/remoteiq/backups"
+                                                        />
+                                                    </div>
+                                                )}
+
+                                                {/* Priority */}
+                                                <div className="md:col-span-2">
+                                                    <LabeledNumber
+                                                        label="Priority"
+                                                        value={(d as any).priority ?? ((i + 2) * 10)}
+                                                        onChange={(v) => update({ ...(d as any), priority: Number(v) as any })}
+                                                    />
+                                                </div>
+
+                                                {/* Remove */}
+                                                <div className="md:col-span-1 flex items-end">
+                                                    <Button type="button" variant="ghost" onClick={remove} aria-label="Remove">
+                                                        <Trash className="h-4 w-4" />
+                                                    </Button>
+                                                </div>
+                                            </>
+                                        );
+
+                                        return (
+                                            <div key={i} className="grid md:grid-cols-12 gap-3 rounded-md border p-3">
+                                                <div className="md:col-span-12 text-xs text-muted-foreground -mt-1 mb-1">
+                                                    Destination #{i + 2} · <span className="font-medium">{typeLabel(d.kind)}</span>
+                                                </div>
+                                                {fields}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
                         </div>
 
                         {/* Notifications */}

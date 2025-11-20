@@ -200,14 +200,7 @@ export class RolesService {
         }
     }
 
-
     async remove(roleId: string): Promise<void> {
-        if (!isUuid(roleId)) throw new BadRequestException('Invalid role id.');
-
-    async remove(roleId: string): Promise<void> {
-
-    async delete(roleId: string): Promise<void> {
-
         if (!isUuid(roleId)) throw new BadRequestException('Invalid role id.');
 
         const role = await this.fetchRoleById(roleId);

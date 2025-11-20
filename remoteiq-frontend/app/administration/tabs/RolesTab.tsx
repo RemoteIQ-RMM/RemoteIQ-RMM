@@ -108,7 +108,16 @@ type PermGroup = {
     items: { key: string; label: string }[];
 };
 
+/**
+ * Fallback permission catalog used when the backend doesn't return one.
+ * Includes Administration → admin.access so you can assign it immediately.
+ */
 const DEFAULT_PERM_GROUPS: PermGroup[] = [
+    {
+        key: "administration",
+        label: "Administration",
+        items: [{ key: "admin.access", label: "Access admin dashboard" }],
+    },
     {
         key: "users",
         label: "Users",
@@ -264,6 +273,43 @@ function getApiBase(): string {
 }
 const API_BASE = getApiBase();
 
+/* ========= Ensure admin.access is present in groups ========= */
+function ensureAdminAccessInGroups(groups: PermGroup[]): PermGroup[] {
+    const hasItem =
+        groups.some((g) => g.items?.some((i) => i.key === "admin.access")) || false;
+
+    if (hasItem) return groups;
+
+    // Try to place it into an existing "administration"-ish group if present.
+    const adminLikeIdx = groups.findIndex((g) =>
+        /admin|administration/i.test(g.key) || /admin/i.test(g.label)
+    );
+
+    if (adminLikeIdx >= 0) {
+        const g = groups[adminLikeIdx];
+        const dedup = new Map(g.items.map((i) => [i.key, i]));
+        if (!dedup.has("admin.access")) {
+            dedup.set("admin.access", {
+                key: "admin.access",
+                label: "Access admin dashboard",
+            });
+        }
+        const next = [...groups];
+        next[adminLikeIdx] = { ...g, items: [...dedup.values()] };
+        return next;
+    }
+
+    // Otherwise prepend a new Administration group (keeps UX consistent).
+    return [
+        {
+            key: "administration",
+            label: "Administration",
+            items: [{ key: "admin.access", label: "Access admin dashboard" }],
+        },
+        ...groups,
+    ];
+}
+
 /* ========= Local API helpers ========= */
 async function apiListRoles(): Promise<AnyRole[]> {
     const res = await fetch(`${API_BASE}/roles`, {
@@ -323,19 +369,26 @@ async function apiListPermissionGroups(): Promise<PermGroup[]> {
     });
     if (!res.ok) {
         const txt = await res.text().catch(() => "");
-        throw new Error(`Failed to load permission catalog (${res.status}): ${txt || res.statusText}`);
+        throw new Error(
+            `Failed to load permission catalog (${res.status}): ${txt || res.statusText}`
+        );
     }
     const body = (await res.json().catch(() => ({}))) as { groups?: PermGroup[] };
-    if (!Array.isArray(body.groups) || !body.groups.length) {
-        return DEFAULT_PERM_GROUPS;
-    }
-    return body.groups.map((group) => ({
-        key: group.key,
-        label: group.label,
-        items: Array.isArray(group.items)
-            ? group.items.map((item) => ({ key: item.key, label: item.label }))
-            : [],
-    }));
+
+    // Use server-provided groups if present; otherwise fallback.
+    const baseGroups =
+        Array.isArray(body.groups) && body.groups.length
+            ? body.groups.map((group) => ({
+                key: group.key,
+                label: group.label,
+                items: Array.isArray(group.items)
+                    ? group.items.map((item) => ({ key: item.key, label: item.label }))
+                    : [],
+            }))
+            : DEFAULT_PERM_GROUPS;
+
+    // Ensure admin.access exists (idempotent).
+    return ensureAdminAccessInGroups(baseGroups);
 }
 
 /* ========= Component ========= */
@@ -345,7 +398,8 @@ export default function RolesTab({
     push,
     refetchRoles,
 }: RolesTabProps) {
-    const [permissionGroups, setPermissionGroups] = React.useState<PermGroup[]>(DEFAULT_PERM_GROUPS);
+    const [permissionGroups, setPermissionGroups] =
+        React.useState<PermGroup[]>(DEFAULT_PERM_GROUPS);
     const allPermissionKeys = React.useMemo(
         () => permissionGroups.flatMap((g) => g.items.map((i) => i.key)),
         [permissionGroups]
@@ -550,7 +604,9 @@ export default function RolesTab({
         React.useState<"selected" | "filtered" | "all">("filtered");
     const [exportColumns, setExportColumns] =
         React.useState<ColumnKey[]>(DEFAULT_EXPORT_COLUMNS);
-    const [exportFormat, setExportFormat] = React.useState<"xlsx" | "csv">("xlsx");
+    const [exportFormat, setExportFormat] = React.useState<"xlsx" | "csv">(
+        "xlsx"
+    );
 
     const rolesForExport = React.useMemo(() => {
         if (exportScope === "selected" && selectedIds.length) {
@@ -602,7 +658,9 @@ export default function RolesTab({
                 });
                 lines.push(vals.join(","));
             }
-            const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+            const blob = new Blob([lines.join("\n")], {
+                type: "text/csv;charset=utf-8",
+            });
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
             a.download = `roles_${Date.now()}.csv`;
@@ -737,7 +795,6 @@ export default function RolesTab({
         // Build payload. For protected system roles, DO NOT send `name` at all.
         const isProtectedExisting = Boolean(id) && PROTECTED_NAMES.has(lowered);
         const payload: Partial<Role> = {
-            // name only if not protected
             ...(isProtectedExisting ? {} : { name: trimmed }),
             description: (description ?? "").trim() || undefined,
             permissions: permissions ?? [],
@@ -790,7 +847,6 @@ export default function RolesTab({
         const before = roles;
         const updated: Role = {
             ...editingRole,
-            // only change name locally if not protected
             name: isProtectedExisting ? editingRole.name : trimmed,
             description: payload.description,
             permissions: (payload.permissions as string[]) ?? [],
@@ -822,7 +878,6 @@ export default function RolesTab({
             });
         }
     }, [editingRole, nameIsUnique, push, roles, setRoles, refreshFromServer]);
-
 
     const [confirmDelete, setConfirmDelete] = React.useState<{
         open: boolean;
@@ -901,7 +956,10 @@ export default function RolesTab({
                 await apiDeleteRole(id);
             }
             await refreshFromServer(false);
-            push({ title: ids.length > 1 ? "Roles deleted" : "Role deleted", kind: "success" });
+            push({
+                title: ids.length > 1 ? "Roles deleted" : "Role deleted",
+                kind: "success",
+            });
         } catch (e: any) {
             setRoles(before);
             push({
@@ -919,7 +977,15 @@ export default function RolesTab({
                 }
             }
         }
-    }, [confirmDelete.ids, roles, setRoles, push, clearSelection, refetchRoles, refreshFromServer]);
+    }, [
+        confirmDelete.ids,
+        roles,
+        setRoles,
+        push,
+        clearSelection,
+        refetchRoles,
+        refreshFromServer,
+    ]);
 
     /* ===== Virtualization ===== */
     const parentRef = React.useRef<HTMLDivElement | null>(null);
@@ -947,7 +1013,8 @@ export default function RolesTab({
                         <div>
                             <CardTitle>Roles</CardTitle>
                             <CardDescription>
-                                Define access levels and permissions. Protected examples: Owner / Admin (cannot be deleted).
+                                Define access levels and permissions. Protected examples: Owner /
+                                Admin (cannot be deleted).
                             </CardDescription>
                         </div>
                         <div className="flex items-center gap-2">
@@ -979,7 +1046,9 @@ export default function RolesTab({
                                 aria-label="Sync"
                                 title="Sync with server"
                             >
-                                <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
+                                <RefreshCw
+                                    className={cn("h-4 w-4 mr-2", loading && "animate-spin")}
+                                />
                                 Sync
                             </Button>
                             <Button size="sm" onClick={openCreate} aria-label="Create role">
@@ -1002,7 +1071,10 @@ export default function RolesTab({
                                 aria-label="Search roles"
                             />
                             <Select value={permFilter} onValueChange={(v) => setPermFilter(v)}>
-                                <SelectTrigger className="w-[260px]" aria-label="Filter by permission">
+                                <SelectTrigger
+                                    className="w-[260px]"
+                                    aria-label="Filter by permission"
+                                >
                                     <SelectValue placeholder="Filter by permission" />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -1094,7 +1166,12 @@ export default function RolesTab({
                                     <Trash2 className="h-4 w-4 mr-2" />
                                     Delete
                                 </Button>
-                                <Button variant="outline" size="sm" onClick={clearSelection} aria-label="Clear selection">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={clearSelection}
+                                    aria-label="Clear selection"
+                                >
                                     Clear
                                 </Button>
                             </div>
@@ -1108,7 +1185,10 @@ export default function RolesTab({
                             <div className="flex items-center justify-center">
                                 <Checkbox
                                     aria-label="Select all on page"
-                                    checked={paged.length > 0 && paged.every((r) => selectedIds.includes(r.id))}
+                                    checked={
+                                        paged.length > 0 &&
+                                        paged.every((r) => selectedIds.includes(r.id))
+                                    }
                                     onCheckedChange={(v) => toggleAllVisible(Boolean(v))}
                                 />
                             </div>
@@ -1126,7 +1206,10 @@ export default function RolesTab({
                                 role="table"
                                 aria-label="Roles table virtualized"
                             >
-                                <div style={{ height: rowVirtualizer.getTotalSize() }} className="relative">
+                                <div
+                                    style={{ height: rowVirtualizer.getTotalSize() }}
+                                    className="relative"
+                                >
                                     {rowVirtualizer.getVirtualItems().map((vi) => {
                                         const r = filtered[vi.index];
                                         const isSelected = selectedIds.includes(r.id);
@@ -1138,25 +1221,35 @@ export default function RolesTab({
                                                     "absolute left-0 right-0 grid grid-cols-[40px_1fr_120px_180px_56px] items-center gap-2 border-b px-3 h-[60px]",
                                                     isSelected && "bg-primary/5"
                                                 )}
-                                                style={{ transform: `translateY(${vi.start}px)`, height: ROW_HEIGHT }}
+                                                style={{
+                                                    transform: `translateY(${vi.start}px)`,
+                                                    height: ROW_HEIGHT,
+                                                }}
                                             >
                                                 <div className="flex items-center justify-center">
                                                     <Checkbox
                                                         checked={isSelected}
-                                                        onCheckedChange={(v) => toggleOne(r.id, Boolean(v))}
+                                                        onCheckedChange={(v) =>
+                                                            toggleOne(r.id, Boolean(v))
+                                                        }
                                                         aria-label={`Select ${r.name}`}
                                                     />
                                                 </div>
 
                                                 <div className="min-w-0">
                                                     <div className="flex items-center gap-2">
-                                                        <span className="truncate font-medium">{r.name}</span>
+                                                        <span className="truncate font-medium">
+                                                            {r.name}
+                                                        </span>
                                                         {isProtectedRoleName(r.name) && (
                                                             <Badge variant="secondary" title="System role">
                                                                 System
                                                             </Badge>
                                                         )}
-                                                        <Badge variant="outline" title={r.permissions.join(", ")}>
+                                                        <Badge
+                                                            variant="outline"
+                                                            title={r.permissions.join(", ")}
+                                                        >
                                                             {r.permissions.length} perms
                                                         </Badge>
                                                     </div>
@@ -1166,16 +1259,25 @@ export default function RolesTab({
                                                         </div>
                                                     )}
                                                     {r.permissions?.length > 0 && (
-                                                        <div className="truncate text-[11px] text-muted-foreground" title={pv.title}>
+                                                        <div
+                                                            className="truncate text-[11px] text-muted-foreground"
+                                                            title={pv.title}
+                                                        >
                                                             {pv.text}
                                                         </div>
                                                     )}
                                                 </div>
 
-                                                <div className="text-right pr-2">{r.usersCount ?? 0}</div>
+                                                <div className="text-right pr-2">
+                                                    {r.usersCount ?? 0}
+                                                </div>
 
-                                                <div className="truncate text-sm" title={r.updatedAt ?? ""}>
-                                                    {relativeTimeFromNow(r.updatedAt) || formatDate(r.updatedAt)}
+                                                <div
+                                                    className="truncate text-sm"
+                                                    title={r.updatedAt ?? ""}
+                                                >
+                                                    {relativeTimeFromNow(r.updatedAt) ||
+                                                        formatDate(r.updatedAt)}
                                                 </div>
 
                                                 <div className="flex items-center justify-end">
@@ -1208,7 +1310,9 @@ export default function RolesTab({
                                             <div className="flex items-center justify-center">
                                                 <Checkbox
                                                     checked={isSelected}
-                                                    onCheckedChange={(v) => toggleOne(r.id, Boolean(v))}
+                                                    onCheckedChange={(v) =>
+                                                        toggleOne(r.id, Boolean(v))
+                                                    }
                                                     aria-label={`Select ${r.name}`}
                                                 />
                                             </div>
@@ -1221,7 +1325,10 @@ export default function RolesTab({
                                                             System
                                                         </Badge>
                                                     )}
-                                                    <Badge variant="outline" title={r.permissions.join(", ")}>
+                                                    <Badge
+                                                        variant="outline"
+                                                        title={r.permissions.join(", ")}
+                                                    >
                                                         {r.permissions.length} perms
                                                     </Badge>
                                                 </div>
@@ -1231,16 +1338,25 @@ export default function RolesTab({
                                                     </div>
                                                 )}
                                                 {r.permissions?.length > 0 && (
-                                                    <div className="truncate text-[11px] text-muted-foreground" title={pv.title}>
+                                                    <div
+                                                        className="truncate text-[11px] text-muted-foreground"
+                                                        title={pv.title}
+                                                    >
                                                         {pv.text}
                                                     </div>
                                                 )}
                                             </div>
 
-                                            <div className="text-right pr-2">{r.usersCount ?? 0}</div>
+                                            <div className="text-right pr-2">
+                                                {r.usersCount ?? 0}
+                                            </div>
 
-                                            <div className="truncate text-sm" title={r.updatedAt ?? ""}>
-                                                {relativeTimeFromNow(r.updatedAt) || formatDate(r.updatedAt)}
+                                            <div
+                                                className="truncate text-sm"
+                                                title={r.updatedAt ?? ""}
+                                            >
+                                                {relativeTimeFromNow(r.updatedAt) ||
+                                                    formatDate(r.updatedAt)}
                                             </div>
 
                                             <div className="flex items-center justify-end">
@@ -1259,7 +1375,8 @@ export default function RolesTab({
                                 <div className="flex items-center justify-between px-3 py-2">
                                     <div className="text-xs text-muted-foreground">
                                         {filtered.length} role(s)
-                                        {filtered.length !== normalized.length && ` • filtered from ${normalized.length}`}
+                                        {filtered.length !== normalized.length &&
+                                            ` • filtered from ${normalized.length}`}
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <Button
@@ -1297,10 +1414,9 @@ export default function RolesTab({
                 </CardContent>
             </Card>
 
-            {/* Create/Edit Role Dialog — redesigned for better fit */}
+            {/* Create/Edit Role Dialog */}
             <Dialog open={editOpen} onOpenChange={(v) => setEditOpen(v)}>
                 <DialogContent
-                    // Wider but clamped; internal scroll area handles height
                     className={cn(
                         "w-[min(100vw-2rem,1100px)] max-w-none p-0 overflow-hidden"
                     )}
@@ -1324,13 +1440,16 @@ export default function RolesTab({
                                         <Input
                                             value={editingRole.name}
                                             onChange={(e) =>
-                                                setEditingRole((prev) => (prev ? { ...prev, name: e.target.value } : prev))
+                                                setEditingRole((prev) =>
+                                                    prev ? { ...prev, name: e.target.value } : prev
+                                                )
                                             }
                                             placeholder="e.g. Support Agent"
                                             aria-label="Role name"
                                             disabled={
                                                 Boolean(editingRole.id) &&
-                                                editingRole.name.trim().toLowerCase() === PROTECTED_FULL_LOCK
+                                                editingRole.name.trim().toLowerCase() ===
+                                                PROTECTED_FULL_LOCK
                                             }
                                         />
                                     </div>
@@ -1349,7 +1468,7 @@ export default function RolesTab({
                                     </div>
                                 </div>
 
-                                {/* Permission checklist (accordion/compact) */}
+                                {/* Permission checklist */}
                                 <div className="rounded-md border mt-3">
                                     <div className="flex items-center justify-between px-3 py-2 border-b">
                                         <div className="font-medium text-sm">Permissions</div>
@@ -1359,7 +1478,9 @@ export default function RolesTab({
                                                 variant="outline"
                                                 onClick={() =>
                                                     setEditingRole((prev) =>
-                                                        prev ? { ...prev, permissions: [...allPermissionKeys] } : prev
+                                                        prev
+                                                            ? { ...prev, permissions: [...allPermissionKeys] }
+                                                            : prev
                                                     )
                                                 }
                                                 aria-label="Check all permissions"
@@ -1372,7 +1493,9 @@ export default function RolesTab({
                                                 size="sm"
                                                 variant="outline"
                                                 onClick={() =>
-                                                    setEditingRole((prev) => (prev ? { ...prev, permissions: [] } : prev))
+                                                    setEditingRole((prev) =>
+                                                        prev ? { ...prev, permissions: [] } : prev
+                                                    )
                                                 }
                                                 aria-label="Uncheck all permissions"
                                                 title="Revoke all"
@@ -1387,17 +1510,17 @@ export default function RolesTab({
                                             const groupKeys = group.items.map((i) => i.key);
                                             const hasAll =
                                                 editingRole.permissions &&
-                                                groupKeys.every((k) => (editingRole.permissions ?? []).includes(k));
+                                                groupKeys.every((k) =>
+                                                    (editingRole.permissions ?? []).includes(k)
+                                                );
                                             const hasSome =
                                                 editingRole.permissions &&
-                                                groupKeys.some((k) => (editingRole.permissions ?? []).includes(k));
+                                                groupKeys.some((k) =>
+                                                    (editingRole.permissions ?? []).includes(k)
+                                                );
 
                                             return (
-                                                <details
-                                                    key={group.key}
-                                                    className="rounded-md border"
-                                                    open
-                                                >
+                                                <details key={group.key} className="rounded-md border" open>
                                                     <summary className="flex items-center justify-between cursor-pointer list-none px-3 py-2 select-none">
                                                         <div className="flex items-center gap-2">
                                                             <ChevronDown className="h-4 w-4 transition-transform data-[state=open]:rotate-180" />
@@ -1448,7 +1571,9 @@ export default function RolesTab({
                                                     <div className="px-3 pb-3">
                                                         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                                                             {group.items.map((p) => {
-                                                                const checked = editingRole.permissions?.includes(p.key) ?? false;
+                                                                const checked =
+                                                                    editingRole.permissions?.includes(p.key) ??
+                                                                    false;
                                                                 return (
                                                                     <label
                                                                         key={p.key}
@@ -1460,9 +1585,14 @@ export default function RolesTab({
                                                                             onCheckedChange={(v) =>
                                                                                 setEditingRole((prev) => {
                                                                                     if (!prev) return prev;
-                                                                                    const next = new Set(prev.permissions ?? []);
+                                                                                    const next = new Set(
+                                                                                        prev.permissions ?? []
+                                                                                    );
                                                                                     v ? next.add(p.key) : next.delete(p.key);
-                                                                                    return { ...prev, permissions: [...next] };
+                                                                                    return {
+                                                                                        ...prev,
+                                                                                        permissions: [...next],
+                                                                                    };
                                                                                 })
                                                                             }
                                                                             aria-label={p.label}
@@ -1495,20 +1625,28 @@ export default function RolesTab({
             {/* Delete Confirm */}
             <Dialog
                 open={confirmDelete.open}
-                onOpenChange={(open) => setConfirmDelete((prev) => ({ ...prev, open }))}
+                onOpenChange={(open) =>
+                    setConfirmDelete((prev) => ({ ...prev, open }))
+                }
             >
                 <DialogContent>
                     <DialogHeader>
-                        <DialogTitle>Delete {confirmDelete.ids.length > 1 ? "roles" : "role"}?</DialogTitle>
+                        <DialogTitle>
+                            Delete {confirmDelete.ids.length > 1 ? "roles" : "role"}?
+                        </DialogTitle>
                         <DialogDescription className="text-red-600 dark:text-red-400">
                             This action cannot be undone.
                         </DialogDescription>
                     </DialogHeader>
                     <div className="text-sm">
-                        Deleting a role will remove it permanently. Roles in use or protected roles cannot be deleted.
+                        Deleting a role will remove it permanently. Roles in use or protected
+                        roles cannot be deleted.
                     </div>
                     <DialogFooter className="mt-4">
-                        <Button variant="outline" onClick={() => setConfirmDelete({ open: false, ids: [] })}>
+                        <Button
+                            variant="outline"
+                            onClick={() => setConfirmDelete({ open: false, ids: [] })}
+                        >
                             Cancel
                         </Button>
                         <Button variant="destructive" onClick={confirmPerformDelete}>
@@ -1518,7 +1656,7 @@ export default function RolesTab({
                 </DialogContent>
             </Dialog>
 
-            {/* Export dialog (unchanged) */}
+            {/* Export dialog */}
             <Dialog open={exportOpen} onOpenChange={(v) => setExportOpen(v)}>
                 <DialogContent>
                     <DialogHeader>
@@ -1531,7 +1669,9 @@ export default function RolesTab({
                             <div className="font-medium mb-2 text-sm">Scope</div>
                             <RadioGroup
                                 value={exportScope}
-                                onValueChange={(v: "selected" | "filtered" | "all") => setExportScope(v)}
+                                onValueChange={(v: "selected" | "filtered" | "all") =>
+                                    setExportScope(v)
+                                }
                                 className="grid gap-2 sm:grid-cols-3"
                             >
                                 {(["selected", "filtered", "all"] as const).map((s) => (
@@ -1626,7 +1766,8 @@ function RowActions({
     onDuplicate: () => void;
     onDelete: () => void;
 }) {
-    const deletable = !isProtectedRoleName(role.name) && (role.usersCount ?? 0) === 0;
+    const deletable =
+        !isProtectedRoleName(role.name) && (role.usersCount ?? 0) === 0;
 
     return (
         <DropdownMenu>

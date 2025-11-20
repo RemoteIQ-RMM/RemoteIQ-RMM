@@ -1,0 +1,3184 @@
+RemoteIQ Phone Field Audit - 2025-11-06 22:03:32
+
+
+==== Occurrences of 'phone' in code (with context) ==== 
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\company\company.dto.ts:8
+    @IsOptional() @IsString() legalName?: string;
+    @IsOptional() @IsEmail() email?: string;
+    @IsOptional() @IsString() phone?: string;
+    @IsOptional() @IsString() fax?: string;
+    @IsOptional() @IsString() website?: string;
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\company\company.service.ts:16
+              name,
+              legal_name AS "legalName",
+              email, phone, fax, website,
+              vat_tin   AS "vatTin",
+              address1, address2, city, state, postal, country
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\company\company.service.ts:30
+        await this.pg.query(
+            `INSERT INTO company_profile
+         (id, name, legal_name, email, phone, fax, website, vat_tin,
+          address1, address2, city, state, postal, country)
+       VALUES
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\company\company.service.ts:38
+         legal_name = EXCLUDED.legal_name,
+         email      = EXCLUDED.email,
+         phone      = EXCLUDED.phone,
+         fax        = EXCLUDED.fax,
+         website    = EXCLUDED.website,
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\company\company.service.ts:53
+                input.legalName ?? null,
+                input.email ?? null,
+                input.phone ?? null,
+                input.fax ?? null,
+                input.website ?? null,
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\me.dto.ts:16
+
+    @IsOptional() @IsString() @MaxLength(32)
+    phone?: string;
+
+    @IsOptional() @IsString() @MaxLength(64)
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\me.service.ts:65
+        const q = `
+      select id, name, email,
+             coalesce(phone, '') as phone,
+             coalesce(timezone, '') as timezone,
+             coalesce(locale, '') as locale,
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\me.service.ts:89
+            name: "name",
+            email: "email",
+            phone: "phone",
+            timezone: "timezone",
+            locale: "locale",
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.dto.ts:32
+
+    // Optional profile fields if present in DB (we don't require them)
+    phone?: string | null;
+    address1?: string | null;
+    address2?: string | null;
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.dto.ts:109
+
+    // Optional profile fields — updated only if present in DB
+    @IsOptional() @IsString() phone?: string;
+    @IsOptional() @IsString() address1?: string;
+    @IsOptional() @IsString() address2?: string;
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.dto.ts:131
+    email!: string;
+
+    @IsOptional() @IsString() phone?: string | null;
+    @IsOptional() @IsString() timezone?: string | null;
+    @IsOptional() @IsString() locale?: string | null;
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.dto.ts:153
+    @IsOptional() @IsString() name?: string;
+    @IsOptional() @IsEmail() email?: string;
+    @IsOptional() @IsString() phone?: string | null;
+    @IsOptional() @IsString() timezone?: string | null;
+    @IsOptional() @IsString() locale?: string | null;
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.service.ts:499
+
+        const optionalMap: Record<string, string> = {
+            phone: "phone",
+            address1: "address1",
+            address2: "address2",
+
+
+
+==== Likely SQL spots (SELECT on users.* or phone) ==== 
+
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\me.service.ts:133  `select avatar_url, avatar_thumb_url from users where id = $1 limit 1`,
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\security.service.ts:70  const { rows } = await this.pg.query("SELECT password_hash FROM users WHERE id = $1", [userId]);
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.service.ts:104  `SELECT organization_id FROM public.users WHERE id = $1 LIMIT 1`,
+---- C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.service.ts:243  const countSql = `SELECT COUNT(*)::int AS c FROM public.users u ${whereSql}`;
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\me.service.ts ==== 
+
+import { Injectable } from "@nestjs/common";
+import { PgPoolService } from "../storage/pg-pool.service";
+import * as fs from "fs/promises";
+import * as path from "path";
+
+@Injectable()
+export class MeService {
+    constructor(private readonly pg: PgPoolService) { }
+
+    // Compose a public URL for files served from /public (not used by controller anymore, but kept for compatibility)
+    makePublicUrl(filename: string) {
+        const base = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+        const staticBase = base ? (base.endsWith("/static") ? base : `${base}/static`) : "";
+        return staticBase ? `${staticBase}/uploads/${filename}` : `/static/uploads/${filename}`;
+    }
+
+    /* ------------------------------ Helpers for local file cleanup ------------------------------ */
+
+    /** Extract a local filesystem path for files under `/static/uploads/<name>` or `/uploads/<name>` */
+    private toLocalUploadPathFromUrl(url?: string | null): string | null {
+        if (!url) return null;
+        let pathname = "";
+        try {
+            // absolute http(s) url
+            const u = new URL(url);
+            pathname = u.pathname;
+        } catch {
+            // not a full URL; treat as pathname-like
+            pathname = url;
+        }
+
+        // Normalize where '/uploads/...' might appear (with or without /static prefix)
+        const idx = pathname.indexOf("/uploads/");
+        if (idx === -1) return null;
+
+        const filename = pathname.substring(idx + "/uploads/".length);
+        if (!filename || filename.includes("..")) return null;
+
+        // Resolve to <project>/public/uploads/<filename>
+        const uploadsDir = path.join(__dirname, "..", "public", "uploads");
+        const abs = path.join(uploadsDir, filename);
+
+        // Ensure file stays inside uploads dir (avoid traversal)
+        const normUploads = path.normalize(uploadsDir + path.sep);
+        const normFile = path.normalize(abs);
+        if (!normFile.startsWith(normUploads)) return null;
+
+        return normFile;
+    }
+
+    private async tryDeleteLocalFile(filePath: string | null) {
+        if (!filePath) return;
+        try {
+            await fs.unlink(filePath);
+        } catch {
+            // swallow (file may not exist or we lack perms; not fatal)
+        }
+    }
+
+    /* ------------------------------------ Profile CRUD ------------------------------------ */
+
+    async getMe(userId: string) {
+        const q = `
+      select id, name, email,
+             coalesce(phone, '') as phone,
+             coalesce(timezone, '') as timezone,
+             coalesce(locale, '') as locale,
+             coalesce(avatar_url, '') as "avatarUrl",
+             coalesce(avatar_thumb_url, '') as "avatarThumbUrl",
+             coalesce(address1, '') as address1,
+             coalesce(address2, '') as address2,
+             coalesce(city, '') as city,
+             coalesce(state, '') as state,
+             coalesce(postal, '') as postal,
+             coalesce(country, '') as country
+      from users
+      where id = $1
+      limit 1
+    `;
+        const { rows } = await this.pg.query(q, [userId]);
+        return rows[0] || {};
+    }
+
+    async updateMe(userId: string, patch: Record<string, any>) {
+        // Only accept known columns; convert avatarUrl -> avatar_url
+        const map: Record<string, string> = {
+            name: "name",
+            email: "email",
+            phone: "phone",
+            timezone: "timezone",
+            locale: "locale",
+            avatarUrl: "avatar_url",
+            address1: "address1",
+            address2: "address2",
+            city: "city",
+            state: "state",
+            postal: "postal",
+            country: "country",
+        };
+
+        const sets: string[] = [];
+        const vals: any[] = [];
+        let i = 1;
+
+        for (const [k, v] of Object.entries(patch || {})) {
+            const col = map[k];
+            if (!col) continue;
+            sets.push(`${col} = $${i++}`);
+            vals.push(v);
+            // keep thumb in sync if avatarUrl is set directly through PATCH
+            if (col === "avatar_url") {
+                sets.push(`avatar_thumb_url = $${i++}`);
+                vals.push(v);
+            }
+        }
+        if (sets.length === 0) {
+            return this.getMe(userId);
+        }
+        vals.push(userId);
+
+        const sql = `update users set ${sets.join(", ")}, updated_at = now() where id = $${i} returning id`;
+        await this.pg.query(sql, vals);
+        return this.getMe(userId);
+    }
+
+    /**
+     * Replace avatar URLs and delete the previous local file (if any and if it was under /uploads).
+     * If `nextUrl` is null, clears both avatar fields and removes old local file.
+     */
+    async replaceAvatarUrl(userId: string, nextUrl: string | null) {
+        // first, read previous urls
+        const { rows: prevRows } = await this.pg.query<{ avatar_url: string | null; avatar_thumb_url: string | null }>(
+            `select avatar_url, avatar_thumb_url from users where id = $1 limit 1`,
+            [userId],
+        );
+        const prev = prevRows[0] || { avatar_url: null, avatar_thumb_url: null };
+
+        // upsert new URL(s); for now thumb mirrors the main url
+        await this.pg.query(
+            `update users
+         set avatar_url = $2,
+             avatar_thumb_url = $3,
+             updated_at = now()
+       where id = $1`,
+            [userId, nextUrl, nextUrl],
+        );
+
+        // delete the previous local file if it lived under /uploads and is different than new
+        const oldUrl = prev.avatar_url;
+        if (oldUrl && oldUrl !== nextUrl) {
+            const localPath = this.toLocalUploadPathFromUrl(oldUrl);
+            await this.tryDeleteLocalFile(localPath);
+        }
+
+        // return updated profile
+        return this.getMe(userId);
+    }
+
+    /** Kept for compatibility with earlier calls; now delegates to replaceAvatarUrl */
+    async setAvatarUrl(userId: string, url: string | null) {
+        return this.replaceAvatarUrl(userId, url);
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\me.controller.ts ==== 
+
+//backend\src\users\me.controller.ts
+
+import {
+    Controller,
+    Get,
+    Patch,
+    Body,
+    UseInterceptors,
+    UploadedFile,
+    Post,
+    Delete,
+    Req,
+    BadRequestException,
+    UnauthorizedException,
+} from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { diskStorage } from "multer";
+import type { Request } from "express";
+import { MeService } from "./me.service";
+
+/* ----------------------------- MIME → EXT map ----------------------------- */
+const EXT_BY_MIME: Record<string, string> = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+};
+
+/* ----------------------------- Rate limit (simple) ----------------------------- */
+/** Allow one upload per user every 5 seconds (in-memory, per-instance). */
+const UPLOAD_RATE_MS = 5_000;
+const lastUploadByUser = new Map<string, number>();
+
+/* ----------------------------- Multer callbacks ----------------------------- */
+/** filename: (req, file, cb: (err: Error|null, filename: string) => void) => void */
+function filenameCb(
+    _req: any,
+    file: Express.Multer.File,
+    callback: (error: Error | null, filename: string) => void,
+) {
+    // derive extension from mime for consistency and safety
+    const ext = EXT_BY_MIME[file.mimetype] ?? ".bin";
+    // remove suspicious chars from provided name (if we keep it), and trim to avoid gigantic filenames
+    const base =
+        (file.originalname || "upload")
+            .replace(/[^\w.\-]+/g, "_")
+            .replace(/\.[A-Za-z0-9]+$/, "") // strip user-provided extension
+            .slice(0, 80) || "upload";
+    const safe = `${Date.now()}_${base}${ext}`;
+    callback(null, safe);
+}
+
+/** fileFilter: (req, file, cb: (err: Error|null, accept: boolean) => void) => void */
+function imageFilter(
+    _req: any,
+    file: Express.Multer.File,
+    callback: (error: Error | null, acceptFile: boolean) => void,
+) {
+    const ok = !!EXT_BY_MIME[file.mimetype];
+    if (!ok) return callback(new BadRequestException("Unsupported file type"), false);
+    return callback(null, true);
+}
+
+/* ----------------------------- URL Builder ----------------------------- */
+/**
+ * Build an ABSOLUTE URL to the static mount that always works and never double-prefixes.
+ * Rules:
+ * - If PUBLIC_BASE_URL is set, use it as the host origin (no trailing slash).
+ * - Otherwise derive protocol/host from the request.
+ * - Ensure exactly one '/static' segment before '/uploads/...'.
+ *
+ * Examples that all yield a single '/static/uploads/...':
+ *   PUBLIC_BASE_URL=http://localhost:3001         -> http://localhost:3001/static/uploads/<file>
+ *   PUBLIC_BASE_URL=http://localhost:3001/static  -> http://localhost:3001/static/uploads/<file>
+ *   PUBLIC_BASE_URL not set                       -> http(s)://<req host>/static/uploads/<file>
+ */
+function buildStaticUploadUrl(req: Request, filename: string): string {
+    const raw = (process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, ""); // strip trailing '/'
+    let origin: string;
+    if (raw) {
+        // If the env already ends with '/static', keep it; else append '/static'
+        const staticBase = raw.endsWith("/static") ? raw : `${raw}/static`;
+        origin = staticBase;
+    } else {
+        // derive from request
+        const proto =
+            (req.headers["x-forwarded-proto"] as string) ||
+            (req.protocol || "http");
+        const host = req.get("host") || "localhost:3001";
+        origin = `${proto}://${host}/static`;
+    }
+    return `${origin}/uploads/${encodeURIComponent(filename)}`;
+}
+
+@Controller("/api/users")
+export class MeController {
+    constructor(private readonly me: MeService) { }
+
+    // Current user profile
+    @Get("me")
+    async getMe(@Req() req: any) {
+        const userId = req.user?.id; // set by your cookie middleware
+        if (!userId) throw new UnauthorizedException("Not authenticated");
+        return this.me.getMe(userId);
+    }
+
+    // Partial update
+    @Patch("me")
+    async patchMe(@Req() req: any, @Body() body: any) {
+        const userId = req.user?.id;
+        if (!userId) throw new UnauthorizedException("Not authenticated");
+        return this.me.updateMe(userId, body);
+    }
+
+    // Upload avatar (multipart/form-data; field name: "file")
+    @Post("me/avatar")
+    @UseInterceptors(
+        FileInterceptor("file", {
+            storage: diskStorage({
+                destination: "public/uploads",
+                filename: filenameCb,
+            }),
+            limits: {
+                fileSize: Math.max(
+                    1,
+                    (Number(process.env.AVATAR_MAX_MB) || 5) * 1024 * 1024,
+                ), // default 5 MB
+            },
+            fileFilter: imageFilter,
+        }),
+    )
+    async uploadAvatar(@Req() req: Request & { user?: any }, @UploadedFile() file: Express.Multer.File) {
+        const userId = req.user?.id;
+        if (!userId) throw new UnauthorizedException("Not authenticated");
+        if (!file) throw new BadRequestException("No file uploaded");
+
+        // rate-limit: N ms between uploads per user
+        const now = Date.now();
+        const last = lastUploadByUser.get(userId) || 0;
+        if (now - last < UPLOAD_RATE_MS) {
+            throw new BadRequestException("You're uploading too fast. Please wait a moment and try again.");
+        }
+        lastUploadByUser.set(userId, now);
+
+        // Build a correct, absolute URL that points to ServeStatic '/static'
+        const url = buildStaticUploadUrl(req, file.filename);
+
+        // Save in DB; also sets avatar_thumb_url (same as main for now) and deletes previous local file if any
+        await this.me.replaceAvatarUrl(userId, url);
+
+        return { url };
+    }
+
+    // Remove avatar
+    @Delete("me/avatar")
+    async deleteAvatar(@Req() req: any) {
+        const userId = req.user?.id;
+        if (!userId) throw new UnauthorizedException("Not authenticated");
+
+        await this.me.replaceAvatarUrl(userId, null);
+        return { ok: true };
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.service.ts ==== 
+
+// backend/src/users/users.service.ts
+import {
+    BadRequestException,
+    ConflictException,
+    Injectable,
+    NotFoundException,
+} from "@nestjs/common";
+import * as bcrypt from "bcryptjs";
+import { randomUUID } from "crypto";
+import { PgPoolService } from "../storage/pg-pool.service";
+import { OrganizationContextService } from "../storage/organization-context.service";
+import {
+    BulkInviteDto,
+    CreateUserDto,
+    InviteUserDto,
+    ListUsersQuery,
+    ResetPasswordDto,
+    UpdateRoleDto,
+    UpdateUserDto,
+    UserRow,
+} from "./users.dto";
+
+const SALT_ROUNDS = 12;
+const NAME_SPLIT_REGEX = /\s+/;
+const DEFAULT_ROLE_CANDIDATES = ["user", "technician", "admin"];
+
+function isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function coalesceString(v: unknown): string | null {
+    if (typeof v !== "string") return null;
+    const trimmed = v.trim();
+    return trimmed.length ? trimmed : null;
+}
+
+function splitDisplayName(name: string | undefined | null): { first: string | null; last: string | null } {
+    if (!name) return { first: null, last: null };
+    const trimmed = name.trim();
+    if (!trimmed) return { first: null, last: null };
+    const parts = trimmed.split(NAME_SPLIT_REGEX).filter(Boolean);
+    if (parts.length === 0) return { first: null, last: null };
+    if (parts.length === 1) return { first: parts[0], last: null };
+    const last = parts.pop() as string;
+    return { first: parts.join(" "), last };
+}
+
+type DbUserRow = {
+    id: string;
+    email: string;
+    first_name: string | null;
+    last_name: string | null;
+    status: string;
+    last_seen_at: string | null;
+    created_at: string;
+    updated_at: string;
+    two_factor_enabled: boolean;
+    primary_role_id: string | null;
+    primary_role_name: string | null;
+    roles: any;
+};
+
+@Injectable()
+export class UsersService {
+    constructor(
+        private readonly pg: PgPoolService,
+        private readonly orgs: OrganizationContextService,
+    ) { }
+
+    private mapUserRow(row: DbUserRow): UserRow {
+        const roles = Array.isArray(row.roles)
+            ? row.roles
+                  .map((r: any) => ({
+                      id: String(r.id ?? ""),
+                      name: String(r.name ?? "").trim(),
+                  }))
+                  .filter((r) => r.id && r.name)
+            : [];
+
+        const primaryRoleName = row.primary_role_name || roles[0]?.name || "";
+        const displayNameParts = [row.first_name, row.last_name].map((v) => v?.trim()).filter(Boolean) as string[];
+        const displayName = displayNameParts.length
+            ? displayNameParts.join(" ")
+            : row.email.split("@")[0];
+
+        return {
+            id: row.id,
+            name: displayName,
+            email: row.email,
+            role: primaryRoleName,
+            status: (row.status as UserRow["status"]) ?? "active",
+            twoFactorEnabled: !!row.two_factor_enabled,
+            suspended: row.status === "suspended",
+            lastSeen: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : null,
+            createdAt: new Date(row.created_at).toISOString(),
+            updatedAt: new Date(row.updated_at).toISOString(),
+            roleId: row.primary_role_id,
+            roles,
+        };
+    }
+
+    private async ensureUserExists(userId: string): Promise<{ organization_id: string }> {
+        const { rows } = await this.pg.query<{ organization_id: string }>(
+            `SELECT organization_id FROM public.users WHERE id = $1 LIMIT 1`,
+            [userId],
+        );
+        if (!rows[0]) {
+            throw new NotFoundException("User not found");
+        }
+        return rows[0];
+    }
+
+    private async ensureUserSecurityRow(userId: string): Promise<void> {
+        await this.pg.query(
+            `INSERT INTO public.user_security (user_id)
+             VALUES ($1)
+             ON CONFLICT (user_id) DO NOTHING`,
+            [userId],
+        );
+    }
+
+    private async replaceUserRoles(userId: string, roleIds: string[]): Promise<void> {
+        await this.pg.query(`DELETE FROM public.user_roles WHERE user_id = $1`, [userId]);
+        if (!roleIds.length) return;
+        const values = roleIds.map((_, idx) => `($1, $${idx + 2})`).join(", ");
+        await this.pg.query(
+            `INSERT INTO public.user_roles (user_id, role_id)
+             VALUES ${values}`,
+            [userId, ...roleIds],
+        );
+    }
+
+    private async findDefaultRoleId(orgId: string): Promise<string | null> {
+        const { rows } = await this.pg.query<{ id: string }>(
+            `SELECT id
+             FROM public.roles
+             WHERE (scope = 'organization' AND organization_id = $1)
+                OR scope = 'system'
+             ORDER BY
+                CASE LOWER(name)
+                    WHEN 'owner' THEN 0
+                    WHEN 'admin' THEN 1
+                    WHEN 'administrator' THEN 2
+                    WHEN 'technician' THEN 3
+                    WHEN 'user' THEN 4
+                    ELSE 10
+                END,
+                scope DESC,
+                LOWER(name)
+             LIMIT 1`,
+            [orgId],
+        );
+        return rows[0]?.id ?? null;
+    }
+
+    private async resolveRoleId(orgId: string, input?: string | null): Promise<string | null> {
+        const trimmed = input?.trim();
+        if (trimmed) {
+            if (isUuid(trimmed)) {
+                const { rows } = await this.pg.query<{ id: string }>(
+                    `SELECT id
+                     FROM public.roles
+                     WHERE id = $1 AND ((scope = 'organization' AND organization_id = $2) OR scope = 'system')
+                     LIMIT 1`,
+                    [trimmed, orgId],
+                );
+                if (rows[0]?.id) return rows[0].id;
+            } else {
+                const { rows } = await this.pg.query<{ id: string }>(
+                    `SELECT id
+                     FROM public.roles
+                     WHERE LOWER(name) = LOWER($2)
+                       AND ((scope = 'organization' AND organization_id = $1) OR scope = 'system')
+                     ORDER BY scope DESC
+                     LIMIT 1`,
+                    [orgId, trimmed],
+                );
+                if (rows[0]?.id) return rows[0].id;
+            }
+        }
+
+        // Attempt to fall back to a sensible default ("User" etc.)
+        for (const candidate of DEFAULT_ROLE_CANDIDATES) {
+            const { rows } = await this.pg.query<{ id: string }>(
+                `SELECT id
+                 FROM public.roles
+                 WHERE LOWER(name) = $2
+                   AND ((scope = 'organization' AND organization_id = $1) OR scope = 'system')
+                 ORDER BY scope DESC
+                 LIMIT 1`,
+                [orgId, candidate],
+            );
+            if (rows[0]?.id) return rows[0].id;
+        }
+
+        return null;
+    }
+
+    private buildSearchClause(params: any[], value?: string | null): string | null {
+        const term = value?.trim();
+        if (!term) return null;
+        params.push(`%${term.toLowerCase()}%`);
+        const idx = params.length;
+        return `(
+            LOWER(u.email) LIKE $${idx}
+            OR LOWER(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) LIKE $${idx}
+        )`;
+    }
+
+    async list(q: ListUsersQuery): Promise<{ items: UserRow[]; total: number }> {
+        const orgId = await this.orgs.getDefaultOrganizationId();
+        const params: any[] = [orgId];
+        const where: string[] = [`u.organization_id = $1`];
+
+        const search = this.buildSearchClause(params, q.q);
+        if (search) where.push(search);
+
+        if (q.status && q.status !== "all") {
+            params.push(q.status);
+            where.push(`u.status = $${params.length}`);
+        }
+
+        if (q.role && q.role !== "all") {
+            params.push(q.role);
+            const idx = params.length;
+            const clause = isUuid(q.role)
+                ? `EXISTS (
+                        SELECT 1
+                        FROM public.user_roles urf
+                        WHERE urf.user_id = u.id AND urf.role_id = $${idx}
+                    )`
+                : `EXISTS (
+                        SELECT 1
+                        FROM public.user_roles urf
+                        JOIN public.roles rf ON rf.id = urf.role_id
+                        WHERE urf.user_id = u.id AND LOWER(rf.name) = LOWER($${idx})
+                    )`;
+            where.push(clause);
+        }
+
+        const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+        const countSql = `SELECT COUNT(*)::int AS c FROM public.users u ${whereSql}`;
+        const { rows: countRows } = await this.pg.query<{ c: number }>(countSql, params);
+        const total = countRows[0]?.c ?? 0;
+
+        const sortKeyMap: Record<string, string> = {
+            name: "display_name",
+            email: "LOWER(u.email)",
+            role: "LOWER(COALESCE(pr.name, ''))",
+            lastSeen: "u.last_seen_at",
+        };
+        const sortKey = sortKeyMap[q.sortKey ?? "name"] || sortKeyMap.name;
+        const sortDir = q.sortDir?.toUpperCase() === "DESC" ? "DESC" : "ASC";
+
+        const page = Math.max(1, q.page ?? 1);
+        const pageSize = Math.max(1, q.pageSize ?? 25);
+        const offset = (page - 1) * pageSize;
+
+        const dataSql = `
+            SELECT
+                u.id,
+                u.email,
+                u.first_name,
+                u.last_name,
+                u.status,
+                u.last_seen_at,
+                u.created_at,
+                u.updated_at,
+                COALESCE(us.two_factor_enabled, false) AS two_factor_enabled,
+                pr.id AS primary_role_id,
+                pr.name AS primary_role_name,
+                COALESCE(
+                    jsonb_agg(DISTINCT jsonb_build_object('id', r.id, 'name', r.name))
+                    FILTER (WHERE r.id IS NOT NULL),
+                    '[]'::jsonb
+                ) AS roles,
+                COALESCE(NULLIF(CONCAT_WS(' ', NULLIF(u.first_name, ''), NULLIF(u.last_name, '')), ''), u.email) AS display_name
+            FROM public.users u
+            LEFT JOIN public.user_security us ON us.user_id = u.id
+            LEFT JOIN public.user_roles ur ON ur.user_id = u.id
+            LEFT JOIN public.roles r ON r.id = ur.role_id
+            LEFT JOIN LATERAL (
+                SELECT r2.id, r2.name
+                FROM public.user_roles ur2
+                JOIN public.roles r2 ON r2.id = ur2.role_id
+                WHERE ur2.user_id = u.id
+                ORDER BY r2.scope DESC, LOWER(r2.name) ASC
+                LIMIT 1
+            ) pr ON TRUE
+            ${whereSql}
+            GROUP BY u.id, us.two_factor_enabled, pr.id, pr.name
+            ORDER BY ${sortKey} ${sortDir}, display_name ASC
+            LIMIT $${params.length + 1}
+            OFFSET $${params.length + 2}
+        `;
+
+        const { rows } = await this.pg.query<DbUserRow>(dataSql, [...params, pageSize, offset]);
+        return {
+            items: rows.map((row) => this.mapUserRow(row)),
+            total,
+        };
+    }
+
+    async roles(): Promise<{ id: string; name: string }[]> {
+        const orgId = await this.orgs.getDefaultOrganizationId();
+        const { rows } = await this.pg.query(
+            `SELECT id, name
+             FROM public.roles
+             WHERE scope = 'system' OR organization_id = $1
+             ORDER BY scope DESC, LOWER(name) ASC`,
+            [orgId],
+        );
+        return rows.map((r: any) => ({ id: r.id, name: r.name }));
+    }
+
+    async inviteOne(dto: InviteUserDto): Promise<{ id: string }> {
+        const orgId = await this.orgs.getDefaultOrganizationId();
+        const email = dto.email.toLowerCase().trim();
+        const fallbackName = email.split("@")[0];
+        const displayName = coalesceString(dto.name) || fallbackName;
+        const { first, last } = splitDisplayName(displayName);
+        const passwordHash = await bcrypt.hash(randomUUID(), SALT_ROUNDS);
+        const roleId = await this.resolveRoleId(orgId, dto.role);
+
+        const { rows } = await this.pg.query<{ id: string }>(
+            `INSERT INTO public.users (organization_id, email, password_hash, first_name, last_name, status)
+             VALUES ($1, $2, $3, $4, $5, 'invited')
+             ON CONFLICT (organization_id, email) DO UPDATE
+               SET first_name = EXCLUDED.first_name,
+                   last_name = EXCLUDED.last_name,
+                   status = 'invited'
+             RETURNING id`,
+            [orgId, email, passwordHash, first, last],
+        );
+
+        const id = rows[0]?.id;
+        if (!id) return { id: "" };
+
+        await this.ensureUserSecurityRow(id);
+        if (roleId) await this.replaceUserRoles(id, [roleId]);
+
+        return { id };
+    }
+
+    async inviteBulk(dto: BulkInviteDto): Promise<{ created: number }> {
+        let created = 0;
+        for (const inv of dto.invites || []) {
+            const res = await this.inviteOne(inv);
+            if (res.id) created++;
+        }
+        return { created };
+    }
+
+    async updateRole(id: string, dto: UpdateRoleDto): Promise<void> {
+        const user = await this.ensureUserExists(id);
+        const roleId = await this.resolveRoleId(user.organization_id, dto.role);
+        if (!roleId) {
+            await this.replaceUserRoles(id, []);
+            return;
+        }
+        await this.replaceUserRoles(id, [roleId]);
+    }
+
+    async setSuspended(id: string, suspended: boolean): Promise<void> {
+        await this.ensureUserExists(id);
+        const status = suspended ? "suspended" : "active";
+        const { rowCount } = await this.pg.query(
+            `UPDATE public.users
+             SET status = $2,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [id, status],
+        );
+        if (rowCount === 0) throw new NotFoundException("User not found");
+    }
+
+    async reset2fa(id: string): Promise<void> {
+        await this.ensureUserExists(id);
+        const { rowCount } = await this.pg.query(
+            `INSERT INTO public.user_security (user_id, two_factor_enabled, totp_secret, recovery_codes)
+             VALUES ($1, false, NULL, '{}'::text[])
+             ON CONFLICT (user_id) DO UPDATE
+               SET two_factor_enabled = false,
+                   totp_secret = NULL,
+                   recovery_codes = '{}'::text[]`,
+            [id],
+        );
+        if (rowCount === 0) throw new NotFoundException("User not found");
+    }
+
+    async remove(id: string): Promise<void> {
+        const { rowCount } = await this.pg.query(`DELETE FROM public.users WHERE id = $1`, [id]);
+        if (rowCount === 0) throw new NotFoundException("User not found");
+    }
+
+    async createOne(dto: CreateUserDto): Promise<{ id: string }> {
+        const orgId = await this.orgs.getDefaultOrganizationId();
+        const email = dto.email.toLowerCase().trim();
+        const status = dto.status ?? "active";
+        if (!["active", "invited", "suspended"].includes(status)) {
+            throw new BadRequestException("Invalid status");
+        }
+
+        const displayName = coalesceString(dto.name) || email.split("@")[0];
+        const { first, last } = splitDisplayName(displayName);
+        const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
+        const roleId = await this.resolveRoleId(orgId, dto.role);
+
+        const { rows } = await this.pg.query<{ id: string }>(
+            `INSERT INTO public.users (organization_id, email, password_hash, first_name, last_name, status)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (organization_id, email) DO UPDATE
+               SET first_name = EXCLUDED.first_name,
+                   last_name = EXCLUDED.last_name,
+                   status = EXCLUDED.status,
+                   password_hash = EXCLUDED.password_hash,
+                   updated_at = NOW()
+             RETURNING id`,
+            [orgId, email, passwordHash, first, last, status],
+        );
+
+        const id = rows[0]?.id;
+        if (!id) {
+            throw new ConflictException("Unable to create user");
+        }
+
+        await this.ensureUserSecurityRow(id);
+        await this.pg.query(
+            `UPDATE public.user_security
+             SET password_changed_at = NOW()
+             WHERE user_id = $1`,
+            [id],
+        );
+
+        if (roleId) await this.replaceUserRoles(id, [roleId]);
+
+        return { id };
+    }
+
+    async setPassword(id: string, body: ResetPasswordDto): Promise<void> {
+        await this.ensureUserExists(id);
+        const hash = await bcrypt.hash(body.password, SALT_ROUNDS);
+        const { rowCount } = await this.pg.query(
+            `UPDATE public.users
+             SET password_hash = $2,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [id, hash],
+        );
+        if (rowCount === 0) throw new NotFoundException("User not found");
+
+        await this.pg.query(
+            `INSERT INTO public.user_security (user_id, password_changed_at)
+             VALUES ($1, NOW())
+             ON CONFLICT (user_id) DO UPDATE
+               SET password_changed_at = EXCLUDED.password_changed_at`,
+            [id],
+        );
+    }
+
+    private async getUserColumns(): Promise<Set<string>> {
+        const { rows } = await this.pg.query(
+            `SELECT column_name
+             FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'users'`,
+        );
+        return new Set(rows.map((r: any) => r.column_name));
+    }
+
+    async updateUser(id: string, dto: UpdateUserDto): Promise<void> {
+        await this.ensureUserExists(id);
+        const cols = await this.getUserColumns();
+        const params: any[] = [id];
+        const sets: string[] = [];
+
+        if (dto.role !== undefined) {
+            await this.updateRole(id, { role: dto.role });
+        }
+
+        if (dto.name !== undefined) {
+            const { first, last } = splitDisplayName(dto.name);
+            if (cols.has("first_name")) {
+                params.push(first);
+                sets.push(`first_name = $${params.length}`);
+            }
+            if (cols.has("last_name")) {
+                params.push(last);
+                sets.push(`last_name = $${params.length}`);
+            }
+        }
+
+        if (dto.email !== undefined) {
+            params.push(dto.email.trim().toLowerCase());
+            sets.push(`email = $${params.length}`);
+        }
+
+        const optionalMap: Record<string, string> = {
+            phone: "phone",
+            address1: "address1",
+            address2: "address2",
+            city: "city",
+            state: "state",
+            postal: "postal",
+            country: "country",
+            avatarUrl: "avatar_url",
+            avatarThumbUrl: "avatar_thumb_url",
+        };
+
+        for (const [key, column] of Object.entries(optionalMap)) {
+            const value = (dto as any)[key];
+            if (value !== undefined && cols.has(column)) {
+                params.push(value);
+                sets.push(`${column} = $${params.length}`);
+            }
+        }
+
+        if (sets.length === 0) {
+            return;
+        }
+
+        params.push(new Date());
+        sets.push(`updated_at = $${params.length}`);
+
+        const sql = `
+            UPDATE public.users
+            SET ${sets.join(", ")}
+            WHERE id = $1
+            RETURNING id
+        `;
+        const { rows } = await this.pg.query(sql, params);
+        if (!rows[0]) throw new NotFoundException("User not found");
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\users\users.controller.ts ==== 
+
+//backend\src\users\users.controller.ts
+
+import {
+    Body,
+    Controller,
+    Delete,
+    Get,
+    HttpCode,
+    Param,
+    Patch,
+    Post,
+    Query,
+    UsePipes,
+    ValidationPipe,
+} from "@nestjs/common";
+import {
+    BulkInviteDto,
+    CreateUserDto,
+    IdParam,
+    InviteUserDto,
+    ListUsersQuery,
+    ResetPasswordDto,
+    SuspendDto,
+    UpdateRoleDto,
+    UpdateUserDto,
+} from "./users.dto";
+import { UsersService } from "./users.service";
+
+
+@UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@Controller("/api/admin/users")
+export class UsersController {
+    constructor(private readonly svc: UsersService) { }
+
+    @Get()
+    async list(@Query() q: ListUsersQuery) {
+        return this.svc.list(q);
+    }
+
+    @Get("roles")
+    async roles() {
+        return this.svc.roles();
+    }
+
+    @Post("invite")
+    async invite(@Body() body: InviteUserDto) {
+        return this.svc.inviteOne(body);
+    }
+
+    @Post("invite/bulk")
+    async inviteBulk(@Body() body: BulkInviteDto) {
+        return this.svc.inviteBulk(body);
+    }
+
+    @Post("create")
+    async create(@Body() body: CreateUserDto) {
+        return this.svc.createOne(body);
+    }
+
+    @Patch(":id/role")
+    @HttpCode(204)
+    async updateRole(@Param() p: IdParam, @Body() body: UpdateRoleDto) {
+        await this.svc.updateRole(p.id, body);
+    }
+
+    @Patch(":id")
+    @HttpCode(204)
+    async updateUser(@Param() p: IdParam, @Body() body: UpdateUserDto) {
+        await this.svc.updateUser(p.id, body);
+    }
+
+    // Preferred method
+    @Patch(":id/password")
+    @HttpCode(204)
+    async resetPasswordPatch(@Param() p: IdParam, @Body() body: ResetPasswordDto) {
+        await this.svc.setPassword(p.id, body);
+    }
+
+    // Alias to support UIs that POST to the same endpoint
+    @Post(":id/password")
+    @HttpCode(204)
+    async resetPasswordPost(@Param() p: IdParam, @Body() body: ResetPasswordDto) {
+        await this.svc.setPassword(p.id, body);
+    }
+
+    @Post(":id/reset-2fa")
+    @HttpCode(204)
+    async reset2fa(@Param() p: IdParam) {
+        await this.svc.reset2fa(p.id);
+    }
+
+    @Post(":id/suspend")
+    @HttpCode(204)
+    async suspend(@Param() p: IdParam, @Body() body: SuspendDto) {
+        await this.svc.setSuspended(p.id, body.suspended);
+    }
+
+    @Delete(":id")
+    @HttpCode(204)
+    async remove(@Param() p: IdParam) {
+        await this.svc.remove(p.id);
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\auth.service.ts ==== 
+
+// backend/src/auth/auth.service.ts
+import {
+  Injectable,
+  UnauthorizedException,
+  InternalServerErrorException,
+  Logger,
+} from "@nestjs/common";
+import { createHash, randomBytes } from "node:crypto";
+import { PgPoolService } from "../storage/pg-pool.service";
+
+function newOpaqueToken(): string {
+  return randomBytes(18).toString("base64url");
+}
+function hashToken(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+type EnrollInput = {
+  enrollmentSecret: string;
+  deviceId: string;
+  hostname: string;
+  os: string;
+  arch: string;
+  version: string;
+};
+
+@Injectable()
+export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
+  constructor(private readonly pg: PgPoolService) { }
+
+  /**
+   * Enroll (or re-enroll) an agent.
+   * - Validates the shared enrollment secret
+   * - If deviceId exists, rotates token & updates metadata
+   * - Otherwise creates a new agent
+   * - Returns { agentId, agentToken }
+   *
+   * Tables/columns expected:
+   *   agents(id uuid pk, device_id text unique, hostname text, os text, arch text,
+   *          version text, token_hash text, created_at timestamptz, updated_at timestamptz)
+   */
+  async enrollAgent(input: EnrollInput) {
+    const expected = process.env.ENROLLMENT_SECRET || "";
+    if (!expected || input.enrollmentSecret !== expected) {
+      throw new UnauthorizedException("Invalid enrollment secret");
+    }
+
+    try {
+      const token = newOpaqueToken();
+      const tokenHash = hashToken(token);
+
+      // Look up existing agent by deviceId to avoid duplicates
+      const existing = await this.pg.query<{ id: string }>(
+        `SELECT id FROM agents WHERE device_id = $1 LIMIT 1`,
+        [input.deviceId],
+      );
+
+      let agentId: string;
+
+      if (existing.rows[0]) {
+        const { rows } = await this.pg.query<{ id: string }>(
+          `UPDATE agents
+              SET hostname   = $2,
+                  os         = $3,
+                  arch       = $4,
+                  version    = $5,
+                  token_hash = $6,
+                  updated_at = now()
+            WHERE id = $1
+          RETURNING id`,
+          [
+            existing.rows[0].id,
+            input.hostname,
+            input.os,
+            input.arch,
+            input.version,
+            tokenHash,
+          ],
+        );
+        agentId = rows[0].id;
+        this.logger.log(`Re-enrolled agent ${agentId} (deviceId=${input.deviceId}).`);
+      } else {
+        const { rows } = await this.pg.query<{ id: string }>(
+          `INSERT INTO agents (device_id, hostname, os, arch, version, token_hash, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, now(), now())
+           RETURNING id`,
+          [
+            input.deviceId,
+            input.hostname,
+            input.os,
+            input.arch,
+            input.version,
+            tokenHash,
+          ],
+        );
+        agentId = rows[0].id;
+        this.logger.log(`Enrolled new agent ${agentId} (deviceId=${input.deviceId}).`);
+      }
+
+      return { agentId, agentToken: token };
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      this.logger.error(`Enroll failed: ${msg}`, e?.stack ?? undefined);
+      const dev = (process.env.NODE_ENV || "").toLowerCase() === "development";
+      throw new InternalServerErrorException(dev ? `Enroll failed: ${msg}` : "Enroll failed");
+    }
+  }
+
+  /**
+   * Validate an agent’s bearer token (opaque string).
+   * Returns the agentId on success, or null on failure.
+   */
+  async validateAgentToken(rawToken: string): Promise<string | null> {
+    const tokenHash = hashToken(rawToken);
+    const { rows } = await this.pg.query<{ id: string }>(
+      `SELECT id FROM agents WHERE token_hash = $1 LIMIT 1`,
+      [tokenHash],
+    );
+    return rows[0]?.id ?? null;
+  }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\auth.controller.ts ==== 
+
+//remoteiq-minimal-e2e\backend\src\auth\auth.controller.ts
+
+import { Body, Controller, Get, Post, Req, Res, BadRequestException } from "@nestjs/common";
+import { ApiOkResponse, ApiTags } from "@nestjs/swagger";
+import type { Request, Response } from "express";
+import { LoginDto } from "./dto/login.dto";
+import { Verify2FADto } from "./dto/verify-2fa.dto";
+import { UserAuthService } from "./user-auth.service";
+
+@ApiTags("auth")
+@Controller("api/auth")
+export class AuthController {
+    constructor(private readonly users: UserAuthService) { }
+
+    @Post("login")
+    @ApiOkResponse({ description: "Sets auth cookie on success or returns 2FA challenge when required" })
+    async login(
+        @Body() dto: LoginDto & { deviceFingerprint?: string },
+        @Req() req: Request,
+        @Res({ passthrough: true }) res: Response,
+    ) {
+        // 1) Validate user
+        const user = await this.users.validateUser(dto.email, dto.password);
+
+        // 2) 2FA gate
+        const is2FAEnabled = await this.users.isTwoFactorEnabled(user.id);
+        const deviceTrusted = await this.users.isDeviceTrusted(user.id, dto.deviceFingerprint ?? null);
+        if (is2FAEnabled && !deviceTrusted) {
+            const { token: challengeToken, jti } = await this.users.createChallengeToken(user.id);
+            return { status: "2fa_required" as const, challengeToken, jti };
+        }
+
+        // 3) Issue JWT with JTI
+        const { token, jti } = await this.users.signWithJti(user);
+
+        // 4) Record session
+        const ua = req.headers["user-agent"] || "";
+        const ip =
+            (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+            (req.socket as any)?.remoteAddress ||
+            "";
+        await this.users.recordSessionOnLogin(user.id, jti, String(ua), String(ip));
+
+        // 5) Set cookie
+        const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+        const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000); // 7d
+        res.cookie(cookieName, token, {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: process.env.NODE_ENV === "production",
+            path: "/",
+            maxAge: maxAgeMs,
+        });
+
+        return { user };
+    }
+
+    @Post("2fa/verify")
+    @ApiOkResponse({ description: "Verifies TOTP or recovery code and sets auth cookie" })
+    async verify2FA(@Body() dto: Verify2FADto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+        // Normalize incoming values
+        if (dto.code) dto.code = dto.code.trim();
+        if (dto.recoveryCode) dto.recoveryCode = dto.recoveryCode.trim();
+
+        if (!dto.code && !dto.recoveryCode) {
+            throw new BadRequestException("Provide either 'code' or 'recoveryCode'.");
+        }
+
+        // 1) Validate challenge and extract userId + jti
+        const { userId, jti } = await this.users.verifyChallengeToken(dto.challengeToken);
+
+        // 2) Verify TOTP or recovery
+        let ok = false;
+        if (dto.code) ok = await this.users.verifyTOTP(userId, dto.code);
+        else if (dto.recoveryCode) ok = await this.users.consumeRecoveryCode(userId, dto.recoveryCode);
+
+        if (!ok) throw new BadRequestException("Invalid code");
+
+        // 3) Sign normal auth token with JTI and set cookie
+        const user = await this.users.findUserById(userId);
+        const { token, jti: newJti } = await this.users.signWithJti(user);
+
+        const ua = req.headers["user-agent"] || "";
+        const ip =
+            (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+            (req.socket as any)?.remoteAddress ||
+            "";
+        await this.users.recordSessionOnLogin(userId, newJti, String(ua), String(ip));
+
+        const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+        const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000);
+        res.cookie(cookieName, token, {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: process.env.NODE_ENV === "production",
+            path: "/",
+            maxAge: maxAgeMs,
+        });
+
+        // 4) Trust device if requested
+        if (dto.rememberDevice) {
+            const fp = dto.deviceFingerprint ?? jti;
+            await this.users.trustCurrentDevice(userId, fp);
+        }
+
+        return { ok: true };
+    }
+
+    @Post("logout")
+    @ApiOkResponse({ description: "Clears auth cookie" })
+    async logout(@Res({ passthrough: true }) res: Response) {
+        const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+        res.clearCookie(cookieName, { path: "/" });
+        return { ok: true };
+    }
+
+    @Get("me")
+    @ApiOkResponse({ description: "Current user (if authenticated)" })
+    async me(@Req() req: Request) {
+        const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+        const token = (req as any).cookies?.[cookieName];
+        if (!token) return { user: null };
+        const user = await this.users.verify(token);
+        return { user };
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\auth\user-auth.controller.ts ==== 
+
+import { Body, Controller, Get, Post, Req, Res, BadRequestException } from "@nestjs/common";
+import { ApiOkResponse, ApiTags } from "@nestjs/swagger";
+import type { Request, Response } from "express";
+import { LoginDto } from "./dto/login.dto";
+import { Verify2FADto } from "./dto/verify-2fa.dto";
+import { UserAuthService } from "./user-auth.service";
+
+@ApiTags("auth")
+@Controller("api/auth")
+export class AuthController {
+    constructor(private readonly users: UserAuthService) { }
+
+    @Post("login")
+    @ApiOkResponse({ description: "Sets auth cookie on success or returns 2FA challenge when required" })
+    async login(
+        @Body() dto: LoginDto & { deviceFingerprint?: string },
+        @Req() req: Request,
+        @Res({ passthrough: true }) res: Response,
+    ) {
+        // 1) Validate user
+        const user = await this.users.validateUser(dto.email, dto.password);
+
+        // 2) 2FA gate
+        const is2FAEnabled = await this.users.isTwoFactorEnabled(user.id);
+        const deviceTrusted = await this.users.isDeviceTrusted(user.id, dto.deviceFingerprint ?? null);
+        if (is2FAEnabled && !deviceTrusted) {
+            const { token: challengeToken, jti } = await this.users.createChallengeToken(user.id);
+            return { status: "2fa_required" as const, challengeToken, jti };
+        }
+
+        // 3) Issue JWT with JTI
+        const { token, jti } = await this.users.signWithJti(user);
+
+        // 4) Record session
+        const ua = req.headers["user-agent"] || "";
+        const ip =
+            (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+            (req.socket as any)?.remoteAddress ||
+            "";
+        await this.users.recordSessionOnLogin(user.id, jti, String(ua), String(ip));
+
+        // 5) Set cookie
+        const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+        const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000); // 7d
+        res.cookie(cookieName, token, {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: process.env.NODE_ENV === "production",
+            path: "/",
+            maxAge: maxAgeMs,
+        });
+
+        return { user };
+    }
+
+    @Post("2fa/verify")
+    @ApiOkResponse({ description: "Verifies TOTP or recovery code and sets auth cookie" })
+    async verify2FA(@Body() dto: Verify2FADto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+        // Normalize incoming values
+        if (dto.code) dto.code = dto.code.trim();
+        if (dto.recoveryCode) dto.recoveryCode = dto.recoveryCode.trim();
+
+        if (!dto.code && !dto.recoveryCode) {
+            throw new BadRequestException("Provide either 'code' or 'recoveryCode'.");
+        }
+
+        // 1) Validate challenge and extract userId + jti
+        const { userId, jti } = await this.users.verifyChallengeToken(dto.challengeToken);
+
+        // 2) Verify TOTP or recovery
+        let ok = false;
+        if (dto.code) ok = await this.users.verifyTOTP(userId, dto.code);
+        else if (dto.recoveryCode) ok = await this.users.consumeRecoveryCode(userId, dto.recoveryCode);
+
+        if (!ok) throw new BadRequestException("Invalid code");
+
+        // 3) Sign normal auth token with JTI and set cookie
+        const user = await this.users.findUserById(userId);
+        const { token, jti: newJti } = await this.users.signWithJti(user);
+
+        const ua = req.headers["user-agent"] || "";
+        const ip =
+            (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+            (req.socket as any)?.remoteAddress ||
+            "";
+        await this.users.recordSessionOnLogin(userId, newJti, String(ua), String(ip));
+
+        const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+        const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000);
+        res.cookie(cookieName, token, {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: process.env.NODE_ENV === "production",
+            path: "/",
+            maxAge: maxAgeMs,
+        });
+
+        // 4) Trust device if requested
+        if (dto.rememberDevice) {
+            const fp = dto.deviceFingerprint ?? jti;
+            await this.users.trustCurrentDevice(userId, fp);
+        }
+
+        return { ok: true };
+    }
+
+    @Post("logout")
+    @ApiOkResponse({ description: "Clears auth cookie" })
+    async logout(@Res({ passthrough: true }) res: Response) {
+        const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+        res.clearCookie(cookieName, { path: "/" });
+        return { ok: true };
+    }
+
+    @Get("me")
+    @ApiOkResponse({ description: "Current user (if authenticated)" })
+    async me(@Req() req: Request) {
+        const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+        const token = (req as any).cookies?.[cookieName];
+        if (!token) return { user: null };
+        const user = await this.users.verify(token);
+        return { user };
+    }
+}
+
+
+
+==== DIRECTORY: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\guards ==== 
+
+ - C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\guards\admin-api.guard.ts
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\admin-api.guard.ts ==== 
+
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from "@nestjs/common";
+
+@Injectable()
+export class AdminApiGuard implements CanActivate {
+  canActivate(ctx: ExecutionContext): boolean {
+    const req = ctx.switchToHttp().getRequest();
+    const key = req.header("x-admin-api-key");
+    const expected = process.env.ADMIN_API_KEY || "";
+    if (!expected || key !== expected) {
+      throw new UnauthorizedException("Invalid or missing x-admin-api-key");
+    }
+    return true;
+  }
+}
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\agent-token.util.ts ==== 
+
+// remoteiq-minimal-e2e/backend/src/common/agent-token.util.ts
+import { Injectable, CanActivate, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import type { Request } from 'express';
+import crypto from 'node:crypto';
+import jwt from 'jsonwebtoken';
+import { PgPoolService } from '../storage/pg-pool.service';
+
+/** ───────────────────────────
+ *  Crypto helpers
+ *  ─────────────────────────── */
+const algo = 'sha256';
+
+export function hashToken(token: string): string {
+  return crypto.createHash(algo).update(token, 'utf8').digest('hex');
+}
+
+export function newOpaqueToken(): string {
+  return crypto.randomBytes(24).toString('base64url');
+}
+
+export function signAgentJwt(agentId: string): string {
+  const secret = process.env.JWT_SECRET || 'dev';
+  return jwt.sign({ sub: agentId, typ: 'agent' }, secret, { algorithm: 'HS256' });
+}
+
+export function verifyAgentJwt(token: string): string | null {
+  try {
+    const secret = process.env.JWT_SECRET || 'dev';
+    const payload = jwt.verify(token, secret) as any;
+    return payload?.sub as string;
+  } catch {
+    return null;
+  }
+}
+
+/** ───────────────────────────
+ *  Request augmentation helper
+ *  ─────────────────────────── */
+export type AgentAuthContext = {
+  id: number;
+  token?: string;
+};
+
+export function getAgentFromRequest(req: any): AgentAuthContext {
+  return (req as any).agent as AgentAuthContext;
+}
+
+/** ───────────────────────────
+ *  DB row shape(s)
+ *  ─────────────────────────── */
+type AgentRow = {
+  id: number;
+  token_hash: string | null;
+};
+
+/** ───────────────────────────
+ *  Bearer token guard for agents
+ *  ─────────────────────────── */
+@Injectable()
+export class AgentTokenGuard implements CanActivate {
+  constructor(private readonly db: PgPoolService) { }
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const req = context.switchToHttp().getRequest<Request>();
+
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || Array.isArray(authHeader)) {
+      throw new UnauthorizedException('Missing Authorization header');
+    }
+
+    const match = /^Bearer\s+(.+)$/.exec(authHeader);
+    if (!match) {
+      throw new UnauthorizedException('Invalid Authorization header format');
+    }
+
+    const token = match[1];
+    const tokenHash = hashToken(token);
+
+    // Use the typed query helper (no private pool access)
+    const { rows } = await this.db.query<AgentRow>(
+      `SELECT id, token_hash
+         FROM public.agents
+        WHERE token_hash = $1
+        LIMIT 1`,
+      [tokenHash],
+    );
+
+    if (rows.length === 0) {
+      throw new UnauthorizedException('Invalid or unknown agent token');
+    }
+
+    // Stash minimal agent context on the request
+    (req as any).agent = { id: rows[0].id, token } as AgentAuthContext;
+
+    return true;
+  }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\auth-cookie.middleware.ts ==== 
+
+import { Injectable, NestMiddleware } from "@nestjs/common";
+import type { Request, Response, NextFunction } from "express";
+import { JwtService } from "@nestjs/jwt";
+
+type AnyReq = Request & { user?: any };
+
+@Injectable()
+export class AuthCookieMiddleware implements NestMiddleware {
+    constructor(private readonly jwt: JwtService) { }
+
+    use(req: AnyReq, _res: Response, next: NextFunction) {
+        try {
+            const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
+            const token = (req as any).cookies?.[cookieName];
+
+            if (!token) {
+                return next();
+            }
+
+            // If tokens were signed with "sub" as user id (recommended)
+            const payload = this.jwt.verify(token, {
+                secret: process.env.JWT_SECRET ?? "dev-secret",
+            });
+
+            // Normalize a common shape for controllers:
+            // prefer `sub`, but support `id` for older tokens
+            const id = (payload as any).sub ?? (payload as any).id;
+            if (id) {
+                req.user = {
+                    id,
+                    email: (payload as any).email,
+                    name: (payload as any).name,
+                    role: (payload as any).role,
+                };
+            }
+        } catch {
+            // ignore invalid/expired token; route can still be public
+        }
+        next();
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\common.module.ts ==== 
+
+// backend/src/common/common.module.ts
+import { Module } from '@nestjs/common';
+import { SocketRegistry } from './socket-registry.service';
+import { UiSocketRegistry } from './ui-socket-registry.service';
+import { AgentTokenGuard } from './agent-token.util';
+import { StorageModule } from '../storage/storage.module';
+
+@Module({
+    imports: [StorageModule],
+    providers: [SocketRegistry, UiSocketRegistry, AgentTokenGuard],
+    exports: [SocketRegistry, UiSocketRegistry, AgentTokenGuard],
+})
+export class CommonModule { }
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\health.controller.ts ==== 
+
+// src/common/health.controller.ts
+import { Controller, Get } from '@nestjs/common';
+
+@Controller('/healthz')
+export class HealthController {
+    @Get() get() { return { ok: true, ts: Date.now() }; }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\online.util.ts ==== 
+
+// src/common/online.util.ts
+export function isAgentOnline(lastHeartbeatAt?: Date | null, thresholdMs = 30_000): boolean {
+    if (!lastHeartbeatAt) return false;
+    return Date.now() - new Date(lastHeartbeatAt).getTime() < thresholdMs;
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\pagination.ts ==== 
+
+// src/common/pagination.ts
+export function encodeCursor(val: string | number | Date): string {
+  const s = typeof val === "string" ? val : (val instanceof Date ? val.toISOString() : String(val));
+  return Buffer.from(s, "utf8").toString("base64url");
+}
+export function decodeCursor(cursor?: string): string | undefined {
+  if (!cursor) return undefined;
+  try { return Buffer.from(cursor, "base64url").toString("utf8"); }
+  catch { return undefined; }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\socket-registry.service.ts ==== 
+
+//remoteiq-minimal-e2e\backend\src\common\socket-registry.service.ts
+
+import { Injectable } from "@nestjs/common";
+import type { WebSocket } from "ws";
+
+export type AgentSocket = WebSocket & {
+    agentId?: string;
+    deviceId?: string;
+};
+
+@Injectable()
+export class SocketRegistry {
+    private socketsByAgent = new Map<string, AgentSocket>();
+    private socketsByDevice = new Map<string, AgentSocket>();
+
+    // --- Primary API ---
+    getByAgent(agentId: string): AgentSocket | undefined {
+        return this.socketsByAgent.get(agentId);
+    }
+
+    getByDevice(deviceId: string): AgentSocket | undefined {
+        return this.socketsByDevice.get(deviceId);
+    }
+
+    set(agentId: string | undefined, deviceId: string | undefined, socket: AgentSocket) {
+        if (agentId) {
+            this.socketsByAgent.set(agentId, socket);
+            socket.agentId = agentId;
+        }
+        if (deviceId) {
+            this.socketsByDevice.set(deviceId, socket);
+            socket.deviceId = deviceId;
+        }
+    }
+
+    deleteByAgent(agentId: string) {
+        const sock = this.socketsByAgent.get(agentId);
+        if (sock?.deviceId) this.socketsByDevice.delete(sock.deviceId);
+        this.socketsByAgent.delete(agentId);
+    }
+
+    deleteByDevice(deviceId: string) {
+        const sock = this.socketsByDevice.get(deviceId);
+        if (sock?.agentId) this.socketsByAgent.delete(sock.agentId);
+        this.socketsByDevice.delete(deviceId);
+    }
+
+    // --- Back-compat aliases (so older callers like dispatcher.service can keep using .get) ---
+    /** Alias for getByAgent */
+    get(agentId: string): AgentSocket | undefined {
+        return this.getByAgent(agentId);
+    }
+    /** Aliases in case other code uses these names */
+    setByAgent(agentId: string, socket: AgentSocket) {
+        this.set(agentId, /*deviceId*/ undefined, socket);
+    }
+    setByDevice(deviceId: string, socket: AgentSocket) {
+        this.set(/*agentId*/ undefined, deviceId, socket);
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\types.ts ==== 
+
+export type WSIncoming =
+  | { t: "hello"; agentId: string; capabilities: string[]; os: string; arch: string; hostname: string; version: string }
+  | { t: "hb"; at: string; metrics?: { cpu?: number; mem?: number } }
+  | { t: "job_result"; jobId: string; exitCode: number; stdout: string; stderr: string; startedAt: string; finishedAt: string };
+
+export type WSOutgoing =
+  | { t: "ack"; id: string }
+  | {
+    t: "job_run_script";
+    jobId: string;
+    language: "powershell" | "bash";
+    scriptText: string;
+    args?: string[];
+    env?: Record<string, string>;
+    timeoutSec?: number;
+  };
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\ui-socket-registry.service.ts ==== 
+
+// backend/src/common/ui-socket-registry.service.ts
+import { Injectable, Logger } from "@nestjs/common";
+import type { WebSocket } from "ws";
+
+/**
+ * UI (dashboard) socket with metadata.
+ * - userId: authenticated user identifier (string)
+ * - subscriptions: deviceIds this socket has subscribed to
+ */
+export type UiSocket = WebSocket & {
+    userId?: string;
+    subscriptions?: Set<string>;
+};
+
+function isOpen(ws: WebSocket): boolean {
+    // 'OPEN' is a numeric const on ws WebSocket instances
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (ws as any).readyState === (ws as any).OPEN;
+}
+
+/**
+ * Registry for **dashboard/user** WebSocket connections and their subscriptions.
+ * Isolation from the Agent socket registry keeps privileges and broadcasting clean.
+ *
+ * Notes:
+ * - In-memory only (per-process). For multi-node deployments, back this with Redis or a message bus.
+ * - Broadcast methods return the number of sockets that were attempted (best-effort).
+ */
+@Injectable()
+export class UiSocketRegistry {
+    private readonly log = new Logger("UiSocketRegistry");
+
+    /** All sockets for a given user */
+    private socketsByUser = new Map<string, Set<UiSocket>>();
+
+    /** Subscribers for a given deviceId */
+    private socketsByDevice = new Map<string, Set<UiSocket>>();
+
+    /** Track every active socket for cleanup/metrics */
+    private allSockets = new Set<UiSocket>();
+
+    /* ---------------------------- Socket lifecycle ---------------------------- */
+
+    /** Register a new UI socket for a specific user (auth already verified). */
+    add(userId: string, socket: UiSocket): void {
+        socket.userId = String(userId);
+        socket.subscriptions = socket.subscriptions ?? new Set<string>();
+
+        // Per-user index
+        if (!this.socketsByUser.has(userId)) this.socketsByUser.set(userId, new Set());
+        this.socketsByUser.get(userId)!.add(socket);
+
+        // Global index
+        this.allSockets.add(socket);
+    }
+
+    /** Remove a UI socket from all indexes (called on close/error). */
+    remove(socket: UiSocket): void {
+        // Unsubscribe from all device topics first
+        if (socket.subscriptions && socket.subscriptions.size) {
+            for (const deviceId of socket.subscriptions) {
+                this.unsubscribe(socket, deviceId);
+            }
+            socket.subscriptions.clear();
+        }
+
+        // Detach from per-user map
+        const uid = socket.userId;
+        if (uid && this.socketsByUser.has(uid)) {
+            const set = this.socketsByUser.get(uid)!;
+            set.delete(socket);
+            if (set.size === 0) this.socketsByUser.delete(uid);
+        }
+
+        // Global index
+        this.allSockets.delete(socket);
+    }
+
+    /** Remove all sockets for a given user (e.g., on logout/revoke). */
+    removeAllForUser(userId: string): number {
+        const set = this.socketsByUser.get(userId);
+        if (!set || !set.size) return 0;
+        let n = 0;
+        for (const s of Array.from(set)) {
+            try {
+                // Close with policy code; UI can auto-reconnect if appropriate
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                (s as any).close?.(4401, "User sessions revoked");
+            } catch {
+                /* ignore */
+            }
+            this.remove(s);
+            n++;
+        }
+        return n;
+    }
+
+    /* ----------------------------- Subscriptions ------------------------------ */
+
+    /** Subscribe a socket to a device topic (idempotent). */
+    subscribe(socket: UiSocket, deviceId: string): void {
+        const id = String(deviceId);
+        socket.subscriptions = socket.subscriptions ?? new Set<string>();
+        if (socket.subscriptions.has(id)) return;
+
+        socket.subscriptions.add(id);
+
+        if (!this.socketsByDevice.has(id)) this.socketsByDevice.set(id, new Set());
+        this.socketsByDevice.get(id)!.add(socket);
+    }
+
+    /** Unsubscribe a socket from a device topic (no-op if not subscribed). */
+    unsubscribe(socket: UiSocket, deviceId: string): void {
+        const id = String(deviceId);
+        if (socket.subscriptions && socket.subscriptions.has(id)) {
+            socket.subscriptions.delete(id);
+        }
+        const set = this.socketsByDevice.get(id);
+        if (set) {
+            set.delete(socket);
+            if (set.size === 0) this.socketsByDevice.delete(id);
+        }
+    }
+
+    /** Unsubscribe a socket from all topics. */
+    unsubscribeAll(socket: UiSocket): void {
+        if (!socket.subscriptions) return;
+        for (const id of Array.from(socket.subscriptions)) {
+            this.unsubscribe(socket, id);
+        }
+    }
+
+    /* -------------------------------- Broadcasts ------------------------------ */
+
+    /** Broadcast to all UI sockets (rare; prefer topic broadcasts). */
+    broadcastAll(payload: unknown): number {
+        const msg = JSON.stringify(payload);
+        let sent = 0;
+        for (const s of this.allSockets) {
+            if (!isOpen(s)) continue;
+            try {
+                s.send(msg);
+                sent++;
+            } catch {
+                /* ignore per-socket send errors */
+            }
+        }
+        return sent;
+    }
+
+    /** Broadcast to all sockets subscribed to a specific deviceId. */
+    broadcastToDevice(deviceId: string, payload: unknown): number {
+        const set = this.socketsByDevice.get(String(deviceId));
+        if (!set || set.size === 0) return 0;
+        const msg = JSON.stringify(payload);
+        let sent = 0;
+        for (const s of set) {
+            if (!isOpen(s)) continue;
+            try {
+                s.send(msg);
+                sent++;
+            } catch {
+                /* ignore per-socket send errors */
+            }
+        }
+        return sent;
+    }
+
+    /** Broadcast to all sockets for a given userId (e.g., personal notices). */
+    broadcastToUser(userId: string, payload: unknown): number {
+        const set = this.socketsByUser.get(String(userId));
+        if (!set || set.size === 0) return 0;
+        const msg = JSON.stringify(payload);
+        let sent = 0;
+        for (const s of set) {
+            if (!isOpen(s)) continue;
+            try {
+                s.send(msg);
+                sent++;
+            } catch {
+                /* ignore per-socket send errors */
+            }
+        }
+        return sent;
+    }
+
+    /* --------------------------------- Metrics -------------------------------- */
+
+    countAll(): number {
+        return this.allSockets.size;
+    }
+    countUsers(): number {
+        return this.socketsByUser.size;
+    }
+    countDeviceSubscribers(deviceId: string): number {
+        const set = this.socketsByDevice.get(String(deviceId));
+        return set ? set.size : 0;
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\common\guards\admin-api.guard.ts ==== 
+
+import {
+    CanActivate,
+    ExecutionContext,
+    Injectable,
+    UnauthorizedException,
+} from "@nestjs/common";
+
+/**
+ * Simple header-based guard:
+ * - If ADMIN_API_KEY is not set, allow (dev-friendly)
+ * - If set, require header: x-admin-api-key: <ADMIN_API_KEY>
+ */
+@Injectable()
+export class AdminApiGuard implements CanActivate {
+    canActivate(ctx: ExecutionContext): boolean {
+        const req = ctx.switchToHttp().getRequest();
+        const provided = req.headers["x-admin-api-key"] as string | undefined;
+
+        // Dev fallback: no key set => allow
+        const expected = process.env.ADMIN_API_KEY?.trim();
+        if (!expected) return true;
+
+        if (provided && provided === expected) return true;
+        throw new UnauthorizedException("Invalid admin API key");
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\imap\imap-ingest.repository.ts ==== 
+
+// backend/src/imap/imap-ingest.repository.ts
+import { Injectable } from "@nestjs/common";
+import { Pool } from "pg";
+
+export interface IngestedMailRow {
+    id?: number;
+    purpose: "alerts" | "invites" | "password_resets" | "reports";
+    uid: number;
+    from_addr: string | null;
+    subject: string | null;
+    size_bytes: number | null;
+    headers_snippet: string | null;
+    is_bounce: boolean;
+    bounce_recipient: string | null;
+    bounce_status: string | null;
+    bounce_action: string | null;
+    bounce_diagnostic: string | null;
+    created_at?: string; // timestamptz
+}
+
+@Injectable()
+export class ImapIngestRepository {
+    // Avoid TS namespace/type weirdness in some setups by not annotating with Pool
+    private pool: any;
+
+    constructor() {
+        this.pool = new Pool({
+            connectionString: process.env.DATABASE_URL,
+        });
+    }
+
+    private async ensureTable() {
+        await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS imap_ingested (
+        id BIGSERIAL PRIMARY KEY,
+        purpose TEXT NOT NULL,
+        uid BIGINT NOT NULL,
+        from_addr TEXT,
+        subject TEXT,
+        size_bytes INTEGER,
+        headers_snippet TEXT,
+        is_bounce BOOLEAN NOT NULL DEFAULT FALSE,
+        bounce_recipient TEXT,
+        bounce_status TEXT,
+        bounce_action TEXT,
+        bounce_diagnostic TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(purpose, uid)
+      );
+    `);
+    }
+
+    async insertIngested(row: IngestedMailRow) {
+        await this.ensureTable();
+        const sql = `
+      INSERT INTO imap_ingested
+        (purpose, uid, from_addr, subject, size_bytes, headers_snippet,
+         is_bounce, bounce_recipient, bounce_status, bounce_action, bounce_diagnostic)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      ON CONFLICT (purpose, uid) DO NOTHING
+    `;
+        const vals = [
+            row.purpose,
+            row.uid,
+            row.from_addr,
+            row.subject,
+            row.size_bytes ?? null,
+            row.headers_snippet ?? null,
+            !!row.is_bounce,
+            row.bounce_recipient ?? null,
+            row.bounce_status ?? null,
+            row.bounce_action ?? null,
+            row.bounce_diagnostic ?? null,
+        ];
+        await this.pool.query(sql, vals);
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\imap\imap-state.repository.ts ==== 
+
+// backend/src/imap/imap-state.repository.ts
+import * as pg from "pg";
+
+export class ImapStateRepository {
+    private pool: any;
+
+    constructor() {
+        this.pool = new pg.Pool({
+            connectionString: process.env.DATABASE_URL,
+        });
+    }
+
+    async ensureTable() {
+        const sql = `
+    CREATE TABLE IF NOT EXISTS imap_state (
+      purpose    TEXT PRIMARY KEY,
+      last_uid   BIGINT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    `;
+        await this.pool.query(sql);
+    }
+
+    async getLastUid(purpose: string): Promise<number> {
+        const res = await this.pool.query(
+            `SELECT last_uid FROM imap_state WHERE purpose = $1`,
+            [purpose]
+        );
+        if (res.rows?.length) return Number(res.rows[0].last_uid) || 0;
+        // seed row if missing
+        await this.pool.query(
+            `INSERT INTO imap_state (purpose, last_uid) VALUES ($1, 0)
+       ON CONFLICT (purpose) DO NOTHING`,
+            [purpose]
+        );
+        return 0;
+    }
+
+    async setLastUid(purpose: string, uid: number) {
+        await this.pool.query(
+            `INSERT INTO imap_state (purpose, last_uid, updated_at)
+       VALUES ($1, $2, now())
+       ON CONFLICT (purpose)
+       DO UPDATE SET last_uid = EXCLUDED.last_uid, updated_at = now()`,
+            [purpose, uid]
+        );
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\smtp\dkim.repository.ts ==== 
+
+import { Injectable } from "@nestjs/common";
+
+// Use CommonJS require to avoid TS “namespace as type” issues with pg types
+const { Pool } = require("pg");
+
+export type DkimRow = {
+    id: number;
+    domain: string;
+    selector: string;
+    private_key: string | null;
+    updated_at: string; // timestamptz
+};
+
+@Injectable()
+export class DkimRepository {
+    private pool: any;
+
+    constructor() {
+        this.pool = new Pool({
+            connectionString: process.env.DATABASE_URL,
+        });
+    }
+
+    /**
+     * Returns the single DKIM row (id=1) or a default empty row if none.
+     */
+    async get(): Promise<DkimRow> {
+        const res = await this.pool.query(
+            `SELECT id, domain, selector, private_key, updated_at
+         FROM dkim_settings
+        WHERE id = 1`
+        );
+
+        if (res.rows?.length) {
+            return res.rows[0] as DkimRow;
+        }
+
+        // Default empty
+        return {
+            id: 1,
+            domain: "",
+            selector: "",
+            private_key: null,
+            updated_at: new Date(0).toISOString(),
+        };
+    }
+
+    /**
+     * Upserts domain + selector; privateKey is optional (omit to preserve).
+     */
+    async save(input: { domain: string; selector: string; privateKey?: string }) {
+        const fields: string[] = ["id", "domain", "selector", "updated_at"];
+        const values: any[] = [1, input.domain, input.selector, new Date().toISOString()];
+
+        if (typeof input.privateKey === "string") {
+            fields.push("private_key");
+            values.push(input.privateKey);
+        }
+
+        const placeholders = fields.map((_, i) => `$${i + 1}`).join(", ");
+
+        const updates = fields
+            .filter((f) => f !== "id")
+            .map((f) => `${f} = EXCLUDED.${f}`)
+            .join(", ");
+
+        const sql = `
+      INSERT INTO dkim_settings (${fields.join(", ")})
+      VALUES (${placeholders})
+      ON CONFLICT (id) DO UPDATE SET ${updates}
+    `;
+
+        await this.pool.query(sql, values);
+    }
+}
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\src\smtp\smtp.repository.ts ==== 
+
+// backend/src/smtp/smtp.repository.ts
+import { Injectable, OnModuleDestroy } from "@nestjs/common";
+
+// Use CJS require to avoid TS namespace/type hiccups across tsconfig variants
+// and older @types/pg combos.
+const { Pool } = require("pg");
+
+export type EmailPurpose = "alerts" | "invites" | "password_resets" | "reports";
+
+export interface EmailSettingsRow {
+    purpose: EmailPurpose;
+    enabled: boolean;
+
+    smtp_host: string;
+    smtp_port: number | null;
+    smtp_username: string;
+    smtp_password: string | null;
+    smtp_use_tls: boolean;
+    smtp_use_ssl: boolean;
+    smtp_from_address: string;
+
+    imap_host: string;
+    imap_port: number | null;
+    imap_username: string;
+    imap_password: string | null;
+    imap_use_ssl: boolean;
+
+    pop_host: string;
+    pop_port: number | null;
+    pop_username: string;
+    pop_password: string | null;
+    pop_use_ssl: boolean;
+
+    updated_at: string; // timestamptz
+}
+
+@Injectable()
+export class SmtpRepository implements OnModuleDestroy {
+    // Intentionally 'any' to dodge Pool typing issues in some TS configs
+    private pool: any;
+
+    constructor() {
+        this.pool = new Pool({
+            connectionString: process.env.DATABASE_URL,
+        });
+    }
+
+    async onModuleDestroy(): Promise<void> {
+        try {
+            await this.pool.end();
+        } catch {
+            // ignore
+        }
+    }
+
+    async getAllRaw(): Promise<Record<EmailPurpose, EmailSettingsRow>> {
+        const res = await this.pool.query(
+            `SELECT * FROM email_settings ORDER BY purpose ASC`
+        );
+        const rows = res.rows as EmailSettingsRow[];
+
+        const map: Partial<Record<EmailPurpose, EmailSettingsRow>> = {};
+        for (const r of rows) map[r.purpose] = r;
+
+        // Ensure all four purposes exist for the UI
+        const purposes: EmailPurpose[] = ["alerts", "invites", "password_resets", "reports"];
+        for (const p of purposes) {
+            if (!map[p]) {
+                map[p] = {
+                    purpose: p,
+                    enabled: true,
+                    smtp_host: "",
+                    smtp_port: 587,
+                    smtp_username: "",
+                    smtp_password: null,
+                    smtp_use_tls: true,
+                    smtp_use_ssl: false,
+                    smtp_from_address: "",
+                    imap_host: "",
+                    imap_port: 993,
+                    imap_username: "",
+                    imap_password: null,
+                    imap_use_ssl: true,
+                    pop_host: "",
+                    pop_port: 995,
+                    pop_username: "",
+                    pop_password: null,
+                    pop_use_ssl: true,
+                    updated_at: new Date(0).toISOString(),
+                };
+            }
+        }
+        return map as Record<EmailPurpose, EmailSettingsRow>;
+    }
+
+    /**
+     * Upsert only provided fields (plus updated_at) using INSERT ... ON CONFLICT.
+     */
+    async upsertOne(purpose: EmailPurpose, patch: Partial<EmailSettingsRow>): Promise<void> {
+        const cols: string[] = [];
+        const vals: any[] = [];
+
+        for (const [k, v] of Object.entries(patch)) {
+            if (v !== undefined) {
+                cols.push(k);
+                vals.push(v);
+            }
+        }
+
+        cols.push("updated_at");
+        vals.push(new Date().toISOString());
+
+        const insertCols = ["purpose", ...cols];
+        const placeholders = insertCols.map((_, i) => `$${i + 1}`).join(", ");
+        const allVals = [purpose, ...vals];
+
+        const updateSet = cols.map((c) => `${c} = EXCLUDED.${c}`).join(", ");
+
+        const sql = `
+      INSERT INTO email_settings (${insertCols.join(", ")})
+      VALUES (${placeholders})
+      ON CONFLICT (purpose) DO UPDATE SET
+        ${updateSet}
+    `;
+
+        await this.pool.query(sql, allVals);
+    }
+}
+
+
+
+==== SQL/migration files mentioning users/phone ==== 
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\migrations\001_users_passwords.sql ==== 
+
+-- Adds password fields to users for admin-created users & manual resets
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+ALTER TABLE
+    users
+ADD
+    COLUMN IF NOT EXISTS password_hash text,
+ADD
+    COLUMN IF NOT EXISTS password_updated_at timestamptz;
+
+-- (Optional) if you want invited users to be default 'invited' not 'active'
+ALTER TABLE
+    users
+ALTER COLUMN
+    status
+SET
+    DEFAULT 'active';
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\migrations\20251019_keep_current_model.sql ==== 
+
+/*
+ KEEP CURRENT MODEL (users.role is TEXT)
+ 
+ This migration:
+ - Ensures pgcrypto is available (for gen_random_uuid if you ever need it)
+ - Enhances roles table (description, permissions text[], updated_at)
+ - Adds case-insensitive unique index on roles.name
+ - Adds a generic "updated_at" trigger and enables it for tables that already have an updated_at column
+ (roles, users, support_legal_settings, branding_settings)
+ - Adds a helpful index on lower(users.role) for faster role counts
+ - Seeds Owner/Admin/User roles if missing (safe, idempotent)
+ - Creates roles_with_counts view (used by API to return usersCount)
+ */
+-- 0) Extension (safe / idempotent)
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- 1) ROLES: add columns if missing
+DO $ $ BEGIN IF NOT EXISTS (
+    SELECT
+        1
+    FROM
+        information_schema.columns
+    WHERE
+        table_schema = 'public'
+        AND table_name = 'roles'
+        AND column_name = 'description'
+) THEN
+ALTER TABLE
+    public.roles
+ADD
+    COLUMN description text;
+
+END IF;
+
+IF NOT EXISTS (
+    SELECT
+        1
+    FROM
+        information_schema.columns
+    WHERE
+        table_schema = 'public'
+        AND table_name = 'roles'
+        AND column_name = 'permissions'
+) THEN
+ALTER TABLE
+    public.roles
+ADD
+    COLUMN permissions text [] NOT NULL DEFAULT ARRAY [] :: text [];
+
+END IF;
+
+IF NOT EXISTS (
+    SELECT
+        1
+    FROM
+        information_schema.columns
+    WHERE
+        table_schema = 'public'
+        AND table_name = 'roles'
+        AND column_name = 'updated_at'
+) THEN
+ALTER TABLE
+    public.roles
+ADD
+    COLUMN updated_at timestamptz NOT NULL DEFAULT now();
+
+END IF;
+
+END $ $;
+
+-- 2) ROLES: case-insensitive uniqueness on name (keeps your existing unique on name too)
+CREATE UNIQUE INDEX IF NOT EXISTS roles_name_lower_key ON public.roles (lower(name));
+
+-- 3) Generic updated_at trigger function (reused by several tables)
+DO $ $ BEGIN IF NOT EXISTS (
+    SELECT
+        1
+    FROM
+        pg_proc
+    WHERE
+        proname = 'set_updated_at_now'
+) THEN CREATE
+OR REPLACE FUNCTION public.set_updated_at_now() RETURNS trigger LANGUAGE plpgsql AS $ fn $ BEGIN NEW.updated_at := now();
+
+RETURN NEW;
+
+END;
+
+$ fn $;
+
+END IF;
+
+END $ $;
+
+-- 4) Attach updated_at triggers for tables that already have updated_at
+--    (safe: checks existence before creating)
+DO $ $ BEGIN -- roles
+IF EXISTS (
+    SELECT
+        1
+    FROM
+        information_schema.columns
+    WHERE
+        table_schema = 'public'
+        AND table_name = 'roles'
+        AND column_name = 'updated_at'
+)
+AND NOT EXISTS (
+    SELECT
+        1
+    FROM
+        pg_trigger
+    WHERE
+        tgname = 'trg_roles_set_updated_at'
+) THEN CREATE TRIGGER trg_roles_set_updated_at BEFORE
+UPDATE
+    ON public.roles FOR EACH ROW EXECUTE FUNCTION public.set_updated_at_now();
+
+END IF;
+
+-- users
+IF EXISTS (
+    SELECT
+        1
+    FROM
+        information_schema.columns
+    WHERE
+        table_schema = 'public'
+        AND table_name = 'users'
+        AND column_name = 'updated_at'
+)
+AND NOT EXISTS (
+    SELECT
+        1
+    FROM
+        pg_trigger
+    WHERE
+        tgname = 'trg_users_set_updated_at'
+) THEN CREATE TRIGGER trg_users_set_updated_at BEFORE
+UPDATE
+    ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_updated_at_now();
+
+END IF;
+
+-- support_legal_settings
+IF EXISTS (
+    SELECT
+        1
+    FROM
+        information_schema.columns
+    WHERE
+        table_schema = 'public'
+        AND table_name = 'support_legal_settings'
+        AND column_name = 'updated_at'
+)
+AND NOT EXISTS (
+    SELECT
+        1
+    FROM
+        pg_trigger
+    WHERE
+        tgname = 'trg_support_legal_settings_set_updated_at'
+) THEN CREATE TRIGGER trg_support_legal_settings_set_updated_at BEFORE
+UPDATE
+    ON public.support_legal_settings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at_now();
+
+END IF;
+
+-- branding_settings
+IF EXISTS (
+    SELECT
+        1
+    FROM
+        information_schema.columns
+    WHERE
+        table_schema = 'public'
+        AND table_name = 'branding_settings'
+        AND column_name = 'updated_at'
+)
+AND NOT EXISTS (
+    SELECT
+        1
+    FROM
+        pg_trigger
+    WHERE
+        tgname = 'trg_branding_settings_set_updated_at'
+) THEN CREATE TRIGGER trg_branding_settings_set_updated_at BEFORE
+UPDATE
+    ON public.branding_settings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at_now();
+
+END IF;
+
+END $ $;
+
+-- 5) Helpful performance index for role counts
+CREATE INDEX IF NOT EXISTS idx_users_lower_role ON public.users (lower(role));
+
+-- 6) Seed common roles if missing (safe/idempotent; keeps your current model)
+INSERT INTO
+    public.roles (name, description, permissions)
+SELECT
+    r.name,
+    r.description,
+    r.permissions
+FROM
+    (
+        VALUES
+            (
+                'Owner',
+                'System owner',
+                ARRAY [
+    'users.read','users.write','users.delete','users.2fa.reset',
+    'roles.read','roles.write','roles.delete',
+    'teams.read','teams.write','teams.delete',
+    'billing.read','billing.write',
+    'settings.read','settings.write'
+  ] :: text []
+            ),
+            (
+                'Admin',
+                'Administrator',
+                ARRAY [
+    'users.read','users.write','users.2fa.reset',
+    'roles.read','roles.write',
+    'teams.read','teams.write',
+    'billing.read',
+    'settings.read','settings.write'
+  ] :: text []
+            ),
+            (
+                'User',
+                'Standard user',
+                ARRAY [
+    'users.read','roles.read','teams.read','billing.read','settings.read'
+  ] :: text []
+            )
+    ) AS r(name, description, permissions)
+WHERE
+    NOT EXISTS (
+        SELECT
+            1
+        FROM
+            public.roles x
+        WHERE
+            lower(x.name) = lower(r.name)
+    );
+
+-- 7) View that your API can read directly to provide usersCount in one call
+CREATE
+OR REPLACE VIEW public.roles_with_counts AS
+SELECT
+    ro.id,
+    ro.name,
+    ro.description,
+    ro.permissions,
+    ro.created_at,
+    ro.updated_at,
+    COALESCE(u.cnt, 0) :: int AS users_count
+FROM
+    public.roles ro
+    LEFT JOIN LATERAL (
+        SELECT
+            COUNT(*) AS cnt
+        FROM
+            public.users u
+        WHERE
+            lower(u.role) = lower(ro.name)
+    ) u ON TRUE;
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\migrations\20251019_roles_companion_meta.sql ==== 
+
+-- ======================================================================
+-- roles companion metadata (non-breaking, keeps your current model)
+--   - Adds role_meta table keyed to roles.name
+--   - Stores description, permissions (text[]), updated_at
+--   - Adds trigger to auto-bump updated_at on UPDATE
+--   - Creates a convenience VIEW for listing with users_count
+-- ======================================================================
+
+BEGIN;
+
+-- 1) role_meta table (companion to roles)
+CREATE TABLE IF NOT EXISTS public.role_meta (
+  role_name   text PRIMARY KEY,
+  description text,
+  permissions text[] NOT NULL DEFAULT '{}'::text[],
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_role_meta_role
+    FOREIGN KEY (role_name)
+    REFERENCES public.roles(name)
+    ON DELETE CASCADE
+);
+
+-- 2) Update timestamp trigger for role_meta
+CREATE OR REPLACE FUNCTION public.role_meta_touch_updated_at()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_role_meta_touch_updated_at ON public.role_meta;
+CREATE TRIGGER trg_role_meta_touch_updated_at
+BEFORE UPDATE ON public.role_meta
+FOR EACH ROW
+EXECUTE FUNCTION public.role_meta_touch_updated_at();
+
+-- 3) Helpful index for case-insensitive joins/lookups (optional but handy)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM   pg_indexes
+    WHERE  schemaname = 'public'
+      AND  indexname  = 'idx_role_meta_lower_name'
+  ) THEN
+    EXECUTE 'CREATE INDEX idx_role_meta_lower_name
+             ON public.role_meta (lower(role_name))';
+  END IF;
+END;
+$$;
+
+-- 4) View that your API can SELECT from to satisfy the RolesTab shape
+--    - users_count derived from users.role (TEXT) against role name
+--    - updated_at prefers meta.updated_at else roles.created_at
+CREATE OR REPLACE VIEW public.roles_with_meta AS
+SELECT
+  r.id,
+  r.name,
+  COALESCE(rm.description, '')           AS description,
+  COALESCE(rm.permissions, '{}')         AS permissions,
+  COALESCE(rm.updated_at, r.created_at)  AS updated_at,
+  r.created_at,
+  (
+    SELECT COUNT(*)::int
+    FROM public.users u
+    WHERE lower(u.role) = lower(r.name)
+  ) AS users_count
+FROM public.roles r
+LEFT JOIN public.role_meta rm
+  ON rm.role_name = r.name;
+
+-- 5) Seed role_meta rows for existing roles (no-op if already present)
+INSERT INTO public.role_meta (role_name, description, permissions)
+SELECT r.name,
+       CASE lower(r.name)
+         WHEN 'owner' THEN 'Full system access'
+         WHEN 'admin' THEN 'Administrative access'
+         ELSE 'Standard access'
+       END,
+       CASE lower(r.name)
+         WHEN 'owner' THEN ARRAY[
+           'users.read','users.write','users.delete','users.2fa.reset',
+           'roles.read','roles.write','roles.delete',
+           'teams.read','teams.write','teams.delete',
+           'billing.read','billing.write',
+           'settings.read','settings.write'
+         ]::text[]
+         WHEN 'admin' THEN ARRAY[
+           'users.read','users.write','users.2fa.reset',
+           'roles.read','roles.write',
+           'teams.read','teams.write',
+           'billing.read',
+           'settings.read','settings.write'
+         ]::text[]
+         ELSE ARRAY['users.read','roles.read','teams.read','settings.read']::text[]
+       END
+FROM public.roles r
+WHERE NOT EXISTS (
+  SELECT 1 FROM public.role_meta rm WHERE rm.role_name = r.name
+);
+
+COMMIT;
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\migrations\20251106_permissions_schema.sql ==== 
+
+-- 20251106_permissions_schema.sql
+-- Creates roles.description, permissions, and role_permissions (idempotent)
+
+BEGIN;
+
+-- Ensure pgcrypto is available for gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- 1) Roles: add description column if missing
+ALTER TABLE public.roles
+  ADD COLUMN IF NOT EXISTS description text;
+
+-- 2) Permissions master table
+CREATE TABLE IF NOT EXISTS public.permissions (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  key         text UNIQUE NOT NULL,         -- e.g. 'users.read'
+  label       text NOT NULL,                -- human label
+  group_key   text NOT NULL,                -- e.g. 'users'
+  group_label text NOT NULL,                -- e.g. 'Users'
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- Helpful indexes
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname='public' AND indexname='permissions_group_key_idx'
+  ) THEN
+    CREATE INDEX permissions_group_key_idx ON public.permissions (group_key);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname='public' AND indexname='permissions_key_idx'
+  ) THEN
+    CREATE INDEX permissions_key_idx ON public.permissions (key);
+  END IF;
+END$$;
+
+-- 3) Role ↔ Permission link table (composite PK)
+CREATE TABLE IF NOT EXISTS public.role_permissions (
+  role_id       uuid NOT NULL REFERENCES public.roles(id) ON DELETE CASCADE,
+  permission_id uuid NOT NULL REFERENCES public.permissions(id) ON DELETE CASCADE,
+  PRIMARY KEY (role_id, permission_id)
+);
+
+COMMIT;
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\migrations\20251106_permissions_seed.sql ==== 
+
+-- 20251106_permissions_seed.sql
+-- Seeds standard permissions; ensures Owner/Admin roles and grants.
+-- Safe to run multiple times.
+
+BEGIN;
+
+-- Helper upsert function for permissions
+CREATE OR REPLACE FUNCTION public._upsert_permission(
+  p_key text, p_label text, p_group_key text, p_group_label text
+) RETURNS void AS $$
+BEGIN
+  INSERT INTO public.permissions (key, label, group_key, group_label)
+  VALUES (p_key, p_label, p_group_key, p_group_label)
+  ON CONFLICT (key) DO UPDATE
+    SET label       = EXCLUDED.label,
+        group_key   = EXCLUDED.group_key,
+        group_label = EXCLUDED.group_label;
+END
+$$ LANGUAGE plpgsql;
+
+-- ===== Users =====
+SELECT public._upsert_permission('users.read',       'View users',         'users','Users');
+SELECT public._upsert_permission('users.write',      'Create/edit users',  'users','Users');
+SELECT public._upsert_permission('users.delete',     'Remove users',       'users','Users');
+SELECT public._upsert_permission('users.2fa.reset',  'Reset 2FA',          'users','Users');
+
+-- ===== Roles =====
+SELECT public._upsert_permission('roles.read',   'roles.read',   'roles','Roles');
+SELECT public._upsert_permission('roles.write',  'roles.write',  'roles','Roles');
+SELECT public._upsert_permission('roles.delete', 'roles.delete', 'roles','Roles');
+
+-- ===== Teams =====
+SELECT public._upsert_permission('teams.read',   'teams.read',   'teams','Teams');
+SELECT public._upsert_permission('teams.write',  'teams.write',  'teams','Teams');
+SELECT public._upsert_permission('teams.delete', 'teams.delete', 'teams','Teams');
+
+-- ===== Billing =====
+SELECT public._upsert_permission('billing.read',  'billing.read',  'billing','Billing');
+SELECT public._upsert_permission('billing.write', 'billing.write', 'billing','Billing');
+
+-- ===== Settings =====
+SELECT public._upsert_permission('settings.read',  'settings.read',  'settings','Settings');
+SELECT public._upsert_permission('settings.write', 'settings.write', 'settings','Settings');
+
+-- ===== Backups =====
+SELECT public._upsert_permission('backups.manage',   'Manage backups (run/config)', 'backups','Backups');
+SELECT public._upsert_permission('backups.restore',  'Restore from backups',        'backups','Backups');
+SELECT public._upsert_permission('backups.download', 'Download backup artifacts',   'backups','Backups');
+
+-- Cleanup helper
+DROP FUNCTION IF EXISTS public._upsert_permission(text,text,text,text);
+
+-- Ensure Owner/Admin roles exist (with descriptions)
+INSERT INTO public.roles (id, name, description)
+SELECT gen_random_uuid(), 'Owner', 'Full system access'
+WHERE NOT EXISTS (SELECT 1 FROM public.roles WHERE lower(name)='owner');
+
+INSERT INTO public.roles (id, name, description)
+SELECT gen_random_uuid(), 'Admin', 'Administrative access'
+WHERE NOT EXISTS (SELECT 1 FROM public.roles WHERE lower(name)='admin');
+
+-- Grant Owner every permission
+INSERT INTO public.role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM public.roles r
+CROSS JOIN public.permissions p
+WHERE lower(r.name)='owner'
+  AND NOT EXISTS (
+    SELECT 1 FROM public.role_permissions rp
+    WHERE rp.role_id=r.id AND rp.permission_id=p.id
+  );
+
+-- Grant Admin a curated set (edit as needed)
+WITH admin_role AS (
+  SELECT id FROM public.roles WHERE lower(name)='admin'
+),
+wanted AS (
+  SELECT id FROM public.permissions WHERE key IN (
+    'users.read','users.write','users.delete','users.2fa.reset',
+    'roles.read','roles.write','roles.delete',
+    'teams.read','teams.write','teams.delete',
+    'billing.read','billing.write',
+    'settings.read','settings.write',
+    'backups.manage','backups.restore','backups.download'
+  )
+)
+INSERT INTO public.role_permissions (role_id, permission_id)
+SELECT ar.id, w.id
+FROM admin_role ar
+JOIN wanted w ON TRUE
+WHERE NOT EXISTS (
+  SELECT 1 FROM public.role_permissions rp
+  WHERE rp.role_id = ar.id AND rp.permission_id = w.id
+);
+
+COMMIT;
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\migrations\XXXX_add_users_roles.sql ==== 
+
+-- migrations/XXXX_add_users_roles.sql
+-- Users & Roles schema (idempotent)
+-- Needed for gen_random_uuid() in some Postgres setups
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- -----------------------------
+-- roles
+-- -----------------------------
+CREATE TABLE IF NOT EXISTS roles (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name text UNIQUE NOT NULL,
+    description text
+);
+
+-- Seed common roles (no duplicates)
+INSERT INTO
+    roles (name, description)
+VALUES
+    (
+        'Owner',
+        'Full access to all organization settings and data'
+    ),
+    (
+        'Admin',
+        'Manage users, settings, billing; full device access'
+    ),
+    ('User', 'Standard access') ON CONFLICT (name) DO NOTHING;
+
+-- -----------------------------
+-- users
+-- -----------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name text NOT NULL,
+    email text UNIQUE NOT NULL,
+    role text NOT NULL DEFAULT 'User',
+    status text NOT NULL DEFAULT 'active',
+    -- 'active' | 'suspended'
+    two_factor_enabled boolean NOT NULL DEFAULT false,
+    last_seen timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Useful indexes
+CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+
+CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
+
+CREATE INDEX IF NOT EXISTS idx_users_status ON users (status);
+
+-- -----------------------------
+-- updated_at trigger
+-- -----------------------------
+CREATE
+OR REPLACE FUNCTION set_users_updated_at() RETURNS trigger LANGUAGE plpgsql AS $ func $ BEGIN NEW.updated_at := now();
+
+RETURN NEW;
+
+END $ func $;
+
+DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
+
+CREATE TRIGGER trg_users_updated_at BEFORE
+UPDATE
+    ON users FOR EACH ROW EXECUTE FUNCTION set_users_updated_at();
+
+-- -----------------------------
+-- Optional: seed a demo user if you want (email must be unique).
+-- Comment out if you don't want any seed user here.
+-- -----------------------------
+INSERT INTO
+    users (name, email, role, status, two_factor_enabled)
+SELECT
+    'Demo User',
+    'demo@example.com',
+    'User',
+    'active',
+    false
+WHERE
+    NOT EXISTS (
+        SELECT
+            1
+        FROM
+            users
+        WHERE
+            email = 'demo@example.com'
+    );
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\migrations\XXXX_roles_enhancements.sql ==== 
+
+-- === Add missing columns on roles (idempotent) ===
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_schema='public' AND table_name='roles' AND column_name='description'
+  ) THEN
+    ALTER TABLE public.roles ADD COLUMN description text;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_schema='public' AND table_name='roles' AND column_name='permissions'
+  ) THEN
+    -- string[] to match your frontend
+    ALTER TABLE public.roles ADD COLUMN permissions text[] NOT NULL DEFAULT ARRAY[]::text[];
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_schema='public' AND table_name='roles' AND column_name='updated_at'
+  ) THEN
+    ALTER TABLE public.roles ADD COLUMN updated_at timestamptz NOT NULL DEFAULT now();
+  END IF;
+END$$;
+
+-- === Case-insensitive unique constraint on roles.name ===
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 
+    FROM   pg_indexes 
+    WHERE  schemaname='public' AND tablename='roles' AND indexname='roles_name_lower_key'
+  ) THEN
+    CREATE UNIQUE INDEX roles_name_lower_key ON public.roles (lower(name));
+  END IF;
+END$$;
+
+-- === Trigger to keep updated_at fresh ===
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_proc WHERE proname = 'roles_set_updated_at'
+  ) THEN
+    CREATE OR REPLACE FUNCTION roles_set_updated_at()
+    RETURNS trigger LANGUAGE plpgsql AS $fn$
+    BEGIN
+      NEW.updated_at := now();
+      RETURN NEW;
+    END;
+    $fn$;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname = 'trg_roles_set_updated_at'
+  ) THEN
+    CREATE TRIGGER trg_roles_set_updated_at
+    BEFORE UPDATE ON public.roles
+    FOR EACH ROW EXECUTE FUNCTION roles_set_updated_at();
+  END IF;
+END$$;
+
+-- === (Optional) Seed common roles if missing ===
+INSERT INTO public.roles (name, description, permissions)
+SELECT r.name, r.description, r.permissions
+FROM (VALUES
+  ('Owner', 'System owner', ARRAY[
+    'users.read','users.write','users.delete','users.2fa.reset',
+    'roles.read','roles.write','roles.delete',
+    'teams.read','teams.write','teams.delete',
+    'billing.read','billing.write',
+    'settings.read','settings.write'
+  ]::text[]),
+  ('Admin', 'Administrator', ARRAY[
+    'users.read','users.write','users.2fa.reset',
+    'roles.read','roles.write',
+    'teams.read','teams.write',
+    'billing.read',
+    'settings.read','settings.write'
+  ]::text[]),
+  ('User', 'Standard user', ARRAY[
+    'users.read','roles.read','teams.read','billing.read','settings.read'
+  ]::text[])
+) AS r(name, description, permissions)
+WHERE NOT EXISTS (SELECT 1 FROM public.roles x WHERE lower(x.name)=lower(r.name));
+
+-- === Convenience view for fast list with counts ===
+CREATE OR REPLACE VIEW public.roles_with_counts AS
+SELECT
+  ro.id,
+  ro.name,
+  ro.description,
+  ro.permissions,
+  ro.created_at,
+  ro.updated_at,
+  COALESCE(u.cnt, 0)::int AS users_count
+FROM public.roles ro
+LEFT JOIN LATERAL (
+  SELECT COUNT(*) AS cnt
+  FROM public.users u
+  WHERE lower(u.role) = lower(ro.name)
+) u ON TRUE;
+
+
+
+==== FILE: C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend\migrations\XXXX_users_harden_ids.sql ==== 
+
+-- Ensure pgcrypto (for gen_random_uuid) is available
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Normalize id to uuid (handle empty-string -> NULL), then set default
+ALTER TABLE
+    users
+ALTER COLUMN
+    id
+SET
+    DATA TYPE uuid USING NULLIF(id :: text, '') :: uuid;
+
+ALTER TABLE
+    users
+ALTER COLUMN
+    id
+SET
+    DEFAULT gen_random_uuid();
+
+-- Add PRIMARY KEY on id if it doesn't already exist (no $$, no backslashes)
+DO LANGUAGE plpgsql '
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM   pg_constraint
+    WHERE  conrelid = ''public.users''::regclass
+    AND    contype  = ''p''
+  ) THEN
+    EXECUTE ''ALTER TABLE users ADD CONSTRAINT users_pkey PRIMARY KEY (id)'';
+  END IF;
+END';
+
+-- Add UNIQUE(email) if it doesn't already exist (no $$, no backslashes)
+DO LANGUAGE plpgsql '
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM   pg_constraint
+    WHERE  conrelid = ''public.users''::regclass
+    AND    contype  = ''u''
+    AND    conname  = ''users_email_key''
+  ) THEN
+    EXECUTE ''ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE (email)'';
+  END IF;
+END';
+
+-- Backfill any NULL ids (should be rare after the USING cast)
+UPDATE
+    users
+SET
+    id = gen_random_uuid()
+WHERE
+    id IS NULL;

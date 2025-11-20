@@ -5,12 +5,12 @@ import {
 } from "@nestjs/common";
 import { PgPoolService } from "../storage/pg-pool.service";
 import { OrganizationContextService } from "../storage/organization-context.service";
-import { BackupConfigDto, HistoryQueryDto } from "./dto";
+import { BackupConfigDto, HistoryQueryDto, FanoutDestinationDto } from "./dto";
 import { Readable } from "stream";
 import * as crypto from "crypto";
 import { WorkerService } from "./worker.service";
 import { NotifierService } from "./notifier.service";
-import { s3PresignGet } from "./storage-clients";
+import { s3PresignGet, webdavDownloadAsBuffer, gdriveDownloadAsBuffer } from "./storage-clients";
 
 type JobRow = {
     id: string;
@@ -30,16 +30,12 @@ function mapFilterStatus(status: HistoryStatus | undefined): string | undefined 
     if (status === "success") return "completed";
     return status;
 }
-
 function projectStatus(status: string): HistoryStatus {
     switch (status) {
-        case "completed":
-            return "success";
+        case "completed": return "success";
         case "failed":
-        case "cancelled":
-            return "failed";
-        default:
-            return "running";
+        case "cancelled": return "failed";
+        default: return "running";
     }
 }
 
@@ -83,8 +79,11 @@ type PolicyConfig = {
     retentionDays: number;
     encrypt: boolean;
     destination: any | null;
+    extraDestinations: any[];
     notifications: Record<string, any>;
     lastScheduledAt?: string | null;
+    minSuccess?: number | null;
+    parallelism?: number | null;
 };
 
 @Injectable()
@@ -103,10 +102,20 @@ export class BackupsService {
     private retentionDays(retention: any): number {
         if (!retention) return 30;
         if (typeof retention.days === "number") return retention.days;
-        if (typeof retention.value === "number" && retention.unit === "days") {
-            return retention.value;
-        }
+        if (typeof retention.value === "number" && retention.unit === "days") return retention.value;
         return 30;
+    }
+
+    private async loadFanout(policyId: string): Promise<any[]> {
+        const sql = `
+      SELECT d.configuration
+        FROM backup_policy_destinations pd
+        JOIN backup_destinations d ON d.id = pd.destination_id
+       WHERE pd.policy_id = $1
+       ORDER BY pd.is_primary DESC, pd.priority ASC, d.name ASC
+    `;
+        const { rows } = await this.db.query<{ configuration: any }>(sql, [policyId]);
+        return rows.slice(1).map((r) => r.configuration || {});
     }
 
     private parsePolicy(row: PolicyRow | null): PolicyConfig | null {
@@ -119,9 +128,7 @@ export class BackupsService {
 
         const cronExpr = options.cronExpr ?? options.cron_expr ?? undefined;
         const notifications =
-            options.notifications && typeof options.notifications === "object"
-                ? options.notifications
-                : {};
+            options.notifications && typeof options.notifications === "object" ? options.notifications : {};
 
         const enabled = options.enabled ?? false;
         const rawTargets = Array.isArray(options.targets)
@@ -130,6 +137,8 @@ export class BackupsService {
         const targets = rawTargets.length ? rawTargets : ["users", "roles", "devices", "settings"];
         const encrypt = options.encrypt ?? true;
         const lastScheduledAt = options.lastScheduledAt ?? options.last_scheduled_at ?? null;
+        const minSuccess = options.minSuccess != null ? Number(options.minSuccess) : null;
+        const parallelism = options.parallelism != null ? Number(options.parallelism) : null;
 
         return {
             policyId: row.id,
@@ -140,37 +149,35 @@ export class BackupsService {
             retentionDays: this.retentionDays(row.retention),
             encrypt,
             destination,
+            extraDestinations: [],
             notifications,
             lastScheduledAt,
+            minSuccess,
+            parallelism,
         };
     }
 
     private normalizeDestinationInput(dest: any): { provider: string; configuration: any } {
-        if (!dest || typeof dest !== "object") {
-            throw new BadRequestException("Destination required");
-        }
+        if (!dest || typeof dest !== "object") throw new BadRequestException("Destination required");
         const provider = dest.kind === "remote" ? "sftp" : dest.kind;
-        return {
-            provider,
-            configuration: { ...dest },
-        };
+        return { provider, configuration: { ...dest } };
     }
 
     private async fetchDefaultPolicyRow(): Promise<PolicyRow | null> {
         const orgId = await this.orgId();
         const { rows } = await this.db.query<PolicyRow>(
             `SELECT p.id,
-                    p.schedule,
-                    p.retention,
-                    p.options,
-                    p.destination_id,
-                    d.provider AS destination_provider,
-                    d.configuration AS destination_configuration
-               FROM backup_policies p
-          LEFT JOIN backup_destinations d ON d.id = p.destination_id
-              WHERE p.organization_id = $1
-           ORDER BY p.is_default DESC, p.created_at ASC
-              LIMIT 1`,
+              p.schedule,
+              p.retention,
+              p.options,
+              p.destination_id,
+              d.provider AS destination_provider,
+              d.configuration AS destination_configuration
+         FROM backup_policies p
+    LEFT JOIN backup_destinations d ON d.id = p.destination_id
+        WHERE p.organization_id = $1
+     ORDER BY p.is_default DESC, p.created_at ASC
+        LIMIT 1`,
             [orgId]
         );
         return rows[0] ?? null;
@@ -178,132 +185,163 @@ export class BackupsService {
 
     private async fetchDefaultPolicy(): Promise<PolicyConfig | null> {
         const row = await this.fetchDefaultPolicyRow();
-        return this.parsePolicy(row);
+        const parsed = this.parsePolicy(row);
+        if (!parsed) return null;
+        parsed.extraDestinations = row?.id ? await this.loadFanout(row.id) : [];
+        return parsed;
     }
 
     private async upsertDestination(
         orgId: string,
         dest: any,
+        name: string,
     ): Promise<{ id: string; provider: string; configuration: any }> {
         const { provider, configuration } = this.normalizeDestinationInput(dest);
         const { rows } = await this.db.query<{ id: string; provider: string; configuration: any }>(
             `INSERT INTO backup_destinations (organization_id, name, provider, configuration)
-             VALUES ($1, $2, $3, $4::jsonb)
-             ON CONFLICT (organization_id, name)
-             DO UPDATE SET provider = EXCLUDED.provider,
-                           configuration = EXCLUDED.configuration,
-                           updated_at = NOW()
-             RETURNING id, provider, configuration`,
-            [orgId, "Default Backup Destination", provider, JSON.stringify(configuration)]
+       VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT (organization_id, name)
+       DO UPDATE SET provider = EXCLUDED.provider,
+                     configuration = EXCLUDED.configuration,
+                     updated_at = NOW()
+       RETURNING id, provider, configuration`,
+            [orgId, name, provider, JSON.stringify(configuration)]
         );
         return rows[0];
     }
 
-    private async upsertPolicy(
-        orgId: string,
-        destinationId: string,
-        cfg: BackupConfigDto,
-        existingOptions: Record<string, any>,
-    ): Promise<PolicyConfig | null> {
-        const mergedOptions = {
-            ...existingOptions,
+    private fanoutName(i: number) {
+        return i === 0 ? "Default Backup Destination" : `Backup Destination #${i + 1}`;
+    }
+
+    private validateFanoutItem(item: FanoutDestinationDto) {
+        if (!item || typeof item !== "object") throw new BadRequestException("Bad destination");
+        switch (item.kind) {
+            case "local":
+                if (!item.path) throw new BadRequestException("Local path required");
+                sanitizeLocalPath(item.path);
+                return;
+            case "s3":
+            case "nextcloud":
+            case "gdrive":
+            case "remote":
+                if (!item.connectionId || !/^[0-9a-f-]{36}$/i.test(item.connectionId)) {
+                    throw new BadRequestException("Valid connectionId required");
+                }
+                if (item.kind === "nextcloud") {
+                    const p = String(item.path || "");
+                    if (!p.startsWith("/")) throw new BadRequestException("Nextcloud path must start with '/'");
+                }
+                if (item.kind === "remote") {
+                    const p = String(item.path || "");
+                    if (!isAbsolutePath(p)) throw new BadRequestException("Remote path must be absolute");
+                }
+                return;
+            default:
+                throw new BadRequestException("Unsupported destination");
+        }
+    }
+
+    private async upsertPolicyWithFanout(orgId: string, cfg: BackupConfigDto): Promise<PolicyConfig | null> {
+        const primary = await this.upsertDestination(orgId, cfg.destination, this.fanoutName(0));
+
+        const mergedOptions: Record<string, any> = {
             enabled: !!cfg.enabled,
             targets: cfg.targets,
             cronExpr: cfg.schedule === "cron" ? cfg.cronExpr ?? null : null,
-            cron_expr: cfg.schedule === "cron" ? cfg.cronExpr ?? null : null,
+            cron_expr: cfg.schedule === "cron" ? cfg.cronExpr ?? null : null, // legacy spell
             encrypt: !!cfg.encrypt,
             notifications: cfg.notifications ?? {},
         };
+        if (cfg.minSuccess != null) mergedOptions.minSuccess = Number(cfg.minSuccess);
+        if (cfg.parallelism != null) mergedOptions.parallelism = Number(cfg.parallelism);
         if (mergedOptions.cronExpr == null) delete (mergedOptions as any).cronExpr;
         if (mergedOptions.cron_expr == null) delete (mergedOptions as any).cron_expr;
-        const inserted = await this.db.query<{ id: string }>(
+
+        const policyIns = await this.db.query<{ id: string }>(
             `INSERT INTO backup_policies (
-                 organization_id,
-                 name,
-                 description,
-                 schedule,
-                 retention,
-                 destination_id,
-                 target_type,
-                 target_id,
-                 options,
-                 is_default)
-             VALUES (
-                 $1,
-                 $2,
-                 $3,
-                 $4,
-                 $5::jsonb,
-                 $6,
-                 'organization',
-                 NULL,
-                 $7::jsonb,
-                 TRUE)
-             ON CONFLICT (organization_id, name)
-             DO UPDATE SET
-                 description = EXCLUDED.description,
-                 schedule = EXCLUDED.schedule,
-                 retention = EXCLUDED.retention,
-                 destination_id = EXCLUDED.destination_id,
-                 target_type = EXCLUDED.target_type,
-                 target_id = EXCLUDED.target_id,
-                 options = EXCLUDED.options,
-                 is_default = TRUE,
-                 updated_at = NOW()
-             RETURNING id`,
+         organization_id, name, description, schedule, retention,
+         destination_id, target_type, target_id, options, is_default
+       )
+       VALUES (
+         $1, $2, $3, $4, $5::jsonb,
+         $6, 'organization', NULL, $7::jsonb, TRUE
+       )
+       ON CONFLICT (organization_id, name)
+       DO UPDATE SET
+         description = EXCLUDED.description,
+         schedule    = EXCLUDED.schedule,
+         retention   = EXCLUDED.retention,
+         destination_id = EXCLUDED.destination_id,
+         target_type = EXCLUDED.target_type,
+         target_id   = EXCLUDED.target_id,
+         options     = EXCLUDED.options,
+         is_default  = TRUE,
+         updated_at  = NOW()
+       RETURNING id`,
             [
                 orgId,
                 "Default Backup Policy",
                 "Normalized default backups policy",
                 cfg.schedule,
                 JSON.stringify({ days: cfg.retentionDays }),
-                destinationId,
+                primary.id,
                 JSON.stringify(mergedOptions),
             ]
         );
-        const policyId = inserted.rows[0]?.id;
-        if (!policyId) {
-            return null;
+        const policyId = policyIns.rows[0]?.id;
+        if (!policyId) throw new Error("Failed to upsert policy");
+
+        const extras = Array.isArray(cfg.extraDestinations) ? cfg.extraDestinations : [];
+        for (const e of extras) this.validateFanoutItem(e);
+
+        const withPrimary = [{ ...cfg.destination, isPrimary: true, priority: 10 } as FanoutDestinationDto]
+            .concat(extras.map((e, i) => ({ ...e, isPrimary: false, priority: e.priority ?? (i + 2) * 10 })));
+
+        const destIds: { id: string; isPrimary: boolean; priority: number }[] = [];
+        for (let i = 0; i < withPrimary.length; i++) {
+            const ent = withPrimary[i];
+            const ins = await this.upsertDestination(orgId, ent, this.fanoutName(i));
+            destIds.push({ id: ins.id, isPrimary: !!ent.isPrimary, priority: ent.priority ?? (i + 1) * 10 });
+        }
+
+        await this.db.query(`DELETE FROM backup_policy_destinations WHERE policy_id=$1`, [policyId]);
+
+        if (destIds.length) {
+            const values = destIds
+                .map((_, i) => `($1::uuid, $${i * 3 + 2}::uuid, $${i * 3 + 3}::boolean, $${i * 3 + 4}::int)`)
+                .join(", ");
+            await this.db.query(
+                `INSERT INTO backup_policy_destinations (policy_id, destination_id, is_primary, priority)
+         VALUES ${values}
+         ON CONFLICT (policy_id, destination_id) DO UPDATE
+           SET is_primary = EXCLUDED.is_primary,
+               priority   = EXCLUDED.priority`,
+                [policyId, ...destIds.flatMap((d) => [d.id, d.isPrimary, d.priority])]
+            );
         }
 
         const detail = await this.db.query<PolicyRow>(
-            `SELECT p.id,
-                    p.schedule,
-                    p.retention,
-                    p.options,
-                    p.destination_id,
-                    d.provider AS destination_provider,
-                    d.configuration AS destination_configuration
-               FROM backup_policies p
-          LEFT JOIN backup_destinations d ON d.id = p.destination_id
-              WHERE p.id = $1`,
+            `SELECT p.id, p.schedule, p.retention, p.options, p.destination_id,
+              d.provider AS destination_provider, d.configuration AS destination_configuration
+         FROM backup_policies p
+    LEFT JOIN backup_destinations d ON d.id = p.destination_id
+        WHERE p.id = $1`,
             [policyId]
         );
-        return this.parsePolicy(detail.rows[0] ?? null);
-    }
-
-    private async ensurePolicyAndDestination(cfg?: BackupConfigDto): Promise<PolicyConfig | null> {
-        if (!cfg) {
-            return this.fetchDefaultPolicy();
-        }
-        const orgId = await this.orgId();
-        const currentRow = await this.fetchDefaultPolicyRow();
-        const existingOptions =
-            currentRow && currentRow.options && typeof currentRow.options === "object"
-                ? currentRow.options
-                : {};
-
-        const destination = await this.upsertDestination(orgId, cfg.destination);
-        return this.upsertPolicy(orgId, destination.id, cfg, existingOptions);
+        const parsed = this.parsePolicy(detail.rows[0] ?? null);
+        if (!parsed) return null;
+        parsed.extraDestinations = await this.loadFanout(policyId);
+        return parsed;
     }
 
     /* ---------------- Permissions (UI helper) --------------- */
     async getPermissions() {
-        // Controller derives real booleans via RBAC; keep this as a safe default fallback.
-        return { restore: true, download: true };
+        // Safer defaults until your authz is wired
+        return { restore: false, download: false };
     }
 
-    /* ---------------- Config --------------------- */
+    /* ---------------- Config (load/save) --------------------- */
     async getConfig() {
         const policy = await this.fetchDefaultPolicy();
         if (!policy) {
@@ -315,7 +353,10 @@ export class BackupsService {
                 retentionDays: 30,
                 encrypt: true,
                 destination: { kind: "local", path: "/var/remoteiq/backups" },
+                extraDestinations: [],
                 notifications: { email: false, webhook: false, slack: false },
+                minSuccess: 1,
+                parallelism: 2,
             };
         }
 
@@ -327,7 +368,10 @@ export class BackupsService {
             retentionDays: policy.retentionDays,
             encrypt: policy.encrypt,
             destination: policy.destination ?? { kind: "local", path: "/var/remoteiq/backups" },
+            extraDestinations: policy.extraDestinations ?? [],
             notifications: policy.notifications,
+            minSuccess: policy.minSuccess ?? undefined,
+            parallelism: policy.parallelism ?? undefined,
         };
     }
 
@@ -335,6 +379,7 @@ export class BackupsService {
         if (!dest || typeof dest !== "object" || !dest.kind) {
             throw new BadRequestException("Destination required");
         }
+
         switch (dest.kind) {
             case "local":
                 sanitizeLocalPath(String(dest.path || ""));
@@ -342,7 +387,6 @@ export class BackupsService {
             case "s3":
             case "nextcloud":
             case "gdrive":
-            case "remote":
                 if (!dest.connectionId || !/^[0-9a-f-]{36}$/i.test(dest.connectionId)) {
                     throw new BadRequestException("Valid connectionId required");
                 }
@@ -351,12 +395,10 @@ export class BackupsService {
                     if (!p.startsWith("/"))
                         throw new BadRequestException("Nextcloud path must start with '/'");
                 }
-                if (dest.kind === "remote") {
-                    const p = String(dest.path || "");
-                    if (!isAbsolutePath(p))
-                        throw new BadRequestException("Remote path must be absolute");
-                }
                 break;
+            case "remote":
+                // still unsupported for primary
+                throw new BadRequestException("Primary SFTP not yet supported. Use as an extra destination.");
             default:
                 throw new BadRequestException("Unsupported destination");
         }
@@ -366,11 +408,14 @@ export class BackupsService {
         if (cfg.schedule === "cron" && !cfg.cronExpr) {
             throw new BadRequestException("cronExpr required for schedule=cron");
         }
-        const policy = await this.ensurePolicyAndDestination(cfg);
-        return {
-            ok: true,
-            policyId: policy?.policyId,
-        };
+        this.validateDestination(cfg.destination);
+        if (Array.isArray(cfg.extraDestinations)) {
+            for (const e of cfg.extraDestinations) this.validateFanoutItem(e);
+        }
+
+        const orgId = await this.orgId();
+        const policy = await this.upsertPolicyWithFanout(orgId, cfg);
+        return { ok: true, policyId: policy?.policyId };
     }
 
     /* ---------------- History -------------------- */
@@ -387,7 +432,7 @@ export class BackupsService {
             params.push(policy.policyId);
             where.push(`(policy_id = $${params.length} OR policy_id IS NULL)`);
         }
-        const statusFilter = mapFilterStatus(q.status as HistoryStatus | undefined);
+        const statusFilter = mapFilterStatus(q.status as any);
         if (statusFilter) {
             params.push(statusFilter);
             where.push(`status = $${params.length}`);
@@ -437,18 +482,18 @@ export class BackupsService {
 
         const { rows } = await this.db.query(
             `UPDATE backup_policies
-                SET options = jsonb_set(
-                    COALESCE(options, '{}'::jsonb),
-                    '{lastScheduledAt}',
-                    to_jsonb(($2)::timestamptz),
-                    true
-                )
-             WHERE id = $1
-               AND (
-                    options->>'lastScheduledAt' IS NULL
-                 OR (options->>'lastScheduledAt')::timestamptz < ($2)::timestamptz - interval '30 seconds'
-               )
-             RETURNING 1`,
+          SET options = jsonb_set(
+              COALESCE(options, '{}'::jsonb),
+              '{lastScheduledAt}',
+              to_jsonb(($2)::timestamptz),
+              true
+          )
+       WHERE id = $1
+         AND (
+              options->>'lastScheduledAt' IS NULL
+           OR (options->>'lastScheduledAt')::timestamptz < ($2)::timestamptz - interval '30 seconds'
+         )
+       RETURNING 1`,
             [policy.id, now.toISOString()]
         );
         return { updated: rows.length > 0 };
@@ -460,35 +505,49 @@ export class BackupsService {
 
     /* ---------------- Actions -------------------- */
     async startBackupNow() {
-        const policy = await this.ensurePolicyAndDestination();
-        if (!policy) {
-            throw new BadRequestException("Backups not configured");
-        }
-        if (!policy.enabled) {
-            throw new BadRequestException("Backups disabled");
-        }
+        const policy = await this.fetchDefaultPolicy();
+        if (!policy) throw new BadRequestException("Backups not configured");
+        if (!policy.enabled) throw new BadRequestException("Backups disabled");
 
         const id = crypto.randomUUID();
         await this.db.query(
             `INSERT INTO backup_jobs (id, policy_id, started_at, status, note)
-             VALUES ($1, $2, NOW(), 'running', 'Manual run')`,
+       VALUES ($1, $2, NOW(), 'running', 'Manual run')`,
             [id, policy.policyId]
         );
-        // Start immediately
+
+        // Snapshot fan-out into backup_job_destinations for the worker
+        const snap = await this.db.query<{ id: string; is_primary: boolean; priority: number }>(
+            `SELECT d.id, pd.is_primary, pd.priority
+         FROM backup_policy_destinations pd
+         JOIN backup_destinations d ON d.id=pd.destination_id
+        WHERE pd.policy_id=$1
+        ORDER BY pd.priority ASC`,
+            [policy.policyId]
+        );
+        if (snap.rows.length) {
+            const values = snap.rows
+                .map((_, i) => `($1::uuid, $${i * 3 + 2}::uuid, $${i * 3 + 3}::boolean, $${i * 3 + 4}::int, NOW())`)
+                .join(", ");
+            await this.db.query(
+                `INSERT INTO backup_job_destinations (job_id, destination_id, is_primary, priority, created_at)
+         VALUES ${values}`,
+                [id, ...snap.rows.flatMap((r) => [r.id, r.is_primary, r.priority ?? 10])]
+            );
+        }
+
         await this.worker.runOneIfAny();
         return { id, startedAt: new Date().toISOString() };
     }
 
     async pruneOld() {
         const policy = await this.fetchDefaultPolicy();
-        if (!policy) {
-            return { removed: 0 };
-        }
+        if (!policy) return { removed: 0 };
 
         const params: any[] = [String(policy.retentionDays)];
         let sql = `DELETE FROM backup_jobs
-             WHERE COALESCE(finished_at, started_at) < (NOW() - ($1 || ' days')::interval)
-               AND status IN ('completed','failed','cancelled')`;
+               WHERE COALESCE(finished_at, started_at) < (NOW() - ($1 || ' days')::interval)
+                 AND status IN ('completed','failed','cancelled')`;
 
         if (policy.policyId) {
             params.push(policy.policyId);
@@ -499,7 +558,7 @@ export class BackupsService {
         return { removed: rows.length };
     }
 
-    // Real destination testing (local & S3), probes for others via helper module.
+    // -------- Destination probe implementations --------
     async testDestination(dest: any) {
         if (dest.kind === "local") {
             sanitizeLocalPath(dest.path);
@@ -540,8 +599,8 @@ export class BackupsService {
             )).rows[0];
             if (!row) throw new BadRequestException("Nextcloud connection not found");
             const { webdavProbe } = await import("./storage-clients");
-            const url = row.config?.url;
-            const username = row.secrets?.username;
+            const url = row.config?.webdavUrl;
+            const username = row.config?.username;
             const password = row.secrets?.password;
             const path = dest.path;
             const phases = await webdavProbe({ url, username, password, path });
@@ -558,7 +617,7 @@ export class BackupsService {
             const { sftpProbe } = await import("./storage-clients");
             const host = row.config?.host;
             const port = row.config?.port;
-            const username = row.secrets?.username;
+            const username = row.secrets?.username || row.config?.username;
             const password = row.secrets?.password;
             const privateKey = row.secrets?.privateKey;
             const passphrase = row.secrets?.passphrase;
@@ -630,7 +689,7 @@ export class BackupsService {
             `SELECT id, status FROM backup_jobs WHERE id=$1 LIMIT 1`,
             [id]
         );
-        if (!rows.length) throw new NotFoundException("Backup not found");
+        if (!rows.length) return null;
         if (rows[0].status !== "completed")
             throw new BadRequestException("Backup not successful");
 
@@ -665,12 +724,12 @@ export class BackupsService {
     async getDownload(id: string): Promise<{ presignedUrl?: string; stream?: Readable; filename: string } | null> {
         const { rows } = await this.db.query(
             `SELECT j.status,
-                    j.artifact_location,
-                    d.configuration AS destination_configuration
-               FROM backup_jobs j
-          LEFT JOIN backup_policies p ON j.policy_id = p.id
-          LEFT JOIN backup_destinations d ON d.id = p.destination_id
-              WHERE j.id=$1`,
+              j.artifact_location,
+              d.configuration AS destination_configuration
+         FROM backup_jobs j
+    LEFT JOIN backup_policies p ON j.policy_id = p.id
+    LEFT JOIN backup_destinations d ON d.id = p.destination_id
+        WHERE j.id=$1`,
             [id]
         );
         if (!rows.length) return null;
@@ -700,6 +759,40 @@ export class BackupsService {
             const url = await s3PresignGet(s3Cfg, bucket, key, 60 * 10);
             const filename = String(key || "").split("/").pop() || "backup.tar.gz";
             return { presignedUrl: url, filename };
+        }
+        if (loc.kind === "nextcloud") {
+            const connectionId = loc.connectionId;
+            if (!connectionId) throw new BadRequestException("Nextcloud connection missing");
+            const row = (await this.db.query(
+                `SELECT config, secrets FROM storage_connections WHERE id=$1 AND kind='nextcloud'`,
+                [connectionId]
+            )).rows[0];
+            if (!row) throw new BadRequestException("Nextcloud connection missing");
+            const webdavUrl = row.config?.webdavUrl;
+            const username = row.config?.username;
+            const password = row.secrets?.password;
+            const remotePath = loc.path;
+            if (!webdavUrl || !username || !password || !remotePath) {
+                throw new BadRequestException("Nextcloud location incomplete");
+            }
+            const buf = await webdavDownloadAsBuffer({ url: webdavUrl, username, password, remotePath });
+            const filename = String(remotePath).split("/").pop() || "backup.tar.gz";
+            return { filename, stream: Readable.from(buf) };
+        }
+        if (loc.kind === "gdrive") {
+            const connectionId = loc.connectionId;
+            if (!connectionId) throw new BadRequestException("GDrive connection missing");
+            const row = (await this.db.query(
+                `SELECT config, secrets FROM storage_connections WHERE id=$1 AND kind='gdrive'`,
+                [connectionId]
+            )).rows[0];
+            if (!row) throw new BadRequestException("GDrive connection missing");
+            const credentialsJson = row.secrets?.serviceAccountJson;
+            const fileId = loc.fileId;
+            if (!credentialsJson || !fileId) throw new BadRequestException("GDrive location incomplete");
+            const buf = await gdriveDownloadAsBuffer({ credentialsJson, fileId });
+            const filename = loc.name || "backup.tar.gz";
+            return { filename, stream: Readable.from(buf) };
         }
         return null;
     }

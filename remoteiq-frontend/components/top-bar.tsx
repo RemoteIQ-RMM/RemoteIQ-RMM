@@ -7,6 +7,7 @@
  * Saved Views + Automation + Search + Theme + Admin + Avatar
  * Adds "Dashboard" and "Customers" tabs next to the brand.
  * Uses user avatar from /api/users/me when available.
+ * Admin button only shows when the user has 'admin.access' (or is super admin).
  */
 
 import React, { useEffect, useRef, useState } from "react";
@@ -66,7 +67,9 @@ import { useBranding } from "@/app/providers/BrandingProvider";
 
 const TOP_BAR_HEIGHT = 56;
 const PLACEHOLDER_AVATAR = "/avatar-placeholder.png"; // ensure this exists in FE /public
+const API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "").replace(/\/+$/, "");
 
+/* ---------------- Toasts ---------------- */
 type ToastKind = "success" | "destructive" | "default";
 type ToastAction = { label: string; onClick: () => void };
 type Toast = { id: string; title: string; desc?: string; kind: ToastKind; action?: ToastAction };
@@ -81,6 +84,7 @@ function useToasts() {
     return { toasts, push };
 }
 
+/* ---------------- Tiny RMM stats (mock) ---------------- */
 function useMiniRmmStats() {
     const [cpu, setCpu] = useState(18);
     const [ram, setRam] = useState(42);
@@ -94,7 +98,7 @@ function useMiniRmmStats() {
     return { cpu, ram };
 }
 
-/** Brand logo that respects saved branding (light/dark) */
+/* ---------------- Branding logo ---------------- */
 function AppLogo() {
     const { branding } = useBranding();
     const light = branding?.logoLightUrl ?? undefined;
@@ -116,6 +120,7 @@ function AppLogo() {
     );
 }
 
+/* ---------------- Avatar helpers ---------------- */
 function getInitials(name?: string, email?: string) {
     const fromName =
         (name || "")
@@ -134,15 +139,14 @@ function normalizeAvatarUrl(raw?: string): string | undefined {
     if (!raw) return undefined;
     const url = raw.trim();
     if (!url) return undefined;
-    // Absolute: http(s)://... or data:
-    if (/^(https?:)?\/\//i.test(url) || url.startsWith("data:")) return url;
-    // Relative to API base
+    if (/^(https?:)?\/\//i.test(url) || url.startsWith("data:")) return url; // absolute
     const base = (process.env.NEXT_PUBLIC_API_BASE || "").replace(/\/+$/, "");
-    if (!base) return url; // hope same-origin
+    if (!base) return url; // same-origin fallback
     if (url.startsWith("/")) return `${base}${url}`;
     return `${base}/${url}`;
 }
 
+/* ---------------- Types from /api/users/me and /api/auth/me ---------------- */
 type MeProfileResponse = {
     id: string;
     name?: string;
@@ -151,13 +155,48 @@ type MeProfileResponse = {
     avatar_url?: string;
 };
 
+type AuthMe =
+    | { user: null }
+    | {
+        user: {
+            id: string;
+            email?: string;
+            name?: string;
+            role?: string;
+            isSuperAdmin?: boolean;
+            // permission shapes we’ll tolerate:
+            permissions?: string[] | Record<string, boolean>;
+            permissionKeys?: string[];
+        };
+    };
+
+/* ---------------- Permission helpers ---------------- */
+function hasPermissionKey(user: AuthMe extends { user: infer U } ? U : never, key: string): boolean {
+    if (!user) return false;
+    if ((user as any).isSuperAdmin === true) return true;
+
+    const perms = (user as any).permissions;
+    if (Array.isArray(perms)) {
+        if (perms.some((k) => String(k).toLowerCase() === key)) return true;
+    } else if (perms && typeof perms === "object") {
+        if (perms[key] === true) return true;
+    }
+
+    const keys = (user as any).permissionKeys;
+    if (Array.isArray(keys)) {
+        if (keys.some((k) => String(k).toLowerCase() === key)) return true;
+    }
+
+    return false;
+}
+
+/* ====================================================================== */
+
 export default function TopBar() {
     const pathname = usePathname();
     const isDashboard = pathname === "/" || pathname === "/(dashboard)";
     const isCustomers = pathname.startsWith("/customers");
     const isTickets = pathname.startsWith("/tickets");
-    // TODO: wire to real auth/role state
-    const isSuperAdmin = true;
 
     const { setTheme } = useTheme();
     const {
@@ -182,31 +221,51 @@ export default function TopBar() {
     const [preselectIds, setPreselectIds] = useState<string[] | undefined>(undefined);
     const [automationOpen, setAutomationOpen] = useState(false);
 
+    // NEW: Logout confirm state
+    const [logoutOpen, setLogoutOpen] = useState(false);
+
     const { toasts, push } = useToasts();
 
-    // ---------- CURRENT USER (avatar + initials) ----------
+    // ---------- CURRENT USER (avatar + initials + admin permission) ----------
     const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined);
     const [avatarErrored, setAvatarErrored] = useState(false);
     const [initials, setInitials] = useState("U");
+    const [canSeeAdmin, setCanSeeAdmin] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
         (async () => {
             try {
-                // Pull full profile which contains avatarUrl
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE}/api/users/me`, {
-                    credentials: "include",
-                });
-                if (!res.ok) throw new Error(`Profile fetch failed (${res.status})`);
-                const data: MeProfileResponse = await res.json();
-                if (cancelled) return;
-
-                const raw = (data as any)?.avatarUrl || (data as any)?.avatar_url || "";
-                const normalized = normalizeAvatarUrl(raw);
-                setAvatarUrl(normalized);
-                setInitials(getInitials(data?.name, data?.email));
+                // 1) Avatar/profile
+                const resProfile = await fetch(`${API_BASE}/api/users/me`, { credentials: "include" });
+                if (resProfile.ok) {
+                    const data: MeProfileResponse = await resProfile.json();
+                    if (!cancelled) {
+                        const raw = (data as any)?.avatarUrl || (data as any)?.avatar_url || "";
+                        const normalized = normalizeAvatarUrl(raw);
+                        setAvatarUrl(normalized);
+                        setInitials(getInitials(data?.name, data?.email));
+                    }
+                }
             } catch {
-                // keep initials-only fallback
+                /* keep initials-only fallback */
+            }
+
+            try {
+                // 2) Auth/permissions
+                const resAuth = await fetch(`${API_BASE}/api/auth/me`, { credentials: "include" });
+                if (resAuth.ok) {
+                    const auth: AuthMe = await resAuth.json();
+                    if (!cancelled) {
+                        const user = (auth as any)?.user || null;
+                        const allowed = hasPermissionKey(user, "admin.access");
+                        setCanSeeAdmin(allowed);
+                    }
+                } else {
+                    if (!cancelled) setCanSeeAdmin(false);
+                }
+            } catch {
+                if (!cancelled) setCanSeeAdmin(false);
             }
         })();
         return () => {
@@ -303,11 +362,13 @@ export default function TopBar() {
 
     const handleLogout = async () => {
         try {
-            await fetch(`${process.env.NEXT_PUBLIC_API_BASE}/api/auth/logout`, {
+            await fetch(`${API_BASE}/api/auth/logout`, {
                 method: "POST",
                 credentials: "include",
             });
-        } catch { }
+        } catch {
+            // ignore
+        }
         router.replace("/login?next=/");
     };
 
@@ -354,6 +415,19 @@ export default function TopBar() {
                             >
                                 <Link href="/tickets">Tickets</Link>
                             </Button>
+                            <div className="h-6 w-px bg-border self-center" />
+                            {/* Admin tab: only show when user has admin.access */}
+                            {canSeeAdmin && (
+                                <Button
+                                    asChild
+                                    variant={pathname.startsWith("/administration") ? "secondary" : "ghost"}
+                                    size="sm"
+                                    title="Administration"
+                                    className="rounded-none last:rounded-r-md px-4"
+                                >
+                                    <Link href="/administration">Administration</Link>
+                                </Button>
+                            )}
                         </div>
                     </div>
 
@@ -432,12 +506,13 @@ export default function TopBar() {
                                         key={view.id}
                                         onSelect={() => {
                                             const ok = loadView(view.id);
-                                            if (ok)
+                                            if (ok) {
                                                 push({
                                                     title: "Saved view loaded",
                                                     desc: `"${view.name}" applied.`,
                                                     kind: "success",
                                                 });
+                                            }
                                         }}
                                         className="flex items-center gap-2 py-2"
                                     >
@@ -556,7 +631,7 @@ export default function TopBar() {
                         <DropdownMenuTrigger asChild>
                             <Button variant="outline" size="icon" title="Theme">
                                 <Sun className="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-                                <Moon className="absolute h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+                                <Moon className="absolute h/[1.2rem] w/[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
                                 <span className="sr-only">Toggle theme</span>
                             </Button>
                         </DropdownMenuTrigger>
@@ -581,8 +656,8 @@ export default function TopBar() {
                         <Bell className="h-5 w-5" />
                     </Button>
 
-                    {/* Admin (shield) — only for super admins */}
-                    {isSuperAdmin && (
+                    {/* Admin (shield) — only if the user has admin.access */}
+                    {canSeeAdmin && (
                         <Button asChild variant="outline" size="icon" title="Administration" aria-label="Administration">
                             <Link href="/administration">
                                 <Shield className="h-5 w-5" />
@@ -619,7 +694,14 @@ export default function TopBar() {
                                 Security
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem onClick={handleLogout}>Sign out</DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={(e) => {
+                                    e.preventDefault();
+                                    setLogoutOpen(true);
+                                }}
+                            >
+                                Sign out
+                            </DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
                 </div>
@@ -638,9 +720,7 @@ export default function TopBar() {
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction
                             className="bg-amber-500 text-white hover:bg-amber-500/90 dark:bg-amber-600 dark:hover:bg-amber-600/90"
-                            onClick={() => {
-                                // will be set by confirmOverwrite outside
-                            }}
+                            onClick={confirmOverwrite}
                         >
                             Overwrite
                         </AlertDialogAction>
@@ -661,11 +741,30 @@ export default function TopBar() {
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction
                             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                            onClick={() => {
-                                // will be set by confirmDelete outside
-                            }}
+                            onClick={confirmDelete}
                         >
                             Delete
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Sign out confirm */}
+            <AlertDialog open={logoutOpen} onOpenChange={setLogoutOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            You’re about to sign out of RemoteIQ.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            onClick={handleLogout}
+                        >
+                            Sign out
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
@@ -674,7 +773,7 @@ export default function TopBar() {
             {/* Run Script modal */}
             <RunScriptModal
                 open={isRunScriptOpen}
-                onOpenChange={setRunScriptOpen}
+                onOpenChange={handleRunScriptOpenChange}
                 preselectDeviceIds={preselectIds}
             />
 

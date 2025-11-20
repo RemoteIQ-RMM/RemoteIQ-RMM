@@ -1,3 +1,5 @@
+// remoteiq-minimal-e2e/backend/src/auth/policy.ts
+
 export type PermissionGroup = {
     key: string;
     label: string;
@@ -9,6 +11,16 @@ export type PermissionGroup = {
 };
 
 export const PERMISSION_GROUPS = [
+    // ── Administration
+    {
+        key: "administration",
+        label: "Administration",
+        items: [
+            { key: "admin.access", label: "Access admin dashboard", description: "View and access the Administration area." },
+        ] as const,
+    },
+
+    // ── Users
     {
         key: "users",
         label: "Users",
@@ -19,6 +31,8 @@ export const PERMISSION_GROUPS = [
             { key: "users.2fa.reset", label: "Reset 2FA" },
         ] as const,
     },
+
+    // ── Roles
     {
         key: "roles",
         label: "Roles",
@@ -28,6 +42,8 @@ export const PERMISSION_GROUPS = [
             { key: "roles.delete", label: "Delete roles" },
         ] as const,
     },
+
+    // ── Teams
     {
         key: "teams",
         label: "Teams",
@@ -37,6 +53,8 @@ export const PERMISSION_GROUPS = [
             { key: "teams.delete", label: "Delete teams" },
         ] as const,
     },
+
+    // ── Billing
     {
         key: "billing",
         label: "Billing",
@@ -45,6 +63,8 @@ export const PERMISSION_GROUPS = [
             { key: "billing.write", label: "Manage billing" },
         ] as const,
     },
+
+    // ── Settings
     {
         key: "settings",
         label: "Settings",
@@ -53,6 +73,8 @@ export const PERMISSION_GROUPS = [
             { key: "settings.write", label: "Manage settings" },
         ] as const,
     },
+
+    // ── Backups
     {
         key: "backups",
         label: "Backups",
@@ -76,14 +98,14 @@ export type PermissionDefinition = PermissionItem & {
     groupLabel: string;
 };
 
-export const PERMISSION_DEFINITIONS: PermissionDefinition[] = PERMISSION_GROUPS.flatMap(
-    (group) =>
+export const PERMISSION_DEFINITIONS: PermissionDefinition[] =
+    PERMISSION_GROUPS.flatMap((group) =>
         group.items.map((item) => ({
             ...item,
             groupKey: group.key,
             groupLabel: group.label,
-        }))
-);
+        })),
+    );
 
 export const ALL_PERMISSIONS: Permission[] = PERMISSION_DEFINITIONS.map((d) => d.key);
 

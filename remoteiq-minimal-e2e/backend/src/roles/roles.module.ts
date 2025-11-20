@@ -1,3 +1,5 @@
+//remoteiq-minimal-e2e\backend\src\roles\roles.module.ts
+
 import { Module } from '@nestjs/common';
 import { StorageModule } from '../storage/storage.module';
 import { RolesService } from './roles.service';

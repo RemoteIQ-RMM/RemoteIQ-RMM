@@ -1,3 +1,5 @@
+//remoteiq-minimal-e2e\backend\src\roles\permissions.controller.ts
+
 import { Controller, Get, UseGuards } from "@nestjs/common";
 import { PermissionGroupDto, PermissionsIntrospectService } from "./permissions-introspect.service";
 import { PermissionsGuard } from "../auth/permissions.guard";

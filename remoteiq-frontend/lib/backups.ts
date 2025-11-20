@@ -1,10 +1,7 @@
 // remoteiq-frontend/lib/backups.ts
-// Centralized API client for the Backups feature.
-// Mirrors the pattern used by lib/storage.ts so UI tabs stay clean.
 
 import { jfetch } from "@/lib/api";
 
-// ---- Shared types (UI already has more detailed ones in ../types) ----
 export type StorageKind = "s3" | "nextcloud" | "gdrive" | "sftp";
 export type ConnectionLite = { id: string; name: string; kind: StorageKind };
 
@@ -24,7 +21,6 @@ export type BackupHistoryRow = {
     at: string; // "YYYY-MM-DD HH:mm"
     status: "success" | "failed" | "running";
     note?: string;
-    // optional server-provided extras:
     sizeBytes?: number;
     durationSec?: number;
     verified?: boolean;
@@ -32,6 +28,7 @@ export type BackupHistoryRow = {
 
 export type ScheduleKind = "hourly" | "daily" | "weekly" | "cron";
 
+// Destinations
 export type LocalDest = { kind: "local"; path: string };
 export type S3Dest = {
     kind: "s3";
@@ -54,12 +51,21 @@ export type RemoteSFTPDest = {
     connectionId: string;
     path: string;
 };
+
 export type Destination =
     | LocalDest
     | S3Dest
     | NextcloudDest
     | GDriveDest
     | RemoteSFTPDest;
+
+// Fanout destinations (match BackupsTab usage)
+export type FanoutDest =
+    | { kind: "local"; path: string; isPrimary?: boolean; priority?: number }
+    | { kind: "s3"; connectionId: string; bucket?: string; prefix?: string; isPrimary?: boolean; priority?: number }
+    | { kind: "nextcloud"; connectionId: string; path: string; isPrimary?: boolean; priority?: number }
+    | { kind: "gdrive"; connectionId: string; subfolder?: string; isPrimary?: boolean; priority?: number }
+    | { kind: "remote"; connectionId: string; path: string; isPrimary?: boolean; priority?: number };
 
 export type BackupConfig = {
     enabled: boolean;
@@ -68,7 +74,15 @@ export type BackupConfig = {
     cronExpr?: string;
     retentionDays: number;
     encrypt: boolean;
+
+    // Primary destination (required)
     destination: Destination;
+
+    // 🔥 Added to match UI
+    extraDestinations?: FanoutDest[];
+    minSuccess?: number;
+    parallelism?: number;
+
     notifications?: { email?: boolean; webhook?: boolean; slack?: boolean };
 };
 
@@ -91,8 +105,10 @@ export async function getBackupPermissions() {
     return jfetch<Permissions>("/api/admin/backups/permissions");
 }
 
-// ---- API: Storage connections (for destination connection pickers) ----
+// ---- API: Storage connections (lite for pickers) ----
 export async function listStorageConnectionsLite() {
+    // If the endpoint returns full objects, consider adding a `?lite=1` on the backend,
+    // or map client-side to {id,name,kind} only. Type now reflects the lite shape.
     return jfetch<{ items: ConnectionLite[] }>("/api/admin/storage/connections");
 }
 
@@ -102,7 +118,7 @@ export async function listBackupHistory(params: {
     status?: Exclude<HistoryStatus, "any">;
     q?: string;
     from?: string; // YYYY-MM-DD
-    to?: string; // YYYY-MM-DD
+    to?: string;   // YYYY-MM-DD
 }) {
     const qs = new URLSearchParams();
     if (params.cursor) qs.set("cursor", params.cursor);
@@ -165,8 +181,6 @@ export async function startRestore(id: string) {
 
 export async function getCronNextRuns(cronExpr: string, tz: string) {
     return jfetch<{ next: string[] }>(
-        `/api/admin/backups/next-runs?cron=${encodeURIComponent(
-            cronExpr
-        )}&tz=${encodeURIComponent(tz)}`
+        `/api/admin/backups/next-runs?cron=${encodeURIComponent(cronExpr)}&tz=${encodeURIComponent(tz)}`
     );
 }

@@ -1,5 +1,3 @@
-//backend\src\users\users.controller.ts
-
 import {
     Body,
     Controller,
@@ -25,7 +23,6 @@ import {
     UpdateUserDto,
 } from "./users.dto";
 import { UsersService } from "./users.service";
-
 
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller("/api/admin/users")
@@ -69,14 +66,13 @@ export class UsersController {
         await this.svc.updateUser(p.id, body);
     }
 
-    // Preferred method
+    // RESET PASSWORD — both PATCH and POST call the same service method
     @Patch(":id/password")
     @HttpCode(204)
     async resetPasswordPatch(@Param() p: IdParam, @Body() body: ResetPasswordDto) {
         await this.svc.setPassword(p.id, body);
     }
 
-    // Alias to support UIs that POST to the same endpoint
     @Post(":id/password")
     @HttpCode(204)
     async resetPasswordPost(@Param() p: IdParam, @Body() body: ResetPasswordDto) {

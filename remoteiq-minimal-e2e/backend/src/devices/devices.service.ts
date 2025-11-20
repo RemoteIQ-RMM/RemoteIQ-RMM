@@ -14,7 +14,7 @@ export type Device = {
   user?: string | null;
   version?: string | null;
   primaryIp?: string | null;
-  agentUuid?: string | null; // <-- NEW
+  agentUuid?: string | null; // <-- present when sourced from agents
 };
 
 function decodeCursor(cur?: string | null) {
@@ -67,42 +67,44 @@ export class DevicesService {
     const sql = `
       WITH agent_rows AS (
         SELECT
-          a.id::text                                   AS id,
-          COALESCE(a.hostname, a.device_id, 'unknown') AS hostname,
-          COALESCE(NULLIF(a.os, ''), 'unknown')        AS os,
-          a.arch                                       AS arch,
-          a.last_seen_at                               AS last_seen,
+          a.id::text                                           AS id,
+          COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') AS hostname,
+          COALESCE(NULLIF(d.operating_system, ''), 'unknown')  AS os,
+          d.architecture                                       AS arch,
+          COALESCE(a.last_check_in_at, d.last_seen_at)         AS last_seen,
           CASE
-            WHEN a.last_seen_at IS NOT NULL
-             AND a.last_seen_at > NOW() - INTERVAL '5 minutes'
-            THEN 'online' ELSE 'offline'
-          END                                          AS status,
-          a.client                                     AS client,
-          a.site                                       AS site,
-          NULLIF(a.logged_in_user, '')                 AS "user",
-          NULLIF(a.version, '')                        AS version,
-          NULLIF(a.primary_ip, '')                     AS primary_ip,
-          a.agent_uuid::text                           AS agent_uuid   -- <-- NEW
+            WHEN a.last_check_in_at IS NOT NULL
+             AND a.last_check_in_at > NOW() - INTERVAL '5 minutes'
+            THEN 'online'
+            ELSE CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END
+          END                                                  AS status,
+          NULL::text                                           AS client,
+          NULL::text                                           AS site,
+          NULL::text                                           AS "user",
+          NULLIF(a.version, '')                                AS version,
+          NULLIF(a.facts->>'primary_ip', '')                   AS primary_ip,
+          a.agent_uuid::text                                   AS agent_uuid
         FROM public.agents a
+        LEFT JOIN public.devices d ON d.id = a.device_id
       ),
       device_rows AS (
         SELECT
           d.id::text            AS id,
           d.hostname            AS hostname,
-          d.os                  AS os,
-          d.arch                AS arch,
-          d.last_seen           AS last_seen,
-          d.status              AS status,
-          d.client              AS client,
-          d.site                AS site,
-          NULLIF(d."user", '')  AS "user",
+          COALESCE(NULLIF(d.operating_system, ''), 'unknown') AS os,
+          d.architecture        AS arch,
+          d.last_seen_at        AS last_seen,
+          CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END AS status,
+          NULL::text            AS client,
+          NULL::text            AS site,
+          NULL::text            AS "user",
           NULL::text            AS version,
           NULL::text            AS primary_ip,
-          NULL::text            AS agent_uuid                          -- <-- NEW
-        FROM devices d
+          NULL::text            AS agent_uuid
+        FROM public.devices d
         WHERE NOT EXISTS (
           SELECT 1 FROM public.agents a
-          WHERE COALESCE(a.hostname, a.device_id, 'unknown') = d.hostname
+          WHERE COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') = d.hostname
         )
       ),
       all_devs AS (
@@ -132,7 +134,7 @@ export class DevicesService {
       user: r.user ?? null,
       version: r.version ?? null,
       primaryIp: r.primary_ip ?? null,
-      agentUuid: r.agent_uuid ?? null, // <-- NEW
+      agentUuid: r.agent_uuid ?? null,
     })) as Device[];
 
     return { items, nextCursor: hasNext ? encodeCursor(offset + pageSize) : null };
@@ -142,24 +144,26 @@ export class DevicesService {
     const sql = `
       WITH rows AS (
         SELECT
-          0                                                AS pref,
-          a.id::text                                      AS id,
-          COALESCE(a.hostname, a.device_id, 'unknown')    AS hostname,
-          COALESCE(NULLIF(a.os, ''), 'unknown')           AS os,
-          a.arch                                          AS arch,
-          a.last_seen_at                                  AS last_seen,
+          0                                                    AS pref,
+          a.id::text                                          AS id,
+          COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') AS hostname,
+          COALESCE(NULLIF(d.operating_system, ''), 'unknown')  AS os,
+          d.architecture                                      AS arch,
+          COALESCE(a.last_check_in_at, d.last_seen_at)        AS last_seen,
           CASE
-            WHEN a.last_seen_at IS NOT NULL
-             AND a.last_seen_at > NOW() - INTERVAL '5 minutes'
-            THEN 'online' ELSE 'offline'
-          END                                             AS status,
-          a.client                                        AS client,
-          a.site                                          AS site,
-          NULLIF(a.logged_in_user, '')                    AS "user",
-          NULLIF(a.version, '')                           AS version,
-          NULLIF(a.primary_ip, '')                        AS primary_ip,
-          a.agent_uuid::text                              AS agent_uuid  -- <-- NEW
+            WHEN a.last_check_in_at IS NOT NULL
+             AND a.last_check_in_at > NOW() - INTERVAL '5 minutes'
+            THEN 'online'
+            ELSE CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END
+          END                                                 AS status,
+          NULL::text                                          AS client,
+          NULL::text                                          AS site,
+          NULL::text                                          AS "user",
+          NULLIF(a.version, '')                               AS version,
+          NULLIF(a.facts->>'primary_ip', '')                  AS primary_ip,
+          a.agent_uuid::text                                  AS agent_uuid
         FROM public.agents a
+        LEFT JOIN public.devices d ON d.id = a.device_id
         WHERE a.id::text = $1
 
         UNION ALL
@@ -168,17 +172,17 @@ export class DevicesService {
           1                        AS pref,
           d.id::text               AS id,
           d.hostname               AS hostname,
-          d.os                     AS os,
-          d.arch                   AS arch,
-          d.last_seen              AS last_seen,
-          d.status                 AS status,
-          d.client                 AS client,
-          d.site                   AS site,
-          NULLIF(d."user", '')     AS "user",
+          COALESCE(NULLIF(d.operating_system, ''), 'unknown') AS os,
+          d.architecture           AS arch,
+          d.last_seen_at           AS last_seen,
+          CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END AS status,
+          NULL::text               AS client,
+          NULL::text               AS site,
+          NULL::text               AS "user",
           NULL::text               AS version,
           NULL::text               AS primary_ip,
-          NULL::text               AS agent_uuid                         -- <-- NEW
-        FROM devices d
+          NULL::text               AS agent_uuid
+        FROM public.devices d
         WHERE d.id::text = $1
       )
       SELECT id, hostname, os, arch, last_seen, status, client, site, "user", version, primary_ip, agent_uuid
@@ -202,7 +206,7 @@ export class DevicesService {
       user: r.user ?? null,
       version: r.version ?? null,
       primaryIp: r.primary_ip ?? null,
-      agentUuid: r.agent_uuid ?? null, // <-- NEW
+      agentUuid: r.agent_uuid ?? null,
     };
   }
 

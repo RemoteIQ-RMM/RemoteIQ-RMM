@@ -1,4 +1,4 @@
-//remoteiq-minimal-e2e\backend\src\auth\auth.controller.ts
+// backend/src/auth/auth.controller.ts
 
 import { Body, Controller, Get, Post, Req, Res, BadRequestException } from "@nestjs/common";
 import { ApiOkResponse, ApiTags } from "@nestjs/swagger";
@@ -6,11 +6,56 @@ import type { Request, Response } from "express";
 import { LoginDto } from "./dto/login.dto";
 import { Verify2FADto } from "./dto/verify-2fa.dto";
 import { UserAuthService } from "./user-auth.service";
+import { PgPoolService } from "../storage/pg-pool.service";
 
 @ApiTags("auth")
 @Controller("api/auth")
 export class AuthController {
-    constructor(private readonly users: UserAuthService) { }
+    constructor(
+        private readonly users: UserAuthService,
+        private readonly db: PgPoolService,          // ⬅️ added: DB access for permissions
+    ) { }
+
+    /**
+     * Utility: fetch flattened permission keys for a user.
+     * Tries role_permissions first; if that table doesn't exist, falls back to roles_permissions.
+     */
+    private async getUserPermissions(userId: string): Promise<string[]> {
+        // Detect which linking table exists
+        const exists = async (table: string) => {
+            const q = `
+        SELECT 1
+          FROM information_schema.tables
+         WHERE table_name = $1
+         LIMIT 1
+      `;
+            const r = await this.db.query(q, [table]);
+            return r.rowCount > 0;
+        };
+
+        const hasRolePerm = await exists("role_permissions");
+        const hasRolesPerm = !hasRolePerm ? await exists("roles_permissions") : false;
+
+        // Decide join table name
+        const joinTable = hasRolePerm ? "role_permissions" : hasRolesPerm ? "roles_permissions" : null;
+
+        if (!joinTable) {
+            // No link table—return empty safely
+            return [];
+        }
+
+        // We assume a user_roles (user_id, role_id) table.
+        // role_permissions / roles_permissions assumed to have (role_id, permission_key).
+        // permissions table uses (permission_key, ...).
+        const sql = `
+      SELECT DISTINCT rp.permission_key
+        FROM user_roles ur
+        JOIN ${joinTable} rp ON rp.role_id = ur.role_id
+       WHERE ur.user_id = $1
+    `;
+        const res = await this.db.query(sql, [userId]);
+        return res.rows.map((r: any) => r.permission_key).filter(Boolean);
+    }
 
     @Post("login")
     @ApiOkResponse({ description: "Sets auth cookie on success or returns 2FA challenge when required" })
@@ -52,7 +97,10 @@ export class AuthController {
             maxAge: maxAgeMs,
         });
 
-        return { user };
+        // 6) Attach permissions (so FE can use immediately after login if desired)
+        const permissions = await this.getUserPermissions(user.id);
+
+        return { user: { ...user, permissions } };
     }
 
     @Post("2fa/verify")
@@ -120,7 +168,13 @@ export class AuthController {
         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
         const token = (req as any).cookies?.[cookieName];
         if (!token) return { user: null };
+
         const user = await this.users.verify(token);
-        return { user };
+        if (!user?.id) return { user: null };
+
+        // Attach permissions for FE gating (/administration and top-bar shield)
+        const permissions = await this.getUserPermissions(user.id);
+
+        return { user: { ...user, permissions } };
     }
 }

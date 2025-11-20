@@ -48,6 +48,8 @@ import {
     Copy as CopyIcon,
     Settings as SettingsIcon,
     RefreshCw,
+    Eye,       // ← added
+    EyeOff,    // ← added
 } from "lucide-react";
 import {
     Dialog,
@@ -162,9 +164,10 @@ type SortDir = "asc" | "desc";
 
 const PAGE_SIZES = [10, 25, 50, 100] as const;
 
+/** Treat DB status=disabled as Suspended in the UI */
 function getStatus(u: Partial<User>) {
     const st = (u as any).status as string | undefined;
-    if (st === "suspended" || (u as any).suspended) return "suspended";
+    if (st === "disabled" || st === "suspended" || (u as any).suspended) return "suspended";
     if (st === "invited") return "invited";
     return "active";
 }
@@ -187,14 +190,14 @@ interface UsersTabProps {
     roles: Role[];
     push: ToastFn;
     setRemoveUserId: (id: string | null) => void; // kept for compatibility, not used anymore
-    setReset2FAUserId: (id: string | null) => void;
+    setReset2FAUserId: (id: string | null) => void; // legacy prop; no longer needed
     setInviteOpen: (open: boolean) => void;
     refetchUsers?: () => Promise<void>;
     /** Optional localization from Localization tab */
     localization?: {
-        language: string; // e.g., "en-US"
-        dateFormat: string; // "MM/DD/YYYY" | "DD/MM/YYYY" | "YYYY-MM-DD"
-        timeZone: string; // e.g., "America/New_York"
+        language: string;
+        dateFormat: string;
+        timeZone: string;
     };
 }
 
@@ -387,7 +390,8 @@ export default function UsersTab({
     roles,
     push,
     setRemoveUserId, // kept but unused (replaced by local confirm dialog)
-    setReset2FAUserId,
+    setReset2FAUserId, // legacy prop; no longer used
+    setInviteOpen,
     refetchUsers,
     localization,
 }: UsersTabProps) {
@@ -427,7 +431,7 @@ export default function UsersTab({
     const [selected, setSelected] = React.useState<Record<string, boolean>>({});
 
     /** Invite modals */
-    const [inviteOpen, setInviteOpen] = React.useState(false);
+    const [inviteOpen, setInviteOpenLocal] = React.useState(false);
     const [bulkInviteOpen, setBulkInviteOpen] = React.useState(false);
 
     /** Create / Password / Edit modals */
@@ -452,6 +456,9 @@ export default function UsersTab({
     /** Virtualization */
     const [virtualize, setVirtualize] = React.useState(false);
     const tableParentRef = React.useRef<HTMLDivElement | null>(null);
+
+    /** Per-row busy state for actions */
+    const [busyRow, setBusyRow] = React.useState<Record<string, boolean>>({});
 
     /** Debounce search input */
     React.useEffect(() => {
@@ -619,6 +626,14 @@ export default function UsersTab({
         if (selectedIds.length === 0) return;
         try {
             await Promise.all(selectedIds.map((id) => apiResetUser2FA(id)));
+            // Optimistically mark 2FA as disabled for selected
+            setUsers((prev) =>
+                prev.map((u) =>
+                    u.id && selectedIds.includes(u.id)
+                        ? ({ ...u, twoFactorEnabled: false } as User)
+                        : u
+                )
+            );
         } catch (e: any) {
             push({
                 title: "Failed to reset 2FA for some users",
@@ -740,27 +755,39 @@ export default function UsersTab({
             return;
         }
         const suspending = getStatus(u) !== "suspended";
-        // optimistic
-        const before = users;
+        const id = u.id;
+
+        // optimistic UI (we keep using "suspended" in the UI; backend stores "disabled")
+        // optimistic — write what the DB expects
         setUsers((prev) =>
             prev.map((x) =>
-                x.id === u.id ? { ...x, status: suspending ? "suspended" : "active" } : x
+                x.id === id ? { ...x, status: suspending ? "disabled" : "active" } : x
             )
         );
+
+        setBusyRow((b) => ({ ...b, [id]: true }));
         try {
-            await setUserSuspended(u.id, suspending);
+            await setUserSuspended(id, suspending);
             push({
                 title: suspending ? "User suspended" : "User unsuspended",
                 kind: "success",
             });
             await refreshFromServer(false);
         } catch (e: any) {
-            setUsers(before);
+            // revert on failure
+            setUsers((prev) =>
+                prev.map((x) =>
+                    x.id === id ? { ...x, status: suspending ? "active" : "disabled" } : x
+                )
+            );
+
             push({
                 title: "Failed to update status",
                 desc: e?.message,
                 kind: "destructive",
             });
+        } finally {
+            setBusyRow((b) => ({ ...b, [id]: false }));
         }
     };
 
@@ -939,7 +966,7 @@ export default function UsersTab({
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end" className="w-60">
                                     <DropdownMenuLabel>Invite users</DropdownMenuLabel>
-                                    <DropdownMenuItem onClick={() => setInviteOpen(true)}>
+                                    <DropdownMenuItem onClick={() => setInviteOpenLocal(true)}>
                                         <UserPlus className="mr-2 h-4 w-4" />
                                         Invite single user
                                         <DropdownMenuShortcut>Enter</DropdownMenuShortcut>
@@ -1049,6 +1076,8 @@ export default function UsersTab({
                                             safeStr((u as any).createdAt);
                                         const canEditRole = isUuid(id);
 
+                                        const rowBusy = !!busyRow[id];
+
                                         return (
                                             <div
                                                 key={id || vi.index}
@@ -1097,24 +1126,24 @@ export default function UsersTab({
 
                                                 {/* Role */}
                                                 <div className="px-2 relative z-10">
-                                                <Select
-                                                    value={roleToSelectValue(u)}
-                                                    onValueChange={(v) => canEditRole && updateRole(id, v)}
-                                                    disabled={!canEditRole}
-                                                >
-                                                    <SelectTrigger className="h-8" aria-label="Change role">
-                                                        <SelectValue placeholder={canEditRole ? "Role" : "No id"} />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        <SelectItem value={NO_ROLE}>(No role)</SelectItem>
-                                                        {roles.map((r) => (
-                                                            <SelectItem key={r.id} value={r.id}>
-                                                                {r.name}
-                                                            </SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
-                                            </div>
+                                                    <Select
+                                                        value={roleToSelectValue(u)}
+                                                        onValueChange={(v) => canEditRole && updateRole(id, v)}
+                                                        disabled={!canEditRole || rowBusy}
+                                                    >
+                                                        <SelectTrigger className="h-8" aria-label="Change role">
+                                                            <SelectValue placeholder={canEditRole ? "Role" : "No id"} />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            <SelectItem value={NO_ROLE}>(No role)</SelectItem>
+                                                            {roles.map((r) => (
+                                                                <SelectItem key={r.id} value={r.id}>
+                                                                    {r.name}
+                                                                </SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </div>
 
                                                 {/* Last seen */}
                                                 <div className="px-2 text-muted-foreground truncate" title={lastSeenIso || "No data"}>
@@ -1124,12 +1153,29 @@ export default function UsersTab({
                                                 {/* Actions */}
                                                 <div className="px-2 flex items-center justify-end gap-1">
                                                     <RowActions
+                                                        disabled={rowBusy}
                                                         onEdit={() => setEditUser(u)}
                                                         onResetPassword={() => setPwdUserId(isUuid(id) ? id : null)}
-                                                        onReset2FA={() => id && setReset2FAUserId(id)}
+                                                        onReset2FA={async () => {
+                                                            if (!isUuid(id)) {
+                                                                push({ title: "Invalid user id", kind: "destructive" });
+                                                                return;
+                                                            }
+                                                            setBusyRow((b) => ({ ...b, [id]: true }));
+                                                            try {
+                                                                push({ title: "Resetting 2FA…", kind: "default" });
+                                                                await apiResetUser2FA(id);
+                                                                push({ title: "2FA reset", kind: "success" });
+                                                                await refreshFromServer(false);
+                                                            } catch (e: any) {
+                                                                push({ title: "Failed to reset 2FA", desc: e?.message, kind: "destructive" });
+                                                            } finally {
+                                                                setBusyRow((b) => ({ ...b, [id]: false }));
+                                                            }
+                                                        }}
                                                         onSuspendToggle={() => handleSuspendToggle(u)}
                                                         suspended={suspended}
-                                                        onRemove={() => setRemoveDialogUser(u)} // <-- open confirm
+                                                        onRemove={() => setRemoveDialogUser(u)}
                                                     />
                                                 </div>
                                             </div>
@@ -1159,6 +1205,7 @@ export default function UsersTab({
                                 const extraRoles = roleSummaries.filter((r, idx) =>
                                     primaryRoleId ? r.id !== primaryRoleId : idx > 0,
                                 );
+                                const rowBusy = !!busyRow[id];
 
                                 return (
                                     <div
@@ -1201,33 +1248,33 @@ export default function UsersTab({
 
                                         {/* Role */}
                                         <div className="px-2 relative z-10">
-                                                <Select
-                                                    value={roleToSelectValue(u)}
-                                                    onValueChange={(v) => canEditRole && updateRole(id, v)}
-                                                    disabled={!canEditRole}
-                                                >
-                                                    <SelectTrigger className="h-8" aria-label="Change role">
-                                                        <SelectValue placeholder={canEditRole ? "Role" : "No id"} />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        <SelectItem value={NO_ROLE}>(No role)</SelectItem>
-                                                        {roles.map((r) => (
-                                                            <SelectItem key={r.id} value={r.id}>
-                                                                {r.name}
-                                                            </SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
-                                                {extraRoles.length > 0 && (
-                                                    <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
-                                                        {extraRoles.map((r) => (
-                                                            <Badge key={r.id} variant="outline">
-                                                                {r.name}
-                                                            </Badge>
-                                                        ))}
-                                                    </div>
-                                                )}
-                                            </div>
+                                            <Select
+                                                value={roleToSelectValue(u)}
+                                                onValueChange={(v) => canEditRole && updateRole(id, v)}
+                                                disabled={!canEditRole || rowBusy}
+                                            >
+                                                <SelectTrigger className="h-8" aria-label="Change role">
+                                                    <SelectValue placeholder={canEditRole ? "Role" : "No id"} />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value={NO_ROLE}>(No role)</SelectItem>
+                                                    {roles.map((r) => (
+                                                        <SelectItem key={r.id} value={r.id}>
+                                                            {r.name}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                            {extraRoles.length > 0 && (
+                                                <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                                                    {extraRoles.map((r) => (
+                                                        <Badge key={r.id} variant="outline">
+                                                            {r.name}
+                                                        </Badge>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
 
                                         {/* Last seen */}
                                         <div className="px-2 text-muted-foreground truncate" title={lastSeenIso || "No data"}>
@@ -1237,12 +1284,29 @@ export default function UsersTab({
                                         {/* Actions */}
                                         <div className="px-2 flex items-center justify-end gap-1">
                                             <RowActions
+                                                disabled={rowBusy}
                                                 onEdit={() => setEditUser(u)}
                                                 onResetPassword={() => setPwdUserId(isUuid(id) ? id : null)}
-                                                onReset2FA={() => id && setReset2FAUserId(id)}
+                                                onReset2FA={async () => {
+                                                    if (!isUuid(id)) {
+                                                        push({ title: "Invalid user id", kind: "destructive" });
+                                                        return;
+                                                    }
+                                                    setBusyRow((b) => ({ ...b, [id]: true }));
+                                                    try {
+                                                        push({ title: "Resetting 2FA…", kind: "default" });
+                                                        await apiResetUser2FA(id);
+                                                        push({ title: "2FA reset", kind: "success" });
+                                                        await refreshFromServer(false);
+                                                    } catch (e: any) {
+                                                        push({ title: "Failed to reset 2FA", desc: e?.message, kind: "destructive" });
+                                                    } finally {
+                                                        setBusyRow((b) => ({ ...b, [id]: false }));
+                                                    }
+                                                }}
                                                 onSuspendToggle={() => handleSuspendToggle(u)}
                                                 suspended={suspended}
-                                                onRemove={() => setRemoveDialogUser(u)} // <-- open confirm
+                                                onRemove={() => setRemoveDialogUser(u)}
                                             />
                                         </div>
                                     </div>
@@ -1455,7 +1519,6 @@ export default function UsersTab({
                     ) as Partial<User>;
 
                     // optimistic
-                    const before = users;
                     const resolvedRole = resolveRoleSelection(form.role, roles);
                     const removingRole = form.role === NO_ROLE;
                     setUsers((prev) =>
@@ -1485,12 +1548,13 @@ export default function UsersTab({
                         setEditUser(null);
                         await refreshFromServer(false);
                     } catch (e: any) {
-                        setUsers(before);
                         push({
                             title: "Failed to update user",
                             desc: e?.message,
                             kind: "destructive",
                         });
+                        // Let server refresh fix UI if needed
+                        await refreshFromServer(false);
                     }
                 }}
             />
@@ -1498,11 +1562,11 @@ export default function UsersTab({
             {/* Single Invite Modal */}
             <InviteSingleDialog
                 open={inviteOpen}
-                onOpenChange={setInviteOpen}
+                onOpenChange={setInviteOpenLocal}
                 roles={roles}
                 onSubmit={async (data) => {
                     await sendInvites({ invites: [data] });
-                    setInviteOpen(false);
+                    setInviteOpenLocal(false);
                 }}
             />
 
@@ -1754,6 +1818,7 @@ function RowActions({
     onSuspendToggle,
     suspended,
     onRemove,
+    disabled,
 }: {
     onEdit: () => void;
     onResetPassword: () => void;
@@ -1761,33 +1826,34 @@ function RowActions({
     onSuspendToggle: () => void;
     suspended: boolean;
     onRemove: () => void;
+    disabled?: boolean;
 }) {
     return (
         <DropdownMenu>
             <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" aria-label="Open actions">
+                <Button variant="ghost" size="icon" aria-label="Open actions" disabled={disabled}>
                     <MoreVertical className="h-4 w-4" aria-hidden="true" />
                 </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>Actions</DropdownMenuLabel>
 
-                <DropdownMenuItem onClick={onEdit}>
+                <DropdownMenuItem onClick={onEdit} disabled={disabled}>
                     <UserCog className="mr-2 h-4 w-4" />
                     Edit user
                 </DropdownMenuItem>
 
-                <DropdownMenuItem onClick={onResetPassword}>
+                <DropdownMenuItem onClick={onResetPassword} disabled={disabled}>
                     <Lock className="mr-2 h-4 w-4" />
                     Set password
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={onReset2FA}>
+                <DropdownMenuItem onClick={onReset2FA} disabled={disabled}>
                     <Shield className="mr-2 h-4 w-4" />
                     Reset 2FA
                 </DropdownMenuItem>
 
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={onSuspendToggle}>
+                <DropdownMenuItem onClick={onSuspendToggle} disabled={disabled}>
                     <Power className="mr-2 h-4 w-4" />
                     {suspended ? "Unsuspend user" : "Suspend user"}
                 </DropdownMenuItem>
@@ -1796,6 +1862,7 @@ function RowActions({
                 <DropdownMenuItem
                     onClick={onRemove}
                     className="text-destructive focus:text-destructive"
+                    disabled={disabled}
                 >
                     <Trash2 className="mr-2 h-4 w-4" />
                     Remove user
@@ -1823,6 +1890,7 @@ function CreateUserDialog({
     const [email, setEmail] = React.useState("");
     const [role, setRole] = React.useState<string>(NO_ROLE);
     const [password, setPassword] = React.useState("");
+    const [showPwd, setShowPwd] = React.useState(false); // ← added
     const [submitting, setSubmitting] = React.useState(false);
 
     const validEmail = /\S+@\S+\.\S+/.test(email);
@@ -1848,6 +1916,7 @@ function CreateUserDialog({
             setEmail("");
             setRole(NO_ROLE);
             setPassword("");
+            setShowPwd(false);
         } finally {
             setSubmitting(false);
         }
@@ -1903,13 +1972,24 @@ function CreateUserDialog({
 
                     <div className="grid gap-1">
                         <label className="text-sm">Password</label>
-                        <Input
-                            type="password"
-                            autoComplete="new-password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder="At least 8 characters"
-                        />
+                        <div className="relative">
+                            <Input
+                                type={showPwd ? "text" : "password"}
+                                autoComplete="new-password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                placeholder="At least 8 characters"
+                                className="pr-10"
+                            />
+                            <button
+                                type="button"
+                                aria-label={showPwd ? "Hide password" : "Show password"}
+                                onClick={() => setShowPwd((v) => !v)}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-muted"
+                            >
+                                {showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                            </button>
+                        </div>
                         {!validPwd && password && (
                             <div className="text-xs text-red-600">Minimum 8 characters</div>
                         )}
@@ -1954,6 +2034,7 @@ function SetPasswordDialog({
             await onSubmit(pwd);
             setPwd("");
             setPwd2("");
+            onOpenChange(false);
         } finally {
             setSubmitting(false);
         }

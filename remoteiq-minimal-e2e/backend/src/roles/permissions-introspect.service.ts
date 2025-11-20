@@ -1,3 +1,5 @@
+//remoteiq-minimal-e2e\backend\src\roles\permissions-introspect.service.ts
+
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { randomUUID } from "crypto";
 import { PgPoolService } from "../storage/pg-pool.service";

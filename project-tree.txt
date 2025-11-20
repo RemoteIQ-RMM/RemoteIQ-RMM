@@ -4,6 +4,28 @@ RemoteIQ V7 - Ticketing
 │       └── snyk_rules.instructions.md
 ├── .vscode
 │   └── settings.json
+├── database
+│   └── migrations
+│       ├── 20240101_redesign.sql
+│       ├── 20251106_add_localization_settings.sql
+│       ├── 20251106_add_user_profile_columns.sql
+│       ├── 20251106_align_agents_uuid_and_localization_id_to_text.sql
+│       ├── 20251106_backfill_agents_hostname_and_sync_localization.sql
+│       ├── 20251106_create_company_profile.sql
+│       ├── 20251106_create_dkim_settings.sql
+│       ├── 20251106_create_email_settings.sql
+│       ├── 20251106_create_support_legal.sql
+│       ├── 20251106_fix_agents_token_types_and_currency.sql
+│       ├── 20251106_fix_localization_columns_and_sync.sql
+│       ├── 20251106_fix_uuid_text_coalesce_and_localization_id.sql
+│       ├── 20251106_hotfix_agents_hostname_and_localization_language.sql
+│       ├── 20251107_add_admin_access_permission.sql
+│       ├── 20251107_all_in_one_migration_v3.sql
+│       └── 20251107_multi_destination_backups.sql
+├── docs
+│   ├── wiki
+│   │   └── remoteiq_rmm_wiki.md
+│   └── database_redesign_plan.md
 ├── remoteiq-frontend
 │   ├── .github
 │   │   └── instructions
@@ -16,157 +38,283 @@ RemoteIQ V7 - Ticketing
 │   │   │   │   └── plugins
 │   │   │   │       └── v7_windows_x86_64_0.107.1
 │   │   │   ├── webpack
+│   │   │   │   ├── client-development
+│   │   │   │   │   ├── 0.pack.gz
+│   │   │   │   │   ├── 1.pack.gz
+│   │   │   │   │   ├── 10.pack.gz
+│   │   │   │   │   ├── 11.pack.gz
+│   │   │   │   │   ├── 12.pack.gz
+│   │   │   │   │   ├── 2.pack.gz
+│   │   │   │   │   ├── 3.pack.gz
+│   │   │   │   │   ├── 4.pack.gz
+│   │   │   │   │   ├── 5.pack.gz
+│   │   │   │   │   ├── 6.pack.gz
+│   │   │   │   │   ├── 7.pack.gz
+│   │   │   │   │   ├── 8.pack.gz
+│   │   │   │   │   ├── 9.pack.gz
+│   │   │   │   │   ├── index.pack.gz
+│   │   │   │   │   └── index.pack.gz.old
 │   │   │   │   ├── client-production
 │   │   │   │   │   ├── 0.pack
 │   │   │   │   │   ├── 1.pack
+│   │   │   │   │   ├── 10.pack
+│   │   │   │   │   ├── 11.pack
+│   │   │   │   │   ├── 12.pack
+│   │   │   │   │   ├── 13.pack
+│   │   │   │   │   ├── 14.pack
+│   │   │   │   │   ├── 15.pack
+│   │   │   │   │   ├── 16.pack
+│   │   │   │   │   ├── 17.pack
 │   │   │   │   │   ├── 2.pack
+│   │   │   │   │   ├── 3.pack
+│   │   │   │   │   ├── 4.pack
+│   │   │   │   │   ├── 5.pack
+│   │   │   │   │   ├── 6.pack
+│   │   │   │   │   ├── 7.pack
+│   │   │   │   │   ├── 8.pack
+│   │   │   │   │   ├── 9.pack
 │   │   │   │   │   ├── index.pack
 │   │   │   │   │   └── index.pack.old
+│   │   │   │   ├── edge-server-development
+│   │   │   │   │   ├── 0.pack.gz
+│   │   │   │   │   └── index.pack.gz
 │   │   │   │   ├── edge-server-production
 │   │   │   │   │   ├── 0.pack
-│   │   │   │   │   └── index.pack
+│   │   │   │   │   ├── 1.pack
+│   │   │   │   │   ├── index.pack
+│   │   │   │   │   └── index.pack.old
+│   │   │   │   ├── server-development
+│   │   │   │   │   ├── 0.pack.gz
+│   │   │   │   │   ├── 1.pack.gz
+│   │   │   │   │   ├── 10.pack.gz
+│   │   │   │   │   ├── 11.pack.gz
+│   │   │   │   │   ├── 12.pack.gz
+│   │   │   │   │   ├── 13.pack.gz
+│   │   │   │   │   ├── 14.pack.gz
+│   │   │   │   │   ├── 2.pack.gz
+│   │   │   │   │   ├── 3.pack.gz
+│   │   │   │   │   ├── 4.pack.gz
+│   │   │   │   │   ├── 5.pack.gz
+│   │   │   │   │   ├── 6.pack.gz
+│   │   │   │   │   ├── 7.pack.gz
+│   │   │   │   │   ├── 8.pack.gz
+│   │   │   │   │   ├── 9.pack.gz
+│   │   │   │   │   ├── index.pack.gz
+│   │   │   │   │   └── index.pack.gz.old
 │   │   │   │   └── server-production
 │   │   │   │       ├── 0.pack
 │   │   │   │       ├── 1.pack
+│   │   │   │       ├── 10.pack
+│   │   │   │       ├── 11.pack
+│   │   │   │       ├── 12.pack
+│   │   │   │       ├── 13.pack
+│   │   │   │       ├── 14.pack
+│   │   │   │       ├── 15.pack
+│   │   │   │       ├── 16.pack
+│   │   │   │       ├── 2.pack
+│   │   │   │       ├── 3.pack
+│   │   │   │       ├── 4.pack
+│   │   │   │       ├── 5.pack
+│   │   │   │       ├── 6.pack
+│   │   │   │       ├── 7.pack
+│   │   │   │       ├── 8.pack
+│   │   │   │       ├── 9.pack
 │   │   │   │       ├── index.pack
 │   │   │   │       └── index.pack.old
 │   │   │   └── .tsbuildinfo
 │   │   ├── server
 │   │   │   ├── app
-│   │   │   │   ├── _not-found
-│   │   │   │   │   ├── page_client-reference-manifest.js
-│   │   │   │   │   ├── page.js
-│   │   │   │   │   └── page.js.nft.json
-│   │   │   │   ├── (auth)
-│   │   │   │   │   └── login
-│   │   │   │   │       ├── page_client-reference-manifest.js
-│   │   │   │   │       ├── page.js
-│   │   │   │   │       └── page.js.nft.json
-│   │   │   │   ├── (dashboard)
-│   │   │   │   │   ├── devices
-│   │   │   │   │   │   └── [deviceId]
-│   │   │   │   │   │       ├── page_client-reference-manifest.js
-│   │   │   │   │   │       ├── page.js
-│   │   │   │   │   │       └── page.js.nft.json
-│   │   │   │   │   ├── tickets
-│   │   │   │   │   │   ├── [id]
-│   │   │   │   │   │   │   ├── page_client-reference-manifest.js
-│   │   │   │   │   │   │   ├── page.js
-│   │   │   │   │   │   │   └── page.js.nft.json
-│   │   │   │   │   │   ├── page_client-reference-manifest.js
-│   │   │   │   │   │   ├── page.js
-│   │   │   │   │   │   └── page.js.nft.json
-│   │   │   │   │   ├── page_client-reference-manifest.js
-│   │   │   │   │   ├── page.js
-│   │   │   │   │   └── page.js.nft.json
-│   │   │   │   ├── account
-│   │   │   │   │   ├── page_client-reference-manifest.js
-│   │   │   │   │   ├── page.js
-│   │   │   │   │   └── page.js.nft.json
-│   │   │   │   ├── administration
-│   │   │   │   │   ├── page_client-reference-manifest.js
-│   │   │   │   │   ├── page.js
-│   │   │   │   │   └── page.js.nft.json
-│   │   │   │   ├── api
-│   │   │   │   │   └── roles
-│   │   │   │   │       ├── [id]
-│   │   │   │   │       │   ├── route.js
-│   │   │   │   │       │   └── route.js.nft.json
-│   │   │   │   │       ├── route.js
-│   │   │   │   │       └── route.js.nft.json
-│   │   │   │   ├── customers
-│   │   │   │   │   ├── page_client-reference-manifest.js
-│   │   │   │   │   ├── page.js
-│   │   │   │   │   └── page.js.nft.json
-│   │   │   │   ├── _not-found.html
-│   │   │   │   ├── _not-found.meta
-│   │   │   │   ├── _not-found.rsc
-│   │   │   │   ├── account.html
-│   │   │   │   ├── account.meta
-│   │   │   │   ├── account.rsc
-│   │   │   │   ├── administration.html
-│   │   │   │   ├── administration.meta
-│   │   │   │   ├── administration.rsc
-│   │   │   │   ├── customers.html
-│   │   │   │   ├── customers.meta
-│   │   │   │   ├── customers.rsc
-│   │   │   │   ├── index.html
-│   │   │   │   ├── index.meta
-│   │   │   │   ├── index.rsc
-│   │   │   │   ├── login.html
-│   │   │   │   ├── login.meta
-│   │   │   │   ├── login.rsc
-│   │   │   │   ├── tickets.html
-│   │   │   │   ├── tickets.meta
-│   │   │   │   └── tickets.rsc
-│   │   │   ├── chunks
-│   │   │   │   ├── 106.js
-│   │   │   │   ├── 1080.js
-│   │   │   │   ├── 118.js
-│   │   │   │   ├── 140.js
-│   │   │   │   ├── 1593.js
-│   │   │   │   ├── 2126.js
-│   │   │   │   ├── 2299.js
-│   │   │   │   ├── 2372.js
-│   │   │   │   ├── 2689.js
-│   │   │   │   ├── 2735.js
-│   │   │   │   ├── 2994.js
-│   │   │   │   ├── 3006.js
-│   │   │   │   ├── 3261.js
-│   │   │   │   ├── 3564.js
-│   │   │   │   ├── 3643.js
-│   │   │   │   ├── 3938.js
-│   │   │   │   ├── 4334.js
-│   │   │   │   ├── 4513.js
-│   │   │   │   ├── 4710.js
-│   │   │   │   ├── 4884.js
-│   │   │   │   ├── 4955.js
-│   │   │   │   ├── 5134.js
-│   │   │   │   ├── 5202.js
-│   │   │   │   ├── 5334.js
-│   │   │   │   ├── 579.js
-│   │   │   │   ├── 5924.js
-│   │   │   │   ├── 6096.js
-│   │   │   │   ├── 6452.js
-│   │   │   │   ├── 6457.js
-│   │   │   │   ├── 6697.js
-│   │   │   │   ├── 7099.js
-│   │   │   │   ├── 7181.js
-│   │   │   │   ├── 7599.js
-│   │   │   │   ├── 7644.js
-│   │   │   │   ├── 7670.js
-│   │   │   │   ├── 7892.js
-│   │   │   │   ├── 8057.js
-│   │   │   │   ├── 8193.js
-│   │   │   │   ├── 869.js
-│   │   │   │   ├── 9236.js
-│   │   │   │   ├── 9255.js
-│   │   │   │   ├── 9289.js
-│   │   │   │   ├── 9576.js
-│   │   │   │   ├── 9624.js
-│   │   │   │   ├── 9675.js
-│   │   │   │   ├── 9928.js
-│   │   │   │   └── font-manifest.json
-│   │   │   ├── pages
-│   │   │   │   ├── _app.js
-│   │   │   │   ├── _app.js.nft.json
-│   │   │   │   ├── _document.js
-│   │   │   │   ├── _document.js.nft.json
-│   │   │   │   ├── _error.js
-│   │   │   │   ├── _error.js.nft.json
-│   │   │   │   ├── 404.html
-│   │   │   │   └── 500.html
+│   │   │   │   └── administration
+│   │   │   │       ├── page_client-reference-manifest.js
+│   │   │   │       └── page.js
+│   │   │   ├── static
+│   │   │   │   └── webpack
+│   │   │   │       └── 633457081244afec._.hot-update.json
+│   │   │   ├── vendor-chunks
+│   │   │   │   ├── @fast-csv+format@4.3.5.js
+│   │   │   │   ├── @fast-csv+parse@4.3.6.js
+│   │   │   │   ├── @floating-ui+core@1.7.3.js
+│   │   │   │   ├── @floating-ui+dom@1.7.4.js
+│   │   │   │   ├── @floating-ui+react-dom@2.1._1a6969d9696ce3027956022ac05595d3.js
+│   │   │   │   ├── @floating-ui+utils@0.2.10.js
+│   │   │   │   ├── @radix-ui+number@1.1.1.js
+│   │   │   │   ├── @radix-ui+primitive@1.1.3.js
+│   │   │   │   ├── @radix-ui+react-alert-dialo_e4a06c1039054a9cf9a82b7bee024181.js
+│   │   │   │   ├── @radix-ui+react-arrow@1.1.7_4d58ba3e2702f94caf3c60eca90fd0cc.js
+│   │   │   │   ├── @radix-ui+react-avatar@1.1._22f9c136f41b0542f439b2f601850f19.js
+│   │   │   │   ├── @radix-ui+react-checkbox@1._54bc7ee7fc50b405da23f1cc6b3c7ad2.js
+│   │   │   │   ├── @radix-ui+react-collection@_48dd8f13ab85ddfe77f46e824ed5382c.js
+│   │   │   │   ├── @radix-ui+react-compose-ref_4013d5209276ff6f3c6e1d247fd9cedd.js
+│   │   │   │   ├── @radix-ui+react-context@1.1_5e5670e0a5a98323b7edbca458b4475f.js
+│   │   │   │   ├── @radix-ui+react-dialog@1.1._2f5b775437a597e5f0cf886249bf21a4.js
+│   │   │   │   ├── @radix-ui+react-direction@1_2fc0f7cb7a871c7cb6f69b4be725e634.js
+│   │   │   │   ├── @radix-ui+react-dismissable_87168320df4bee82a627095b19dc9928.js
+│   │   │   │   ├── @radix-ui+react-dropdown-me_8b74605ea1d1dc0c3d448a1c25cd9429.js
+│   │   │   │   ├── @radix-ui+react-focus-guard_8c1729681fe0176c50d92c8a2d7e4eba.js
+│   │   │   │   ├── @radix-ui+react-focus-scope_2c1ff00ca9c2b0a1bde5c9aad09be1b1.js
+│   │   │   │   ├── @radix-ui+react-id@1.1.1_@t_a367aa43e5bc864c7c6916dbf5b68b4e.js
+│   │   │   │   ├── @radix-ui+react-label@2.1.7_7bb76e37a91d965444aab67002d1f1bb.js
+│   │   │   │   ├── @radix-ui+react-menu@2.1.16_dd154992919da7a6fb1484ca5173e61a.js
+│   │   │   │   ├── @radix-ui+react-popper@1.2._ad3ab98e03ca7abab3ebef01edb8f294.js
+│   │   │   │   ├── @radix-ui+react-portal@1.1._f6aef84a482d5261da8358576e9775bb.js
+│   │   │   │   ├── @radix-ui+react-presence@1._e88d962b754ad591a5d78ea7d4a2ac8e.js
+│   │   │   │   ├── @radix-ui+react-primitive@2_3ca00c97fe101d9faa1e99772cb2bdb5.js
+│   │   │   │   ├── @radix-ui+react-radio-group_4af5a7f2df04139e2ba55d88c7059276.js
+│   │   │   │   ├── @radix-ui+react-roving-focu_274ae6cd99cc70063927169daec93824.js
+│   │   │   │   ├── @radix-ui+react-select@2.2._1d767e82d050f7dccc4669c20879ea0a.js
+│   │   │   │   ├── @radix-ui+react-separator@1_361f19fe4d232267835fe82b0b78087f.js
+│   │   │   │   ├── @radix-ui+react-slider@1.3._ce5efbae9dfc6849d3776114bcaf80bd.js
+│   │   │   │   ├── @radix-ui+react-slot@1.2.3__a45c8df6914d2140194f1fba34b6bb03.js
+│   │   │   │   ├── @radix-ui+react-switch@1.2._974c4d701df55d64089eac191c1a54e3.js
+│   │   │   │   ├── @radix-ui+react-tabs@1.1.13_fe7f937f10a90b94b28ab489e9ed19f1.js
+│   │   │   │   ├── @radix-ui+react-toast@1.2.1_263dedb8914a01d4fa9d01f4c5010bab.js
+│   │   │   │   ├── @radix-ui+react-tooltip@1.2_1e18f529e11ce4037c8d4b86756670b0.js
+│   │   │   │   ├── @radix-ui+react-use-callbac_feee0662deed54de811d1c99620ee38d.js
+│   │   │   │   ├── @radix-ui+react-use-control_6d92436909861eb339bcc20c128fa942.js
+│   │   │   │   ├── @radix-ui+react-use-effect-_16639801a80b79dbb04bba7ed0a5267c.js
+│   │   │   │   ├── @radix-ui+react-use-escape-_46a8b48f4695b2e78c4ad2bfe812e60d.js
+│   │   │   │   ├── @radix-ui+react-use-is-hydr_d21cf20c15855c55040359d14859999c.js
+│   │   │   │   ├── @radix-ui+react-use-layout-_a6372dc935d498b45d326a06f6fe4587.js
+│   │   │   │   ├── @radix-ui+react-use-previou_6858d5a9bc93644b616ce392dc73eeae.js
+│   │   │   │   ├── @radix-ui+react-use-size@1._17fd49070cd2adddb5515f37aa9e0a9b.js
+│   │   │   │   ├── @radix-ui+react-visually-hi_a2bde26f3d37355e302079dfde405b62.js
+│   │   │   │   ├── @swc+helpers@0.5.11.js
+│   │   │   │   ├── @tanstack+react-virtual@3.1_9de45bc18521b41e1429eb9ecda89e2f.js
+│   │   │   │   ├── @tanstack+virtual-core@3.13.12.js
+│   │   │   │   ├── archiver-utils@2.1.0.js
+│   │   │   │   ├── archiver-utils@3.0.4.js
+│   │   │   │   ├── archiver@5.3.2.js
+│   │   │   │   ├── aria-hidden@1.2.6.js
+│   │   │   │   ├── async@3.2.6.js
+│   │   │   │   ├── balanced-match@1.0.2.js
+│   │   │   │   ├── big-integer@1.6.52.js
+│   │   │   │   ├── binary@0.3.0.js
+│   │   │   │   ├── bl@4.1.0.js
+│   │   │   │   ├── bluebird@3.4.7.js
+│   │   │   │   ├── brace-expansion@1.1.12.js
+│   │   │   │   ├── brace-expansion@2.0.2.js
+│   │   │   │   ├── buffer-crc32@0.2.13.js
+│   │   │   │   ├── buffer-indexof-polyfill@1.0.2.js
+│   │   │   │   ├── buffers@0.1.1.js
+│   │   │   │   ├── chainsaw@0.1.0.js
+│   │   │   │   ├── class-variance-authority@0.7.1.js
+│   │   │   │   ├── clsx@2.1.1.js
+│   │   │   │   ├── compress-commons@4.1.2.js
+│   │   │   │   ├── concat-map@0.0.1.js
+│   │   │   │   ├── core-util-is@1.0.3.js
+│   │   │   │   ├── crc-32@1.2.2.js
+│   │   │   │   ├── crc32-stream@4.0.3.js
+│   │   │   │   ├── dayjs@1.11.18.js
+│   │   │   │   ├── duplexer2@0.1.4.js
+│   │   │   │   ├── end-of-stream@1.4.5.js
+│   │   │   │   ├── exceljs@4.4.0.js
+│   │   │   │   ├── fast-csv@4.3.6.js
+│   │   │   │   ├── fs-constants@1.0.0.js
+│   │   │   │   ├── fs.realpath@1.0.0.js
+│   │   │   │   ├── fstream@1.0.12.js
+│   │   │   │   ├── get-nonce@1.0.1.js
+│   │   │   │   ├── glob@7.2.3.js
+│   │   │   │   ├── graceful-fs@4.2.11.js
+│   │   │   │   ├── immediate@3.0.6.js
+│   │   │   │   ├── inflight@1.0.6.js
+│   │   │   │   ├── inherits@2.0.4.js
+│   │   │   │   ├── isarray@1.0.0.js
+│   │   │   │   ├── jszip@3.10.1.js
+│   │   │   │   ├── lazystream@1.0.1.js
+│   │   │   │   ├── lie@3.3.0.js
+│   │   │   │   ├── listenercount@1.0.1.js
+│   │   │   │   ├── lodash.defaults@4.2.0.js
+│   │   │   │   ├── lodash.difference@4.5.0.js
+│   │   │   │   ├── lodash.escaperegexp@4.1.2.js
+│   │   │   │   ├── lodash.flatten@4.4.0.js
+│   │   │   │   ├── lodash.groupby@4.6.0.js
+│   │   │   │   ├── lodash.isboolean@3.0.3.js
+│   │   │   │   ├── lodash.isequal@4.5.0.js
+│   │   │   │   ├── lodash.isfunction@3.0.9.js
+│   │   │   │   ├── lodash.isnil@4.0.0.js
+│   │   │   │   ├── lodash.isplainobject@4.0.6.js
+│   │   │   │   ├── lodash.isundefined@3.0.1.js
+│   │   │   │   ├── lodash.union@4.6.0.js
+│   │   │   │   ├── lodash.uniq@4.5.0.js
+│   │   │   │   ├── lucide-react@0.395.0_react@19.0.0-rc-f994737d14-20240522.js
+│   │   │   │   ├── minimatch@3.1.2.js
+│   │   │   │   ├── minimatch@5.1.6.js
+│   │   │   │   ├── mkdirp@0.5.6.js
+│   │   │   │   ├── next-themes@0.3.0_react-dom_14fc507d52bddfcad2839d615785f7af.js
+│   │   │   │   ├── next@15.0.0-rc.0_@babel+cor_fb7c7a1d5707450811d584030ad04619.js
+│   │   │   │   ├── normalize-path@3.0.0.js
+│   │   │   │   ├── once@1.4.0.js
+│   │   │   │   ├── pako@1.0.11.js
+│   │   │   │   ├── path-is-absolute@1.0.1.js
+│   │   │   │   ├── process-nextick-args@2.0.1.js
+│   │   │   │   ├── react-remove-scroll-bar@2.3_28ac17a1a161ed19e731bf99fbb67d90.js
+│   │   │   │   ├── react-remove-scroll@2.7.1_@_fab29d96239f742234cd221a7f9d441d.js
+│   │   │   │   ├── react-style-singleton@2.2.3_c74f9f056135dd5605c55827fa90ddc7.js
+│   │   │   │   ├── readable-stream@2.3.8.js
+│   │   │   │   ├── readable-stream@3.6.2.js
+│   │   │   │   ├── readdir-glob@1.1.3.js
+│   │   │   │   ├── rimraf@2.7.1.js
+│   │   │   │   ├── safe-buffer@5.1.2.js
+│   │   │   │   ├── safe-buffer@5.2.1.js
+│   │   │   │   ├── saxes@5.0.1.js
+│   │   │   │   ├── string_decoder@1.1.1.js
+│   │   │   │   ├── string_decoder@1.3.0.js
+│   │   │   │   ├── tailwind-merge@2.6.0.js
+│   │   │   │   ├── tar-stream@2.2.0.js
+│   │   │   │   ├── tmp@0.2.5.js
+│   │   │   │   ├── traverse@0.3.9.js
+│   │   │   │   ├── tslib@2.8.1.js
+│   │   │   │   ├── unzipper@0.10.14.js
+│   │   │   │   ├── use-callback-ref@1.3.3_@typ_bf29cb40d1b65aa5d46a5dee9184d60f.js
+│   │   │   │   ├── use-sidecar@1.1.3_@types+re_9921a567ddc00d00abd875723bc8b472.js
+│   │   │   │   ├── use-sync-external-store@1.6_4bb5cd99cb56cb223f7a9115e62c5afe.js
+│   │   │   │   ├── util-deprecate@1.0.2.js
+│   │   │   │   ├── uuid@8.3.2.js
+│   │   │   │   ├── wrappy@1.0.2.js
+│   │   │   │   ├── xmlchars@2.2.0.js
+│   │   │   │   └── zip-stream@4.1.1.js
+│   │   │   ├── _ssr_app_account_tabs_SessionsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_AgentsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_ApiTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_AuditLogsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_BackupsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_BillingTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_BrandingTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_ClientPortalTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_CompanyTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_ComplianceTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_CustomFieldsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_DatabaseTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_FlagsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_ImportExportTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_IntegrationsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_InvoicesTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_LocalizationTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_MigrationsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_NotificationsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_ReportsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_RolesMatrixTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_RolesTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_SecretsTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_SecurityPoliciesTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_SlaTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_SmtpTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_SsoTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_StorageTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_SubscriptionTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_SupportTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_SystemTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_TemplatesTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_TicketingTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_UsersTab_tsx.js
+│   │   │   ├── _ssr_app_administration_tabs_WorkflowsTab_tsx.js
 │   │   │   ├── app-paths-manifest.json
 │   │   │   ├── edge-runtime-webpack.js
-│   │   │   ├── edge-runtime-webpack.js.map
-│   │   │   ├── font-manifest.json
-│   │   │   ├── functions-config-manifest.json
 │   │   │   ├── interception-route-rewrite-manifest.js
 │   │   │   ├── middleware-build-manifest.js
 │   │   │   ├── middleware-manifest.json
 │   │   │   ├── middleware-react-loadable-manifest.js
 │   │   │   ├── middleware.js
-│   │   │   ├── middleware.js.map
 │   │   │   ├── next-font-manifest.js
 │   │   │   ├── next-font-manifest.json
 │   │   │   ├── pages-manifest.json
@@ -174,166 +322,82 @@ RemoteIQ V7 - Ticketing
 │   │   │   ├── server-reference-manifest.json
 │   │   │   └── webpack-runtime.js
 │   │   ├── static
-│   │   │   ├── -Aw1_eRkmPb3v1Mudngjw
-│   │   │   │   ├── _buildManifest.js
-│   │   │   │   └── _ssgManifest.js
 │   │   │   ├── chunks
 │   │   │   │   ├── app
-│   │   │   │   │   ├── _not-found
-│   │   │   │   │   │   └── page-69231940db771df0.js
-│   │   │   │   │   ├── (auth)
-│   │   │   │   │   │   └── login
-│   │   │   │   │   │       └── page-f6e4609d466ac57a.js
-│   │   │   │   │   ├── (dashboard)
-│   │   │   │   │   │   ├── devices
-│   │   │   │   │   │   │   └── [deviceId]
-│   │   │   │   │   │   │       └── page-362a57b8c59d94ed.js
-│   │   │   │   │   │   ├── tickets
-│   │   │   │   │   │   │   ├── [id]
-│   │   │   │   │   │   │   │   └── page-bd802e68551851ba.js
-│   │   │   │   │   │   │   └── page-c31402491bfcf3c8.js
-│   │   │   │   │   │   ├── layout-bcd293796063e4de.js
-│   │   │   │   │   │   └── page-5e2f159051ce7971.js
-│   │   │   │   │   ├── account
-│   │   │   │   │   │   ├── layout-81e0457a225ed8d8.js
-│   │   │   │   │   │   └── page-450375f3db6350a3.js
 │   │   │   │   │   ├── administration
-│   │   │   │   │   │   ├── layout-cf5a4a6e87d77d2a.js
-│   │   │   │   │   │   └── page-5e10ca973b2ce28c.js
-│   │   │   │   │   ├── customers
-│   │   │   │   │   │   ├── layout-a24095ba64416e0d.js
-│   │   │   │   │   │   └── page-0c6b9eaf7d665abd.js
-│   │   │   │   │   └── layout-7fc97e3f2febfbe8.js
-│   │   │   │   ├── pages
-│   │   │   │   │   ├── _app-31cb04d632b05a93.js
-│   │   │   │   │   └── _error-2bac1289b58c1969.js
-│   │   │   │   ├── 1207.9ef40dff86740402.js
-│   │   │   │   ├── 1246.a77b9597e0f44b15.js
-│   │   │   │   ├── 1450.3ca509122a7fc394.js
-│   │   │   │   ├── 1677-a06fefc99e6d005c.js
-│   │   │   │   ├── 1929-3629cef115187bc0.js
-│   │   │   │   ├── 210f6791.224816c2a51b15e4.js
-│   │   │   │   ├── 2128.9aa1520085b262e7.js
-│   │   │   │   ├── 2144-dd2c908e3df281a8.js
-│   │   │   │   ├── 2228-f56942a9d37b1080.js
-│   │   │   │   ├── 2264.ff48c283b85520b6.js
-│   │   │   │   ├── 2339-d4649a60d769b930.js
-│   │   │   │   ├── 2433.f47b916770d95d5b.js
-│   │   │   │   ├── 255.72e6f0ae032a18d5.js
-│   │   │   │   ├── 2786-5550d4edbb008428.js
-│   │   │   │   ├── 2787-269a538a31a96eb8.js
-│   │   │   │   ├── 2901-2936e7c9cc61b377.js
-│   │   │   │   ├── 3047.3191446ca4593ab3.js
-│   │   │   │   ├── 3208.15204fd83ad864f7.js
-│   │   │   │   ├── 3286.aa825340013f80f0.js
-│   │   │   │   ├── 3800.3e7cdf9d0364002a.js
-│   │   │   │   ├── 4355.6a1042556d0651a4.js
-│   │   │   │   ├── 4504-31056502ed52753a.js
-│   │   │   │   ├── 4696.b18ac39725f6948d.js
-│   │   │   │   ├── 4715.6a2c6209ad0b5980.js
-│   │   │   │   ├── 4790.3f529d4d972a2429.js
-│   │   │   │   ├── 4860-5ea87b162a8d2d22.js
-│   │   │   │   ├── 4883.454f4b7f9b2f009e.js
-│   │   │   │   ├── 4902.b1daef6eff1ff9b0.js
-│   │   │   │   ├── 5113-85c39f2620620968.js
-│   │   │   │   ├── 5158-a3dd1721c67cb128.js
-│   │   │   │   ├── 521.b227f3ec96545621.js
-│   │   │   │   ├── 5393-2859726fd6ecd7f3.js
-│   │   │   │   ├── 5409.3791e6b3ddaa25ea.js
-│   │   │   │   ├── 5436-23aab017252ea104.js
-│   │   │   │   ├── 5442-b14a8c0f2f9cf786.js
-│   │   │   │   ├── 5559-381919ea95716498.js
-│   │   │   │   ├── 5816.2feb1a61361cfd92.js
-│   │   │   │   ├── 5941.8cf9dd47d446b011.js
-│   │   │   │   ├── 6238.3dfaec608c7e7e9d.js
-│   │   │   │   ├── 656.de37f0113c026960.js
-│   │   │   │   ├── 6609.e76cb6ba49e53a56.js
-│   │   │   │   ├── 6684-3145238196d10dd7.js
-│   │   │   │   ├── 672.2ed884b03e959f1f.js
-│   │   │   │   ├── 6890.b317dc39eec7fc90.js
-│   │   │   │   ├── 6897.c1ded17ebb627ac2.js
-│   │   │   │   ├── 6935-185afed7ddc17b6f.js
-│   │   │   │   ├── 6e47441d-a68d85a1e1508ab7.js
-│   │   │   │   ├── 7061-3c55d734f3d55ef5.js
-│   │   │   │   ├── 7091-f38efe3627c2dc4b.js
-│   │   │   │   ├── 7106.5535dfa883d39219.js
-│   │   │   │   ├── 7198-6fafdace2d9d3870.js
-│   │   │   │   ├── 7321.d197a65944d0dbfb.js
-│   │   │   │   ├── 7468.84016334c34ef2a8.js
-│   │   │   │   ├── 758.c5783b412a27e44d.js
-│   │   │   │   ├── 7640.98b735603877f4db.js
-│   │   │   │   ├── 7820.330bc98c6c0085d1.js
-│   │   │   │   ├── 7981-872a7b6edad2055b.js
-│   │   │   │   ├── 8.201db37b49f6ce16.js
-│   │   │   │   ├── 809-c5d6e03d2073e2f6.js
-│   │   │   │   ├── 8720-5d2c04ed077ed5d7.js
-│   │   │   │   ├── 9052.8114d27580156468.js
-│   │   │   │   ├── 9258.3c9079cfa636be0d.js
-│   │   │   │   ├── 9341.1324bb134c005e57.js
-│   │   │   │   ├── 944.a25793d5eff4514a.js
-│   │   │   │   ├── 9656.6c602562f4ac5075.js
-│   │   │   │   ├── 9862-d3e935890da87f86.js
-│   │   │   │   ├── 9940.01df02613ac0c919.js
-│   │   │   │   ├── framework-ada01bc056db6321.js
-│   │   │   │   ├── main-a7fb3eb18e885b33.js
-│   │   │   │   ├── main-app-67a1760a9a12cc24.js
-│   │   │   │   ├── polyfills-78c92fac7aa8fdd8.js
-│   │   │   │   └── webpack-036d6cf70ea131e4.js
+│   │   │   │   │   │   ├── layout.js
+│   │   │   │   │   │   └── page.js
+│   │   │   │   │   └── layout.js
+│   │   │   │   ├── _app-pages-browser_app_account_tabs_SessionsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_AgentsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_ApiTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_AuditLogsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_BackupsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_BillingTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_BrandingTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_ClientPortalTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_CompanyTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_ComplianceTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_CustomFieldsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_DatabaseTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_FlagsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_ImportExportTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_IntegrationsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_InvoicesTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_LocalizationTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_MigrationsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_NotificationsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_ReportsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_RolesMatrixTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_RolesTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_SecretsTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_SecurityPoliciesTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_SlaTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_SmtpTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_SsoTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_StorageTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_SubscriptionTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_SupportTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_SystemTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_TemplatesTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_TicketingTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_UsersTab_tsx.js
+│   │   │   │   ├── _app-pages-browser_app_administration_tabs_WorkflowsTab_tsx.js
+│   │   │   │   ├── app-pages-internals.js
+│   │   │   │   ├── main-app.js
+│   │   │   │   ├── polyfills.js
+│   │   │   │   └── webpack.js
 │   │   │   ├── css
-│   │   │   │   ├── b5224e0803f3f3e9.css
-│   │   │   │   └── e9f989f02c269104.css
-│   │   │   └── media
-│   │   │       ├── 19cfc7226ec3afaa-s.woff2
-│   │   │       ├── 21350d82a1f187e9-s.woff2
-│   │   │       ├── 8e9860b6e62d6359-s.woff2
-│   │   │       ├── ba9851c3c22cd980-s.woff2
-│   │   │       ├── c5fe6dc8356a8c31-s.woff2
-│   │   │       ├── df0a9ae256c0569c-s.woff2
-│   │   │       └── e4af272ccee01ff0-s.p.woff2
+│   │   │   │   └── app
+│   │   │   │       └── layout.css
+│   │   │   ├── development
+│   │   │   │   ├── _buildManifest.js
+│   │   │   │   └── _ssgManifest.js
+│   │   │   ├── media
+│   │   │   │   ├── 19cfc7226ec3afaa-s.woff2
+│   │   │   │   ├── 21350d82a1f187e9-s.woff2
+│   │   │   │   ├── 8e9860b6e62d6359-s.woff2
+│   │   │   │   ├── ba9851c3c22cd980-s.woff2
+│   │   │   │   ├── c5fe6dc8356a8c31-s.woff2
+│   │   │   │   ├── df0a9ae256c0569c-s.woff2
+│   │   │   │   └── e4af272ccee01ff0-s.p.woff2
+│   │   │   └── webpack
+│   │   │       ├── app
+│   │   │       │   └── layout.527e8cad40f7ef98.hot-update.js
+│   │   │       ├── 527e8cad40f7ef98.webpack.hot-update.json
+│   │   │       ├── 633457081244afec._.hot-update.json
+│   │   │       └── webpack.527e8cad40f7ef98.hot-update.js
 │   │   ├── types
 │   │   │   ├── app
-│   │   │   │   ├── (auth)
-│   │   │   │   │   └── login
-│   │   │   │   │       └── page.ts
-│   │   │   │   ├── (dashboard)
-│   │   │   │   │   ├── devices
-│   │   │   │   │   │   └── [deviceId]
-│   │   │   │   │   │       └── page.ts
-│   │   │   │   │   ├── tickets
-│   │   │   │   │   │   ├── [id]
-│   │   │   │   │   │   │   └── page.ts
-│   │   │   │   │   │   └── page.ts
-│   │   │   │   │   ├── layout.ts
-│   │   │   │   │   └── page.ts
-│   │   │   │   ├── account
-│   │   │   │   │   ├── layout.ts
-│   │   │   │   │   └── page.ts
 │   │   │   │   ├── administration
 │   │   │   │   │   ├── layout.ts
 │   │   │   │   │   └── page.ts
-│   │   │   │   ├── api
-│   │   │   │   │   └── roles
-│   │   │   │   │       ├── [id]
-│   │   │   │   │       │   └── route.ts
-│   │   │   │   │       └── route.ts
-│   │   │   │   └── customers
-│   │   │   │       ├── layout.ts
-│   │   │   │       └── page.ts
+│   │   │   │   └── layout.ts
 │   │   │   └── package.json
 │   │   ├── app-build-manifest.json
-│   │   ├── app-path-routes-manifest.json
-│   │   ├── BUILD_ID
 │   │   ├── build-manifest.json
-│   │   ├── export-marker.json
-│   │   ├── images-manifest.json
-│   │   ├── next-minimal-server.js.nft.json
-│   │   ├── next-server.js.nft.json
 │   │   ├── package.json
-│   │   ├── prerender-manifest.js
-│   │   ├── prerender-manifest.json
 │   │   ├── react-loadable-manifest.json
-│   │   ├── required-server-files.json
-│   │   ├── routes-manifest.json
 │   │   └── trace
 │   ├── .vscode
 │   │   └── settings.json
@@ -405,6 +469,7 @@ RemoteIQ V7 - Ticketing
 │   │   │   │   ├── TicketingTab.tsx
 │   │   │   │   ├── UsersTab.tsx
 │   │   │   │   └── WorkflowsTab.tsx
+│   │   │   ├── AdminGate.tsx
 │   │   │   ├── helpers.tsx
 │   │   │   ├── layout.tsx
 │   │   │   ├── page.tsx
@@ -684,22 +749,10 @@ RemoteIQ V7 - Ticketing
 │   │           ├── README.md
 │   │           └── RemoteIQ.Agent.csproj
 │   ├── backend
+│   │   ├── _audit
+│   │   │   └── profile-vs-admin-review.md
 │   │   ├── config
 │   │   │   └── database.json
-│   │   ├── migrations
-│   │   │   ├── 001_users_passwords.sql
-│   │   │   ├── 20251019_keep_current_model.sql
-│   │   │   ├── 20251019_roles_companion_meta.sql
-│   │   │   ├── 20251020_imap_ingest.sql
-│   │   │   ├── 20251105_backups_worker.sql
-│   │   │   ├── 20251105_backups.sql
-│   │   │   ├── 20251106_permissions_schema.sql
-│   │   │   ├── 20251106_permissions_seed.sql
-│   │   │   ├── XXXX_add_users_roles.sql
-│   │   │   ├── XXXX_create_localization.sql
-│   │   │   ├── XXXX_create_support_legal.sql
-│   │   │   ├── XXXX_roles_enhancements.sql
-│   │   │   └── XXXX_users_harden_ids.sql
 │   │   ├── prisma
 │   │   │   ├── migrations
 │   │   │   │   ├── 20251015193705_init
@@ -721,6 +774,15 @@ RemoteIQ V7 - Ticketing
 │   │   │       ├── 1761077738293_logo.png
 │   │   │       ├── 1761078203776_logo.ico
 │   │   │       ├── 1761078255262_avatar.png
+│   │   │       ├── 1762484813791_avatar.png
+│   │   │       ├── 1762537358841_logo.png
+│   │   │       ├── 1762537363565_logo.png
+│   │   │       ├── 1762537378362_favicon.ico
+│   │   │       ├── 1762539156184_logo.png
+│   │   │       ├── 1762539197180_favicon.ico
+│   │   │       ├── 1762540339911_logo.png
+│   │   │       ├── 1762540394496_logo.png
+│   │   │       ├── 1762540411921_favicon.ico
 │   │   │       └── avatar-placeholder.png
 │   │   ├── src
 │   │   │   ├── admin
@@ -772,7 +834,6 @@ RemoteIQ V7 - Ticketing
 │   │   │   │   ├── notifier.service.ts
 │   │   │   │   ├── scheduler.service.ts
 │   │   │   │   ├── storage-clients.ts
-│   │   │   │   ├── storage-connections-lite.controller.ts
 │   │   │   │   └── worker.service.ts
 │   │   │   ├── branding
 │   │   │   │   ├── dto
@@ -872,8 +933,13 @@ RemoteIQ V7 - Ticketing
 │   │   │   │   ├── smtp.service.ts
 │   │   │   │   └── smtp.storage.ts
 │   │   │   ├── storage
+│   │   │   │   ├── connection-import.util.ts
+│   │   │   │   ├── organization-context.service.ts
 │   │   │   │   ├── pg-pool.service.ts
 │   │   │   │   ├── pg.bootstrap.ts
+│   │   │   │   ├── storage-connections.service.ts
+│   │   │   │   ├── storage-import.controller.ts
+│   │   │   │   ├── storage.controller.ts
 │   │   │   │   └── storage.module.ts
 │   │   │   ├── support
 │   │   │   │   ├── support.controller.ts
@@ -915,8 +981,21 @@ RemoteIQ V7 - Ticketing
 │   │   │   └── main.ts
 │   │   ├── tools
 │   │   │   └── remoteiq-sanity.ps1
+│   │   ├── types
+│   │   │   ├── express
+│   │   │   │   └── index.d.ts
+│   │   │   └── node
+│   │   │       └── index.d.ts
 │   │   ├── .env
 │   │   ├── .env.example
+│   │   ├── audit_user_admin_profile.md
+│   │   ├── audit-phone.ps1
+│   │   ├── Auth_WhoAmI_Diagnostics.txt
+│   │   ├── bootstrap-perms-bundle.txt
+│   │   ├── collect-auth-whoami-bundle.ps1
+│   │   ├── collect-bootstrap-perms-bundle.ps1
+│   │   ├── collect-roles-bundle.ps1
+│   │   ├── collect-user-admin-profile-audit.ps1
 │   │   ├── cookies.txt
 │   │   ├── db-inspect.txt
 │   │   ├── Disable-User2FA.ps1
@@ -925,6 +1004,7 @@ RemoteIQ V7 - Ticketing
 │   │   ├── Inspect-PostgresSchema.ps1
 │   │   ├── nest-cli.json
 │   │   ├── package.json
+│   │   ├── phone_audit_report.txt
 │   │   ├── pnpm-lock.yaml
 │   │   ├── pnpm-workspace.yaml
 │   │   ├── postman_collection.json
@@ -932,6 +1012,7 @@ RemoteIQ V7 - Ticketing
 │   │   ├── RemoteIQ_Tickets_Backend_20251102-222533.txt
 │   │   ├── remoteiq-2fa-recovery-codes.txt
 │   │   ├── remoteiq-2fa.png
+│   │   ├── roles_debug_bundle.txt
 │   │   ├── test-smtp.ps1
 │   │   ├── tsconfig.build.json
 │   │   ├── tsconfig.json
@@ -942,30 +1023,32 @@ RemoteIQ V7 - Ticketing
 │   ├── global.json
 │   ├── pnpm-lock.yaml
 │   └── remoteiq-minimal-e2e.sln
-├── RMM Docs
-│   ├── RemoteIQ_Backend_Master_Spec.docx
-│   ├── RemoteIQ_Frontend_Master_Spec_NoLogo.docx
-│   ├── RemoteIQ_Frontend_Master_Spec_UPDATED_vNext.docx
-│   ├── RemoteIQ_Master_Orchestration_Prompt_UPDATED_vNext.docx
-│   ├── RemoteIQ_Master_Orchestration_Prompt.docx
-│   ├── RemoteIQ_Roadmap_Readme_ChatGPT_v2.docx
-│   ├── RemoteIQ_Roadmap_Readme_Gemini.docx
-│   └── RemoteIQ_Roadmap_Readme_UPDATED_vNext.docx
 ├── scripts
 │   ├── package-remoteiq.ps1
 │   └── update-agent.ps1
 ├── .gitignore
+├── admin-permissions-bundle_20251107-114656.txt
+├── bundle-permissions.ps1
+├── Collect-Branding.ps1
 ├── Collect-Checks-Files.ps1
 ├── collect-remoteiq-bundle.ps1
+├── collect-remoteiq-storage-debug.ps1
 ├── Directory.Packages.props
 ├── dump-ws-auth-files.ps1
+├── export-admin-permissions-bundle.ps1
+├── Export-PermissionsBundle.ps1
 ├── export-remoteiq-context.ps1
 ├── global.json
 ├── package.json
 ├── package.manifest.json
+├── permission_catalog_bundle.txt
+├── permissions_review_bundle.txt
 ├── pnpm-lock.yaml
 ├── README.md
+├── RemoteIQ Branding Bundle.md
 ├── remoteiq_export.txt
+├── remoteiq_full.sql
+├── RemoteIQ_storage_backup_debug.txt
 ├── RemoteIQ.sln
 ├── riq-support.txt
 └── Write-ProjectTree.ps1

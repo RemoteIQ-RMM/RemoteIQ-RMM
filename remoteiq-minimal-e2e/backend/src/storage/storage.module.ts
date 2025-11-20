@@ -1,4 +1,4 @@
-//backend\src\storage\storage.module.ts
+// backend/src/storage/storage.module.ts
 
 import { Module } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
@@ -8,9 +8,10 @@ import { OrganizationContextService } from "./organization-context.service";
 import { PgPoolService } from "./pg-pool.service";
 import { StorageConnectionsService } from "./storage-connections.service";
 import { StorageController } from "./storage.controller";
+import { StorageImportController } from "./storage-import.controller";
 
 @Module({
-    controllers: [StorageController],
+    controllers: [StorageController, StorageImportController],
     providers: [
         PgPoolService,
         PgBootstrap,

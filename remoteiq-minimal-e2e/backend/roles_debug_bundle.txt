@@ -1,0 +1,712 @@
+RemoteIQ Roles Diagnostics Bundle
+Generated: 2025-11-06 18:22:24 -05:00
+Working Directory (Root): C:\Users\Last Stop\Documents\Programming Projects\RemoteIQ V7 - Ticketing\remoteiq-minimal-e2e\backend
+
+
+# CORE ROLE FILES
+# ---------------
+
+## FILE: src/roles/roles.service.ts
+
+Path: src/roles/roles.service.ts
+Size: 8568 bytes
+SHA256: 5A7DA2FE342C0163477AB287083E38CDBC0BC946DDFD25C99FE74ED7D743A468
+----- BEGIN CONTENT -----
+     1: import {
+     2:     Injectable,
+     3:     BadRequestException,
+     4:     NotFoundException,
+     5:     ConflictException,
+     6: } from '@nestjs/common';
+     7: import { PgPoolService } from '../storage/pg-pool.service';
+     8: import { OrganizationContextService } from '../storage/organization-context.service';
+     9: import { ALL_PERMISSIONS, Permission } from '../auth/policy';
+    10: 
+    11: export type RoleDto = {
+    12:     id: string;
+    13:     name: string;
+    14:     description?: string;
+    15:     permissions: string[];
+    16:     usersCount: number;
+    17:     createdAt: string;
+    18:     updatedAt: string;
+    19: };
+    20: 
+    21: export type CreateRoleDto = {
+    22:     name: string;
+    23:     description?: string;
+    24:     permissions?: string[];
+    25: };
+    26: 
+    27: export type UpdateRoleDto = Partial<{
+    28:     name: string;
+    29:     description: string | null;
+    30:     permissions: string[]; // full replace
+    31: }>;
+    32: 
+    33: const PROTECTED_NAMES = new Set(['owner', 'admin']);
+    34: const FULL_LOCK_NAME = 'owner';
+    35: const VALID_PERMISSIONS = new Set<Permission>(ALL_PERMISSIONS);
+    36: 
+    37: type RoleRecord = {
+    38:     id: string;
+    39:     name: string;
+    40:     scope: 'system' | 'organization';
+    41:     organization_id: string | null;
+    42:     description: string | null;
+    43: };
+    44: 
+    45: function isUuid(v: string) {
+    46:     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+    47: }
+    48: 
+    49: function normalizePermissions(perms?: string[]): Permission[] {
+    50:     if (!perms || !perms.length) return [];
+    51:     const invalid: string[] = [];
+    52:     const out = new Set<Permission>();
+    53: 
+    54:     for (const raw of perms) {
+    55:         if (!raw) continue;
+    56:         const key = raw.trim().toLowerCase() as Permission;
+    57:         if (!VALID_PERMISSIONS.has(key)) {
+    58:             invalid.push(raw);
+    59:             continue;
+    60:         }
+    61:         out.add(key);
+    62:     }
+    63: 
+    64:     if (invalid.length) {
+    65:         throw new BadRequestException(`Unknown permission(s): ${invalid.join(', ')}`);
+    66:     }
+    67: 
+    68:     return Array.from(out);
+    69: }
+    70: 
+    71: @Injectable()
+    72: export class RolesService {
+    73:     constructor(
+    74:         private readonly db: PgPoolService,
+    75:         private readonly orgs: OrganizationContextService,
+    76:     ) { }
+    77: 
+    78:     async list(): Promise<RoleDto[]> {
+    79:         const orgId = await this.orgs.getDefaultOrganizationId();
+    80:         const sql = `
+    81:       SELECT
+    82:         r.id,
+    83:         r.name,
+    84:         COALESCE(r.description, '') AS description,
+    85:         COALESCE(array_agg(DISTINCT rp.permission_key)
+    86:                  FILTER (WHERE rp.permission_key IS NOT NULL),
+    87:                  '{}'::text[]) AS permissions,
+    88:         (
+    89:           SELECT COUNT(*)::int
+    90:           FROM public.user_roles ur
+    91:           WHERE ur.role_id = r.id
+    92:         ) AS "usersCount",
+    93:         r.created_at AS "createdAt",
+    94:         r.updated_at AS "updatedAt"
+    95:       FROM public.roles r
+    96:       LEFT JOIN public.role_permissions rp
+    97:         ON rp.role_id = r.id
+    98:       WHERE
+    99:         (r.scope = 'system')
+   100:         OR (r.organization_id = $1)
+   101:       GROUP BY r.id
+   102:       ORDER BY lower(r.name) ASC;
+   103:     `;
+   104:         const { rows } = await this.db.query(sql, [orgId]);
+   105:         return rows.map((r: any) => ({
+   106:             id: r.id,
+   107:             name: r.name,
+   108:             description: r.description ?? undefined,
+   109:             permissions: Array.isArray(r.permissions) ? r.permissions : [],
+   110:             usersCount: Number(r.usersCount ?? 0),
+   111:             createdAt: r.createdAt,
+   112:             updatedAt: r.updatedAt,
+   113:         }));
+   114:     }
+   115: 
+   116:     async create(payload: CreateRoleDto): Promise<{ id: string }> {
+   117:         const name = (payload.name ?? '').trim();
+   118:         if (name.length < 2 || name.length > 64) {
+   119:             throw new BadRequestException('Name must be 2–64 characters.');
+   120:         }
+   121: 
+   122:         const orgId = await this.orgs.getDefaultOrganizationId();
+   123:         const exists = await this.db.query(
+   124:             `SELECT 1
+   125:          FROM public.roles
+   126:         WHERE lower(name) = lower($2)
+   127:           AND ((scope = 'organization' AND organization_id = $1) OR scope = 'system')
+   128:         LIMIT 1;`,
+   129:             [orgId, name],
+   130:         );
+   131:         if ((exists.rows?.length ?? 0) > 0) {
+   132:             throw new ConflictException('Role name must be unique (case-insensitive).');
+   133:         }
+   134: 
+   135:         const desc = payload.description?.trim() || null;
+   136:         const perms = normalizePermissions(payload.permissions);
+   137: 
+   138:         const insRole = await this.db.query(
+   139:             `INSERT INTO public.roles (organization_id, scope, name, description)
+   140:              VALUES ($1, 'organization', $2, $3)
+   141:              RETURNING id;`,
+   142:             [orgId, name, desc],
+   143:         );
+   144:         const id = insRole.rows[0].id as string;
+   145: 
+   146:         await this.replaceRolePermissions(id, perms);
+   147: 
+   148:         return { id };
+   149:     }
+   150: 
+   151:     async getById(id: string): Promise<{ id: string; name: string }> {
+   152:         if (!isUuid(id)) throw new BadRequestException('Invalid role id.');
+   153:         const role = await this.fetchRoleById(id);
+   154:         return { id: role.id, name: role.name };
+   155:     }
+   156: 
+   157:     async update(id: string, patch: UpdateRoleDto): Promise<void> {
+   158:         const { name: newNameRaw, description, permissions } = patch;
+   159:         const role = await this.fetchRoleById(id);
+   160: 
+   161:         const oldLower = role.name.trim().toLowerCase();
+   162:         const normalizedPerms = permissions === undefined ? null : normalizePermissions(permissions ?? []);
+   163: 
+   164:         if (newNameRaw !== undefined) {
+   165:             const newName = newNameRaw.trim();
+   166:             if (newName.length < 2 || newName.length > 64) {
+   167:                 throw new BadRequestException('Name must be 2–64 characters.');
+   168:             }
+   169:             if (role.scope === 'system' || oldLower === FULL_LOCK_NAME) {
+   170:                 throw new BadRequestException('The "Owner" role cannot be renamed.');
+   171:             }
+   172:             if (newName.toLowerCase() !== oldLower) {
+   173:                 const exists = await this.db.query(
+   174:                     `SELECT 1
+   175:              FROM public.roles
+   176:             WHERE id <> $1
+   177:               AND lower(name)=lower($2)
+   178:               AND ((scope='organization' AND organization_id = $3) OR scope='system')
+   179:             LIMIT 1;`,
+   180:                     [id, newName, role.organization_id],
+   181:                 );
+   182:                 if ((exists.rows?.length ?? 0) > 0) {
+   183:                     throw new ConflictException('Role name must be unique (case-insensitive).');
+   184:                 }
+   185: 
+   186:                 await this.db.query(`UPDATE public.roles SET name=$1 WHERE id=$2;`, [newName, id]);
+   187:                 role.name = newName;
+   188:             }
+   189:         }
+   190: 
+   191:         if (description !== undefined) {
+   192:             await this.db.query(
+   193:                 `UPDATE public.roles SET description = $1 WHERE id = $2`,
+   194:                 [description ?? null, id],
+   195:             );
+   196:         }
+   197: 
+   198:         if (normalizedPerms !== null) {
+   199:             await this.replaceRolePermissions(id, normalizedPerms);
+   200:         }
+   201:     }
+   202: 
+   203: 
+   204:     async remove(roleId: string): Promise<void> {
+   205: 
+   206:     async delete(roleId: string): Promise<void> {
+   207: 
+   208:         if (!isUuid(roleId)) throw new BadRequestException('Invalid role id.');
+   209: 
+   210:         const role = await this.fetchRoleById(roleId);
+   211:         const lower = role.name.trim().toLowerCase();
+   212:         if (role.scope === 'system' || PROTECTED_NAMES.has(lower)) {
+   213:             throw new BadRequestException('This role is protected and cannot be deleted.');
+   214:         }
+   215: 
+   216:         const assigned = await this.db.query(
+   217:             `SELECT 1 FROM public.user_roles WHERE role_id = $1 LIMIT 1;`,
+   218:             [roleId],
+   219:         );
+   220:         if (assigned.rows.length > 0) {
+   221:             throw new BadRequestException('Cannot delete a role that still has users assigned.');
+   222:         }
+   223: 
+   224:         await this.db.query(`DELETE FROM public.roles WHERE id=$1;`, [roleId]);
+   225:     }
+   226: 
+   227:     private async replaceRolePermissions(roleId: string, permissions: Permission[]): Promise<void> {
+   228:         await this.db.query(`DELETE FROM public.role_permissions WHERE role_id=$1;`, [roleId]);
+   229:         if (!permissions.length) return;
+   230:         await this.db.query(
+   231:             `INSERT INTO public.role_permissions (role_id, permission_key)
+   232:              SELECT $1, perm
+   233:              FROM unnest($2::text[]) AS perm`,
+   234:             [roleId, permissions],
+   235:         );
+   236:     }
+   237: 
+   238:     private async fetchRoleById(id: string): Promise<RoleRecord> {
+   239:         const { rows } = await this.db.query<RoleRecord>(
+   240:             `SELECT id, name, scope, organization_id, description
+   241:              FROM public.roles
+   242:              WHERE id = $1
+   243:              LIMIT 1`,
+   244:             [id],
+   245:         );
+   246:         if (!rows.length) throw new NotFoundException('Role not found.');
+   247:         return rows[0];
+   248:     }
+   249: }
+-----  END  CONTENT -----
+
+## FILE: src/roles/roles.controller.ts
+
+Path: src/roles/roles.controller.ts
+Size: 1206 bytes
+SHA256: E6F5EEC16D8F30FDABA4FC743BF7D834CDACB994C8393E98CFF9958231A4C2F8
+----- BEGIN CONTENT -----
+     1: import {
+     2:     Body,
+     3:     Controller,
+     4:     Delete,
+     5:     Get,
+     6:     Param,
+     7:     ParseUUIDPipe,
+     8:     Patch,
+     9:     Post,
+    10:     UseGuards,
+    11: } from '@nestjs/common';
+    12: import { RolesService } from './roles.service';
+    13: import { CreateRoleDto, UpdateRoleDto } from './dto';
+    14: import { PermissionsGuard } from '../auth/permissions.guard';
+    15: import { RequirePerm } from '../auth/require-perm.decorator';
+    16: 
+    17: @UseGuards(PermissionsGuard)
+    18: @Controller('api/roles')
+    19: export class RolesController {
+    20:     constructor(private readonly svc: RolesService) { }
+    21: 
+    22:     @Get()
+    23:     @RequirePerm('roles.read')
+    24:     list() {
+    25:         return this.svc.list();
+    26:     }
+    27: 
+    28:     @Post()
+    29:     @RequirePerm('roles.write')
+    30:     create(@Body() body: CreateRoleDto) {
+    31:         return this.svc.create(body);
+    32:     }
+    33: 
+    34:     @Patch(':id')
+    35:     @RequirePerm('roles.write')
+    36:     async update(
+    37:         @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    38:         @Body() body: UpdateRoleDto,
+    39:     ) {
+    40:         await this.svc.update(id, body);
+    41:         return { ok: true };
+    42:     }
+    43: 
+    44:     @Delete(':id')
+    45:     @RequirePerm('roles.delete')
+    46:     async remove(@Param('id', new ParseUUIDPipe({ version: '4' })) id: string) {
+    47:         await this.svc.remove(id);
+    48:         return { ok: true };
+    49:     }
+    50: }
+-----  END  CONTENT -----
+
+## FILE: src/roles/roles.module.ts
+
+Path: src/roles/roles.module.ts
+Size: 661 bytes
+SHA256: 00D42C7055976C37013C0C37BE14683F207FA31DC1BD5DAABB2111995891448D
+----- BEGIN CONTENT -----
+     1: import { Module } from '@nestjs/common';
+     2: import { StorageModule } from '../storage/storage.module';
+     3: import { RolesService } from './roles.service';
+     4: import { RolesController } from './roles.controller';
+     5: import { PermissionsIntrospectService } from './permissions-introspect.service';
+     6: import { RolesPermissionsController } from './permissions.controller';
+     7: import { PermissionsGuard } from '../auth/permissions.guard';
+     8: 
+     9: @Module({
+    10:     imports: [StorageModule],
+    11:     providers: [RolesService, PermissionsIntrospectService, PermissionsGuard],
+    12:     controllers: [RolesController, RolesPermissionsController],
+    13:     exports: [RolesService],
+    14: })
+    15: export class RolesModule { }
+-----  END  CONTENT -----
+
+
+# DTOs & TYPES
+# ------------
+
+## Discovered DTO Files
+
+## FILE: src\roles\dto\create-role.dto.ts
+
+Path: src\roles\dto\create-role.dto.ts
+Size: 623 bytes
+SHA256: BC97D5078C342F4695D1F90E36D858E7DE28C165EE090AD960451413C11C7995
+----- BEGIN CONTENT -----
+     1: import { Transform } from 'class-transformer';
+     2: import {
+     3:     IsArray,
+     4:     IsOptional,
+     5:     IsString,
+     6:     MaxLength,
+     7:     MinLength,
+     8: } from 'class-validator';
+     9: 
+    10: export class CreateRoleDto {
+    11:     @IsString()
+    12:     @MinLength(2)
+    13:     @MaxLength(64)
+    14:     @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+    15:     name!: string;
+    16: 
+    17:     @IsOptional()
+    18:     @IsString()
+    19:     @MaxLength(200)
+    20:     @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+    21:     description?: string;
+    22: 
+    23:     @IsOptional()
+    24:     @IsArray()
+    25:     @IsString({ each: true })
+    26:     permissions?: string[];
+    27: }
+-----  END  CONTENT -----
+
+## FILE: src\roles\dto\index.ts
+
+Path: src\roles\dto\index.ts
+Size: 72 bytes
+SHA256: 31F59FBD2CC15834C222EB617560AFA3609850858E65745C2B1754C647603265
+----- BEGIN CONTENT -----
+     1: export * from './create-role.dto';
+     2: export * from './update-role.dto';
+-----  END  CONTENT -----
+
+## FILE: src\roles\dto\update-role.dto.ts
+
+Path: src\roles\dto\update-role.dto.ts
+Size: 174 bytes
+SHA256: 4BD3B282DCD8AD04D7F6F11C61876C71CF1C12A96771B611CC4F730D3551E266
+----- BEGIN CONTENT -----
+     1: import { PartialType } from '@nestjs/mapped-types';
+     2: import { CreateRoleDto } from './create-role.dto';
+     3: 
+     4: export class UpdateRoleDto extends PartialType(CreateRoleDto) { }
+-----  END  CONTENT -----
+
+
+# VALIDATION / UTILITIES
+# ----------------------
+
+## Discovered Validation/Utility Files (e.g., isUuid)
+
+(None found)
+
+
+# DATABASE LAYER
+# --------------
+
+## Discovered DB Services (PgPool/Prisma)
+
+## FILE: src\storage\pg-pool.service.ts
+
+Path: src\storage\pg-pool.service.ts
+Size: 3449 bytes
+SHA256: 6900004F42029BB937D18B5D06F166C5185E8CE59175AEDAEBB946781FADD030
+----- BEGIN CONTENT -----
+     1: //backend\src\storage\pg-pool.service.ts
+     2: 
+     3: import { Injectable, OnModuleDestroy } from "@nestjs/common";
+     4: 
+     5: // We use require() + loose typing to avoid the “Cannot use namespace … as a type” errors
+     6: // that can happen in some TS configs when importing from 'pg'.
+     7: const { Pool } = require("pg") as { Pool: any };
+     8: 
+     9: export type PgRuntimeConfig = {
+    10:     connectionString?: string;
+    11:     ssl?: boolean | object;
+    12:     max?: number;
+    13:     min?: number;
+    14: };
+    15: 
+    16: @Injectable()
+    17: export class PgPoolService implements OnModuleDestroy {
+    18:     private pool: any = null;
+    19:     private lastKey: string | null = null;
+    20: 
+    21:     /** Build a default config from env (used on first access if not configured) */
+    22:     private envConfig(): PgRuntimeConfig {
+    23:         const url =
+    24:             process.env.DATABASE_URL ||
+    25:             process.env.PG_URL ||
+    26:             "postgres://remoteiq:remoteiqpass@localhost:5432/remoteiq";
+    27: 
+    28:         const ssl =
+    29:             (process.env.DATABASE_SSL ?? "").toLowerCase() === "true" ? true : false;
+    30: 
+    31:         const max = Number.isFinite(+process.env.DATABASE_POOL_MAX!)
+    32:             ? Number(process.env.DATABASE_POOL_MAX)
+    33:             : 10;
+    34:         const min = Number.isFinite(+process.env.DATABASE_POOL_MIN!)
+    35:             ? Number(process.env.DATABASE_POOL_MIN)
+    36:             : 0;
+    37: 
+    38:         return { connectionString: url, ssl, max, min };
+    39:     }
+    40: 
+    41:     /** Create a stable key for the current config so we can know when to recreate the pool */
+    42:     private keyOf(cfg: PgRuntimeConfig): string {
+    43:         return JSON.stringify({
+    44:             cs: cfg.connectionString ?? "",
+    45:             ssl: cfg.ssl ? "1" : "0",
+    46:             max: cfg.max ?? 10,
+    47:             min: cfg.min ?? 0,
+    48:         });
+    49:     }
+    50: 
+    51:     private makePool(cfg: PgRuntimeConfig): any {
+    52:         const base: any = {
+    53:             connectionString: cfg.connectionString,
+    54:             max: cfg.max ?? 10,
+    55:             min: cfg.min ?? 0,
+    56:         };
+    57:         if (cfg.ssl) {
+    58:             base.ssl = cfg.ssl === true ? { rejectUnauthorized: false } : cfg.ssl;
+    59:         }
+    60:         return new Pool(base);
+    61:     }
+    62: 
+    63:     /** Ensure pool exists; create from env if needed */
+    64:     private ensurePool(): any {
+    65:         if (!this.pool) {
+    66:             const cfg = this.envConfig();
+    67:             this.lastKey = this.keyOf(cfg);
+    68:             this.pool = this.makePool(cfg);
+    69:         }
+    70:         return this.pool!;
+    71:     }
+    72: 
+    73:     /**
+    74:      * Called by admin bootstrap when the database config changes.
+    75:      * Recreates the pool if the effective config differs.
+    76:      */
+    77:     configure(cfg: PgRuntimeConfig) {
+    78:         const nextKey = this.keyOf(cfg);
+    79:         if (this.pool && this.lastKey === nextKey) return; // no-op
+    80: 
+    81:         // tear down previous pool
+    82:         if (this.pool) {
+    83:             try {
+    84:                 this.pool.end().catch(() => { });
+    85:             } catch { }
+    86:             this.pool = null;
+    87:         }
+    88: 
+    89:         this.pool = this.makePool(cfg);
+    90:         this.lastKey = nextKey;
+    91:     }
+    92: 
+    93:     async query<T = any>(text: string, params?: any[]): Promise<{ rows: T[]; rowCount: number }> {
+    94:         const res = await this.ensurePool().query(text, params);
+    95:         return { rows: res.rows as T[], rowCount: typeof res.rowCount === "number" ? res.rowCount : 0 };
+    96:     }
+    97: 
+    98:     async onModuleDestroy() {
+    99:         if (this.pool) {
+   100:             try {
+   101:                 await this.pool.end();
+   102:             } catch { }
+   103:             this.pool = null;
+   104:         }
+   105:     }
+   106: }
+-----  END  CONTENT -----
+
+
+# BUILD CONTEXT
+# -------------
+
+## FILE: tsconfig.json
+
+Path: tsconfig.json
+Size: 599 bytes
+SHA256: 235FF61DD7F51ED0BC7EB3B256FCAF0C51F61B56C27E31F41B26A512B6E8B524
+----- BEGIN CONTENT -----
+     1: {
+     2:   "compilerOptions": {
+     3:     "target": "ES2021",
+     4:     "module": "commonjs",
+     5:     "moduleResolution": "node",
+     6:     "lib": ["ES2021"],
+     7:     "strict": true,
+     8:     "noImplicitAny": false,
+     9:     "sourceMap": true,
+    10:     "outDir": "./dist",
+    11:     "rootDir": "./src",
+    12:     "esModuleInterop": true,
+    13:     "emitDecoratorMetadata": true,
+    14:     "experimentalDecorators": true,
+    15:     "skipLibCheck": true,
+    16:     "typeRoots": ["./types", "./node_modules/@types"],
+    17:     "types": ["node", "express"] // <-- add express
+    18:   },
+    19:   "include": ["src/**/*"],
+    20:   "exclude": ["node_modules", "dist", "test", "**/*.spec.ts"]
+    21: }
+-----  END  CONTENT -----
+
+## FILE: package.json
+
+Path: package.json
+Size: 2295 bytes
+SHA256: 6AB16C1BACCA0AA2330892D0F3BD242FB1C64BED44BF27AB04FDE69EF9726923
+----- BEGIN CONTENT -----
+     1: {
+     2:   "name": "remoteiq-backend",
+     3:   "version": "0.1.0",
+     4:   "private": true,
+     5:   "scripts": {
+     6:     "dev": "tsx watch src/main.ts",
+     7:     "clean": "rimraf dist",
+     8:     "start": "node dist/main.js",
+     9:     "build": "tsc -p tsconfig.json",
+    10:     "prisma:generate": "prisma generate",
+    11:     "prisma:migrate:dev": "prisma migrate dev --name init",
+    12:     "prisma:studio": "prisma studio",
+    13:     "health": "curl -sf http://localhost:${PORT:-3001}/healthz && echo OK || (echo FAIL; exit 1)",
+    14:     "start:dev": "nest start --watch",
+    15:     "start:prod": "node dist/main.js"
+    16:   },
+    17:   "dependencies": {
+    18:     "@aws-sdk/client-s3": "^3.925.0",
+    19:     "@aws-sdk/s3-request-presigner": "^3.925.0",
+    20:     "@nestjs/common": "^10.3.6",
+    21:     "@nestjs/core": "^10.3.6",
+    22:     "@nestjs/jwt": "^11.0.1",
+    23:     "@nestjs/mapped-types": "^2.1.0",
+    24:     "@nestjs/platform-express": "^10.3.6",
+    25:     "@nestjs/platform-ws": "^10.4.20",
+    26:     "@nestjs/schedule": "^6.0.1",
+    27:     "@nestjs/serve-static": "^5.0.4",
+    28:     "@nestjs/swagger": "^7.4.2",
+    29:     "@nestjs/websockets": "^10.3.6",
+    30:     "@prisma/client": "^5.19.0",
+    31:     "@types/bcryptjs": "^3.0.0",
+    32:     "archiver": "^7.0.1",
+    33:     "axios": "^1.13.2",
+    34:     "bcryptjs": "^3.0.2",
+    35:     "class-transformer": "^0.5.1",
+    36:     "class-validator": "^0.14.2",
+    37:     "cookie": "^1.0.2",
+    38:     "cookie-parser": "^1.4.6",
+    39:     "cron-parser": "^5.4.0",
+    40:     "dotenv": "^17.2.3",
+    41:     "express": "^4.19.2",
+    42:     "file-type": "^21.0.0",
+    43:     "googleapis": "^164.1.0",
+    44:     "imapflow": "^1.0.200",
+    45:     "jsonwebtoken": "^9.0.2",
+    46:     "multer": "^2.0.2",
+    47:     "nodemailer": "^7.0.9",
+    48:     "otplib": "^12.0.1",
+    49:     "pg": "^8.16.3",
+    50:     "qrcode": "^1.5.4",
+    51:     "reflect-metadata": "^0.2.2",
+    52:     "rxjs": "^7.8.1",
+    53:     "sharp": "^0.34.4",
+    54:     "ssh2-sftp-client": "^12.0.1",
+    55:     "swagger-ui-express": "^5.0.1",
+    56:     "webdav": "^5.8.0",
+    57:     "ws": "^8.18.0",
+    58:     "zod": "^3.23.8"
+    59:   },
+    60:   "devDependencies": {
+    61:     "@nestjs/cli": "^11.0.10",
+    62:     "@types/cookie": "^1.0.0",
+    63:     "@types/cookie-parser": "^1.4.9",
+    64:     "@types/express": "^4.17.21",
+    65:     "@types/jsonwebtoken": "^9.0.6",
+    66:     "@types/multer": "^2.0.0",
+    67:     "@types/node": "^20.11.30",
+    68:     "@types/nodemailer": "^7.0.2",
+    69:     "@types/pg": "^8.15.5",
+    70:     "@types/qrcode": "^1.5.5",
+    71:     "@types/ws": "^8.18.1",
+    72:     "prisma": "^5.19.0",
+    73:     "rimraf": "^6.0.1",
+    74:     "tsx": "^4.19.1",
+    75:     "typescript": "^5.6.3"
+    76:   }
+    77: }
+-----  END  CONTENT -----
+
+
+# ROLES.SERVICE.TS - IMPORTS & STRUCTURE SNAPSHOT
+# -----------------------------------------------
+
+## Import Lines
+
+import {
+import { PgPoolService } from '../storage/pg-pool.service';
+import { OrganizationContextService } from '../storage/organization-context.service';
+import { ALL_PERMISSIONS, Permission } from '../auth/policy';
+
+## Class/Export Signatures
+
+export type RoleDto = {
+export type CreateRoleDto = {
+export type UpdateRoleDto = Partial<{
+export class RolesService {
+
+## Method Signatures (heuristic)
+
+    if (!perms || !perms.length) return [];
+    for (const raw of perms) {
+        if (!raw) continue;
+        if (!VALID_PERMISSIONS.has(key)) {
+    if (invalid.length) {
+    constructor(
+    async list(): Promise<RoleDto[]> {
+        COALESCE(r.description, '') AS description,
+        COALESCE(array_agg(DISTINCT rp.permission_key)
+                 FILTER (WHERE rp.permission_key IS NOT NULL),
+        OR (r.organization_id = $1)
+    async create(payload: CreateRoleDto): Promise<{ id: string }> {
+        if (name.length < 2 || name.length > 64) {
+          AND ((scope = 'organization' AND organization_id = $1) OR scope = 'system')
+        if ((exists.rows?.length ?? 0) > 0) {
+             VALUES ($1, 'organization', $2, $3)
+    async getById(id: string): Promise<{ id: string; name: string }> {
+        if (!isUuid(id)) throw new BadRequestException('Invalid role id.');
+    async update(id: string, patch: UpdateRoleDto): Promise<void> {
+        if (newNameRaw !== undefined) {
+            if (newName.length < 2 || newName.length > 64) {
+            if (role.scope === 'system' || oldLower === FULL_LOCK_NAME) {
+            if (newName.toLowerCase() !== oldLower) {
+              AND ((scope='organization' AND organization_id = $3) OR scope='system')
+                if ((exists.rows?.length ?? 0) > 0) {
+        if (description !== undefined) {
+        if (normalizedPerms !== null) {
+    async remove(roleId: string): Promise<void> {
+    async delete(roleId: string): Promise<void> {
+        if (!isUuid(roleId)) throw new BadRequestException('Invalid role id.');
+        if (role.scope === 'system' || PROTECTED_NAMES.has(lower)) {
+        if (assigned.rows.length > 0) {
+    private async replaceRolePermissions(roleId: string, permissions: Permission[]): Promise<void> {
+        if (!permissions.length) return;
+    private async fetchRoleById(id: string): Promise<RoleRecord> {
+        if (!rows.length) throw new NotFoundException('Role not found.');
+
