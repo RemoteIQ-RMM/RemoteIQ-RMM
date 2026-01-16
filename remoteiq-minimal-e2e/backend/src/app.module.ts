@@ -34,7 +34,7 @@ import { AuthCookieMiddleware } from "./auth/auth-cookie.middleware";
 // ✅ bring PgPoolService into the AppModule DI context
 import { StorageModule } from "./storage/storage.module";
 
-// ✅ NEW: Tickets
+// ✅ Tickets
 import { TicketsModule } from "./tickets/tickets.module";
 
 @Module({
@@ -45,7 +45,7 @@ import { TicketsModule } from "./tickets/tickets.module";
             serveRoot: "/static",
         }),
 
-        // JwtService for middleware
+        // JwtService for auth components
         JwtModule.register({
             secret: process.env.JWT_SECRET ?? "dev-secret",
         }),
@@ -91,13 +91,15 @@ import { TicketsModule } from "./tickets/tickets.module";
 })
 export class AppModule implements NestModule {
     configure(consumer: MiddlewareConsumer) {
-        // Apply cookie->req.user middleware to everything except obvious public/static routes
+        // Middleware is still useful (cookies parsing / light hydration), but guards will enforce auth.
         consumer
             .apply(AuthCookieMiddleware)
             .exclude(
                 "healthz",
                 "docs",
                 "docs/(.*)",
+                "api/docs",
+                "api/docs/(.*)",
                 "static/(.*)",      // static files
                 "api/auth/login",   // login doesn’t need req.user
                 "api/auth/logout"   // logout doesn’t need req.user

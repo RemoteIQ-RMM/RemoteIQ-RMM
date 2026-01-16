@@ -16,6 +16,12 @@ import { NestExpressApplication } from "@nestjs/platform-express";
 import { PgPoolService } from "./storage/pg-pool.service";
 import { SessionHeartbeatInterceptor } from "./auth/session-heartbeat.interceptor";
 
+// ✅ Global guards (deny-by-default)
+import { Reflector } from "@nestjs/core";
+import { JwtService } from "@nestjs/jwt";
+import { AuthCookieGuard } from "./auth/auth-cookie.guard";
+import { PermissionsGuard } from "./auth/permissions.guard";
+
 /** Mount /docs only when allowed (and if @nestjs/swagger is present). */
 async function maybeSetupSwagger(app: INestApplication) {
   const enableSwagger =
@@ -125,11 +131,43 @@ async function bootstrap() {
 
   await maybeSetupSwagger(app);
 
+  // ✅ Deny-by-default security: enforce auth globally
+  const reflector = app.get(Reflector);
+  const jwt = app.get(JwtService);
+  const pg = app.get(PgPoolService, { strict: false });
+
+  if (!pg) {
+    console.warn("PgPoolService not found; global guards NOT enabled.");
+  } else {
+    // Prefer DI-resolved instances when possible
+    try {
+      const authGuard = app.get(AuthCookieGuard, { strict: false });
+      const permGuard = app.get(PermissionsGuard, { strict: false });
+
+      if (authGuard && permGuard) {
+        app.useGlobalGuards(authGuard, permGuard);
+        console.log("Global guards enabled via DI: AuthCookieGuard + PermissionsGuard");
+      } else {
+        app.useGlobalGuards(
+          new AuthCookieGuard(reflector as any, jwt as any, pg as any),
+          new PermissionsGuard(reflector as any, pg as any)
+        );
+        console.log("Global guards enabled via constructor: AuthCookieGuard + PermissionsGuard");
+      }
+    } catch {
+      app.useGlobalGuards(
+        new AuthCookieGuard(reflector as any, jwt as any, pg as any),
+        new PermissionsGuard(reflector as any, pg as any)
+      );
+      console.log("Global guards enabled via constructor: AuthCookieGuard + PermissionsGuard");
+    }
+  }
+
   // ✅ Register SessionHeartbeatInterceptor only if PgPoolService is resolvable
   try {
-    const pg = app.get(PgPoolService, { strict: false });
-    if (pg) {
-      app.useGlobalInterceptors(new SessionHeartbeatInterceptor(pg));
+    const pg2 = app.get(PgPoolService, { strict: false });
+    if (pg2) {
+      app.useGlobalInterceptors(new SessionHeartbeatInterceptor(pg2));
       console.log("SessionHeartbeatInterceptor enabled.");
     } else {
       console.warn(
