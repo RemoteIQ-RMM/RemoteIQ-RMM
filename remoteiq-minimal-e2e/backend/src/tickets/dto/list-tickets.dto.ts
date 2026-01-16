@@ -3,6 +3,11 @@ import { IsIn, IsInt, IsOptional, IsString, IsUUID, Max, Min } from "class-valid
 export class ListTicketsQuery {
   @IsOptional()
   @IsUUID()
+  organizationId?: string;
+
+  // Legacy alias
+  @IsOptional()
+  @IsUUID()
   customerId?: string;
 
   @IsOptional()

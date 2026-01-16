@@ -11,7 +11,7 @@ import { PgPoolService } from '../storage/pg-pool.service';
 const algo = 'sha256';
 
 export function hashToken(token: string): string {
-  return crypto.createHash(algo).update(token, 'utf8').digest('hex');
+  return crypto.createHash(algo).update(token).digest('hex');
 }
 
 export function newOpaqueToken(): string {

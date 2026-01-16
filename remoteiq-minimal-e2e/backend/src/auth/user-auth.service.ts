@@ -328,7 +328,7 @@ export class UserAuthService {
             const t = Math.floor(Date.now() / 1000 / step);
 
             for (const off of [-2, -1, 0, 1, 2]) {
-                const counter = Buffer.alloc(8);
+                const counter = (Buffer as any).alloc(8);
                 counter.writeBigUInt64BE(BigInt(t + off));
                 const hmac = createHmac("sha1", secret).update(counter).digest();
                 const offset = hmac[hmac.length - 1] & 0xf;

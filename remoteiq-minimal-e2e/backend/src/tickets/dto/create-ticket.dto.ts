@@ -1,13 +1,27 @@
-import { IsEmail, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 
 export class CreateTicketDto {
+  // Preferred
+  @IsOptional()
+  @IsUUID()
+  organizationId?: string;
+
+  // Legacy alias (maps to organizationId)
   @IsOptional()
   @IsUUID()
   customerId?: string;
 
+  // Preferred field name for UI
+  @IsOptional()
   @IsString()
   @MaxLength(300)
-  title!: string;
+  subject?: string;
+
+  // Legacy alias (maps to subject)
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  title?: string;
 
   @IsOptional()
   @IsString()
@@ -26,6 +40,10 @@ export class CreateTicketDto {
   assigneeUserId?: string;
 
   @IsOptional()
-  @IsEmail()
-  requesterEmail?: string;
+  @IsUUID()
+  requesterContactId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  deviceId?: string;
 }

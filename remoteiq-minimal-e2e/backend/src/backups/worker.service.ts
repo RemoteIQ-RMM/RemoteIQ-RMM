@@ -167,7 +167,7 @@ export class WorkerService {
             await this.createTarGz(exportDir, archivePath);
 
             const stat = await fsp.stat(archivePath);
-            await this.appendLog(jobId, `Archive created: ${archiveName} (${stat.size} bytes)\n`);
+            await this.appendLog(jobId, `Archive created: ${archiveName} (${((stat as any).size ?? 0)} bytes)\n`);
 
             // Upload primary destination
             const dest = cfg.destination as any;
@@ -309,7 +309,7 @@ export class WorkerService {
                verified=true,
                artifact_location=$4
          WHERE id=$1`,
-                [jobId, stat.size, durationSec, JSON.stringify(artifactLoc)]
+                [jobId, ((stat as any).size ?? 0), durationSec, JSON.stringify(artifactLoc)]
             );
 
             await this.appendLog(jobId, `Done in ${durationSec}s\n`);
@@ -318,7 +318,7 @@ export class WorkerService {
             await this.notify(
                 cfg.notifications,
                 `Backup ${jobId} success`,
-                `Size=${stat.size} Duration=${durationSec}s DestinationsOK=${successCount}`
+                `Size=${((stat as any).size ?? 0)} Duration=${durationSec}s DestinationsOK=${successCount}`
             );
         } catch (e: any) {
             this.log.error(`Backup job ${jobId} failed: ${e?.message || e}`);

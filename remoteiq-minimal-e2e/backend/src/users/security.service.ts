@@ -51,7 +51,7 @@ function sha256Hex(value: string): string {
 @Injectable()
 export class SecurityService {
     constructor(@Inject(PgPoolService) private readonly pg: PgPoolService) {
-        authenticator.options = { window: TOTP_WINDOW };
+        (authenticator as any).options = { window: TOTP_WINDOW };
     }
 
     /* ------------------------- Password ------------------------- */

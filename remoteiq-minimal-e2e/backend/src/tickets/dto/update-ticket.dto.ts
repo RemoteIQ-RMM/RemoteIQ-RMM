@@ -1,10 +1,21 @@
-import { IsEmail, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 
 export class UpdateTicketDto {
   @IsOptional()
   @IsUUID()
+  organizationId?: string;
+
+  // Legacy alias
+  @IsOptional()
+  @IsUUID()
   customerId?: string;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  subject?: string;
+
+  // Legacy alias
   @IsOptional()
   @IsString()
   @MaxLength(300)
@@ -27,6 +38,15 @@ export class UpdateTicketDto {
   assigneeUserId?: string;
 
   @IsOptional()
-  @IsEmail()
-  requesterEmail?: string;
+  @IsUUID()
+  requesterContactId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  deviceId?: string;
+
+  // ISO string or null to clear
+  @IsOptional()
+  @IsString()
+  closedAt?: string | null;
 }

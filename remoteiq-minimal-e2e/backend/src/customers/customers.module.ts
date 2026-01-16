@@ -1,3 +1,5 @@
+// backend/src/customers/customers.module.ts
+
 import { Module } from "@nestjs/common";
 import { CustomersController } from "./customers.controller";
 import { CustomersService } from "./customers.service";

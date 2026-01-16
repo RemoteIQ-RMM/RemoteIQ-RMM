@@ -1,3 +1,5 @@
+// backend/src/customers/customers.controller.ts
+
 import { Controller, Get, Param, Query } from "@nestjs/common";
 import { CustomersService } from "./customers.service";
 
@@ -7,8 +9,11 @@ export class CustomersController {
 
     /**
      * GET /api/customers
-     * Returns distinct clients from tickets + devices.
+     * Returns clients (from public.clients if present).
      * Optional ?q=term to filter (case-insensitive).
+     *
+     * Response:
+     * [{ key: <clientId>, name: <clientName>, counts: { sites, devices, tickets } }]
      */
     @Get()
     async listClients(@Query("q") q?: string) {
@@ -17,7 +22,10 @@ export class CustomersController {
 
     /**
      * GET /api/customers/:client/sites
-     * Returns distinct sites for the given client (from tickets + devices).
+     * :client may be a client UUID (preferred) OR a client name (resolved to id).
+     *
+     * Response:
+     * [{ key: <siteId>, name: <siteName>, counts: { devices, tickets } }]
      */
     @Get(":client/sites")
     async listSites(@Param("client") client: string) {

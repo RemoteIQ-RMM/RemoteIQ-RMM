@@ -73,7 +73,7 @@ export class SmtpStorage {
     async load(): Promise<EmailConfigOnDisk> {
         try {
             const raw = await fs.readFile(this.file, "utf8");
-            const parsed = JSON.parse(raw);
+            const parsed = JSON.parse(typeof raw === "string" ? raw : ((raw as any).toString("utf8")));
             return {
                 ...DEFAULTS,
                 ...parsed,

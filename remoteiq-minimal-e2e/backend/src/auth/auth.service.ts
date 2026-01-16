@@ -12,7 +12,7 @@ function newOpaqueToken(): string {
   return randomBytes(18).toString("base64url");
 }
 function hashToken(token: string): string {
-  return createHash("sha256").update(token, "utf8").digest("hex");
+  return createHash("sha256").update(token).digest("hex");
 }
 
 type EnrollInput = {

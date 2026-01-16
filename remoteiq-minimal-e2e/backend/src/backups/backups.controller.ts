@@ -105,7 +105,7 @@ export class BackupsController {
         const stream = await this.svc.openLogStream(id);
         if (!stream) throw new HttpException("Not found", HttpStatus.NOT_FOUND);
         res.setHeader("Content-Type", "text/plain; charset=utf-8");
-        stream.pipe(res);
+        stream.pipe(res as any);
     }
 
     @Get(":id/manifest")
@@ -128,7 +128,7 @@ export class BackupsController {
                 `attachment; filename="${out.filename.replace(/"/g, "")}"`
             );
             res.setHeader("Content-Type", "application/octet-stream");
-            out.stream.pipe(res);
+            out.stream.pipe(res as any);
             return;
         }
         if (out.presignedUrl) {

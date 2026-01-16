@@ -35,9 +35,15 @@ async function maybeSetupSwagger(app: INestApplication) {
       .setVersion("v1")
       .addBearerAuth({ type: "http", scheme: "bearer", bearerFormat: "JWT" }, "bearer")
       .build();
+
     const document = SwaggerModule.createDocument(app, config);
+
+    // Keep legacy /docs and ALSO support /api/docs (what you tested)
     SwaggerModule.setup("/docs", app, document);
-    console.log("Swagger docs mounted at /docs");
+    SwaggerModule.setup("/api/docs", app, document);
+
+    console.log("Swagger docs mounted at /docs and /api/docs");
+    console.log("Swagger JSON available at /docs-json and /api/docs-json");
   } catch {
     console.log("Swagger not installed. Skip docs (pnpm add -D @nestjs/swagger swagger-ui-express)");
   }
@@ -96,13 +102,20 @@ async function bootstrap() {
   app.use(cookieParser());
   configureCors(app);
 
-  app.useWebSocketAdapter(new WsAdapter(app));
+  // ✅ TS-only fix for Nest websocket adapter interface mismatch
+  app.useWebSocketAdapter(new WsAdapter(app) as any);
 
+  const isProd = process.env.NODE_ENV === "production";
+
+  // ✅ Key change:
+  // - In prod: forbid unknown fields (security)
+  // - In dev: strip unknown fields instead of throwing 400 (unblocks UI during iteration)
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
-      forbidNonWhitelisted: true,
+      forbidNonWhitelisted: isProd,
       transform: true,
+      forbidUnknownValues: true,
     })
   );
 

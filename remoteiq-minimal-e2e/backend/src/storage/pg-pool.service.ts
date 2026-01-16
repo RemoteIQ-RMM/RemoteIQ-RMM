@@ -1,4 +1,4 @@
-//backend\src\storage\pg-pool.service.ts
+// backend/src/storage/pg-pool.service.ts
 
 import { Injectable, OnModuleDestroy } from "@nestjs/common";
 
@@ -54,9 +54,11 @@ export class PgPoolService implements OnModuleDestroy {
             max: cfg.max ?? 10,
             min: cfg.min ?? 0,
         };
+
         if (cfg.ssl) {
             base.ssl = cfg.ssl === true ? { rejectUnauthorized: false } : cfg.ssl;
         }
+
         return new Pool(base);
     }
 
@@ -90,9 +92,50 @@ export class PgPoolService implements OnModuleDestroy {
         this.lastKey = nextKey;
     }
 
-    async query<T = any>(text: string, params?: any[]): Promise<{ rows: T[]; rowCount: number }> {
+    private shouldLogSql(): boolean {
+        // Enable if:
+        // - PG_LOG_SQL=true
+        // - or NODE_ENV is not "production"
+        const explicit = (process.env.PG_LOG_SQL ?? "").toLowerCase();
+        if (explicit === "true" || explicit === "1" || explicit === "yes") return true;
+        if (explicit === "false" || explicit === "0" || explicit === "no") return false;
+
+        return (process.env.NODE_ENV ?? "").toLowerCase() !== "production";
+    }
+
+    private safeStringify(value: any): string {
+        try {
+            return JSON.stringify(value);
+        } catch {
+            try {
+                return String(value);
+            } catch {
+                return "[unprintable]";
+            }
+        }
+    }
+
+    async query<T = any>(
+        text: string,
+        params?: any[]
+    ): Promise<{ rows: T[]; rowCount: number }> {
+        // Debug logging (helps pinpoint errors like "column X does not exist")
+        if (this.shouldLogSql()) {
+            try {
+                const oneLine = String(text).replace(/\s+/g, " ").trim();
+                // Intentionally using console.error so it shows up with Nest errors
+                console.error("[PG] SQL:", oneLine);
+                if (params?.length) console.error("[PG] PARAMS:", this.safeStringify(params));
+            } catch {
+                // ignore logging errors
+            }
+        }
+
         const res = await this.ensurePool().query(text, params);
-        return { rows: res.rows as T[], rowCount: typeof res.rowCount === "number" ? res.rowCount : 0 };
+        return {
+            rows: res.rows as T[],
+            rowCount: typeof res.rowCount === "number" ? res.rowCount : 0,
+        };
     }
 
     async onModuleDestroy() {

@@ -90,7 +90,7 @@ function assertDto<T>(cls: new () => T, payload: any) {
             errs[0]?.constraints && Object.values(errs[0].constraints)[0]
                 ? Object.values(errs[0].constraints)[0]
                 : "Validation failed";
-        throw new HttpException(msg, HttpStatus.BAD_REQUEST);
+        throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
     }
     return inst;
 }

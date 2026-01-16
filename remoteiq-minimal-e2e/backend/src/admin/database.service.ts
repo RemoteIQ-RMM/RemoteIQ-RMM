@@ -17,7 +17,7 @@ export class DatabaseService {
     async loadConfig(): Promise<DatabaseConfigDto | null> {
         try {
             const raw = await fs.readFile(CONFIG_PATH, "utf-8");
-            this.current = JSON.parse(raw);
+            this.current = JSON.parse(typeof raw === "string" ? raw : ((raw as any).toString("utf8")));
             return this.current;
         } catch {
             return null;
