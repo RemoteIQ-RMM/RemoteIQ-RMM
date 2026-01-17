@@ -9,6 +9,7 @@ import {
 } from "@nestjs/common";
 import { StorageConnectionsService } from "./storage-connections.service";
 import { normalizeConnectionImport } from "./connection-import.util";
+import { RequirePerm } from "../auth/require-perm.decorator";
 
 /**
  * Narrow, literal union matching StorageConnectionsService's internal StorageKind.
@@ -46,6 +47,7 @@ export class StorageImportController {
      */
     @Post("import")
     @HttpCode(200)
+    @RequirePerm("backups.manage")
     async import(@Body() body: any) {
         let normalized: { connections: Array<any> };
         try {
@@ -80,7 +82,7 @@ export class StorageImportController {
 
             const { id } = await this.svc.create({
                 name,
-                kind,       // <- now typed as StorageKind, no TS2322
+                kind,
                 config,
                 meta,
             });

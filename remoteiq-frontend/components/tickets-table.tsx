@@ -11,12 +11,22 @@ export type Ticket = {
   title: string;
   status: string;
   priority?: string | null;
+
   requesterName?: string | null;
   requesterEmail?: string | null;
+
+  // legacy display string (may not be set by list endpoint)
   assignedTo?: string | null;
+
+  // what the backend actually returns (list endpoint)
+  assigneeUserId?: string | null;
+
   customerId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+
+  // tolerate extra fields
+  [k: string]: any;
 };
 
 type Renderer = (value?: string | null) => React.ReactNode;
@@ -47,9 +57,85 @@ function toArray(input: any): Ticket[] {
   return [];
 }
 
+const API_BASE =
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE) || "";
+
+function url(path: string) {
+  if (!API_BASE) return path;
+  return `${API_BASE.replace(/\/+$/, "")}${path.startsWith("/") ? "" : "/"}${path}`;
+}
+
+function shortId(s: string) {
+  return String(s ?? "").slice(0, 8);
+}
+
+function safeWhen(iso: string) {
+  const d = new Date(iso);
+  return isFinite(d.getTime()) ? d.toLocaleString() : "-";
+}
+
+function useUsersMap() {
+  const [map, setMap] = React.useState<Record<string, string>>({});
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch(url("/api/users"), { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const arr: any[] = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : [];
+
+        const next: Record<string, string> = {};
+        for (const u of arr) {
+          const id = String(u?.id ?? "").trim();
+          if (!id) continue;
+          const label = String(u?.name || u?.fullName || u?.email || u?.username || id).trim();
+          next[id] = label;
+        }
+
+        if (!cancelled) setMap(next);
+      } catch {
+        // ignore
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return map;
+}
+
+function getAssigneeId(t: Ticket): string | null {
+  const id =
+    (t.assigneeUserId ??
+      (t as any).assignee_user_id ??
+      (t as any).assigneeId ??
+      (t as any).assignee_id ??
+      null) as any;
+
+  const v = String(id ?? "").trim();
+  return v ? v : null;
+}
+
+function getAssigneeLabel(t: Ticket, usersMap: Record<string, string>): string | null {
+  const direct = String(t.assignedTo ?? "").trim();
+  if (direct) return direct;
+
+  const id = getAssigneeId(t);
+  if (!id) return null;
+
+  return usersMap[id] ?? null;
+}
+
 export default function TicketsTable(props: TicketsTableProps) {
   const { loading, showCustomer, renderStatus, renderPriority } = props as any;
   const list = React.useMemo(() => toArray((props as any).items), [props]);
+
+  const usersMap = useUsersMap();
 
   const [page, setPage] = React.useState(0);
   const RESULTS_PER_PAGE = 10;
@@ -60,12 +146,10 @@ export default function TicketsTable(props: TicketsTableProps) {
   const visible = list.slice(start, end);
 
   const renderStatusPill: Renderer =
-    renderStatus ??
-    ((value?: string | null) => <StatusPill value={value?.toString()} />);
+    renderStatus ?? ((value?: string | null) => <StatusPill value={value?.toString()} />);
 
   const renderPriorityPill: Renderer =
-    renderPriority ??
-    ((value?: string | null) => <PriorityPill value={value?.toString()} />);
+    renderPriority ?? ((value?: string | null) => <PriorityPill value={value?.toString()} />);
 
   React.useEffect(() => {
     if (page > 0 && page >= pageCount) setPage(Math.max(0, pageCount - 1));
@@ -93,36 +177,43 @@ export default function TicketsTable(props: TicketsTableProps) {
           </thead>
 
           <tbody className="divide-y divide-zinc-800/80">
-            {visible.map((t: Ticket) => (
-              <tr key={t.id} className="hover:bg-zinc-800/40 transition-colors">
-                <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-pink-500">
-                  {t.number ?? t.id.slice(0, 8)}
-                </td>
+            {visible.map((t: Ticket) => {
+              const assigneeLabel = getAssigneeLabel(t, usersMap);
+              const assigneeId = getAssigneeId(t);
 
-                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-200">
-                  <Link href={`/tickets/${t.id}`} className="hover:underline">
-                    {t.title}
-                  </Link>
-                </td>
+              return (
+                <tr key={t.id} className="hover:bg-zinc-800/40 transition-colors">
+                  <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-pink-500">
+                    {t.number ?? t.id.slice(0, 8)}
+                  </td>
 
-                {showCustomer && (
-                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">{t.customerId ?? "-"}</td>
-                )}
+                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-200">
+                    <Link href={`/tickets/${t.id}`} className="hover:underline">
+                      {t.title}
+                    </Link>
+                  </td>
 
-                <td className="px-4 py-3 whitespace-nowrap text-sm">{renderStatusPill(t.status)}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-sm">{renderPriorityPill(t.priority)}</td>
+                  {showCustomer && (
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">{t.customerId ?? "-"}</td>
+                  )}
 
-                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
-                  {t.requesterName ?? t.requesterEmail ?? "-"}
-                </td>
+                  <td className="px-4 py-3 whitespace-nowrap text-sm">{renderStatusPill(t.status)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-sm">{renderPriorityPill(t.priority)}</td>
 
-                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">{t.assignedTo ?? "-"}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                    {t.requesterName ?? t.requesterEmail ?? "-"}
+                  </td>
 
-                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
-                  {t.updatedAt ? safeWhen(t.updatedAt) : "-"}
-                </td>
-              </tr>
-            ))}
+                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                    {assigneeLabel ?? (assigneeId ? `User ${shortId(assigneeId)}` : "-")}
+                  </td>
+
+                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                    {t.updatedAt ? safeWhen(t.updatedAt) : "-"}
+                  </td>
+                </tr>
+              );
+            })}
 
             {!loading && total === 0 && (
               <tr>
@@ -162,9 +253,4 @@ export default function TicketsTable(props: TicketsTableProps) {
       </div>
     </div>
   );
-}
-
-function safeWhen(iso: string) {
-  const d = new Date(iso);
-  return isFinite(d.getTime()) ? d.toLocaleString() : "-";
 }

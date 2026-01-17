@@ -1,6 +1,8 @@
-// backend/src/main.ts
+// remoteiq-minimal-e2e/backend/src/main.ts
+
 import "reflect-metadata";
 import "dotenv/config";
+
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import cookieParser from "cookie-parser";
@@ -9,7 +11,6 @@ import { ValidationPipe, INestApplication } from "@nestjs/common";
 import * as fs from "fs";
 import * as path from "path";
 
-// 👇 add this import to serve static files
 import { NestExpressApplication } from "@nestjs/platform-express";
 
 // Pg + interceptor
@@ -17,8 +18,6 @@ import { PgPoolService } from "./storage/pg-pool.service";
 import { SessionHeartbeatInterceptor } from "./auth/session-heartbeat.interceptor";
 
 // ✅ Global guards (deny-by-default)
-import { Reflector } from "@nestjs/core";
-import { JwtService } from "@nestjs/jwt";
 import { AuthCookieGuard } from "./auth/auth-cookie.guard";
 import { PermissionsGuard } from "./auth/permissions.guard";
 
@@ -32,26 +31,33 @@ async function maybeSetupSwagger(app: INestApplication) {
     console.log("Swagger disabled (set SWAGGER=true to enable).");
     return;
   }
+
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { SwaggerModule, DocumentBuilder } = require("@nestjs/swagger");
+
     const config = new DocumentBuilder()
       .setTitle("RemoteIQ API")
       .setDescription("OpenAPI for RemoteIQ RMM")
       .setVersion("v1")
-      .addBearerAuth({ type: "http", scheme: "bearer", bearerFormat: "JWT" }, "bearer")
+      .addBearerAuth(
+        { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+        "bearer"
+      )
       .build();
 
     const document = SwaggerModule.createDocument(app, config);
 
-    // Keep legacy /docs and ALSO support /api/docs (what you tested)
+    // Keep legacy /docs and ALSO support /api/docs
     SwaggerModule.setup("/docs", app, document);
     SwaggerModule.setup("/api/docs", app, document);
 
     console.log("Swagger docs mounted at /docs and /api/docs");
     console.log("Swagger JSON available at /docs-json and /api/docs-json");
   } catch {
-    console.log("Swagger not installed. Skip docs (pnpm add -D @nestjs/swagger swagger-ui-express)");
+    console.log(
+      "Swagger not installed. Skip docs (pnpm add -D @nestjs/swagger swagger-ui-express)"
+    );
   }
 }
 
@@ -64,10 +70,11 @@ function configureCors(app: INestApplication) {
       .map((s) => s.trim())
       .filter(Boolean);
 
-  const listFromAllowed = (process.env.ALLOWED_ORIGIN || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const listFromAllowed =
+    (process.env.ALLOWED_ORIGIN || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
 
   const origins = listFromFrontends.length ? listFromFrontends : listFromAllowed;
 
@@ -97,13 +104,11 @@ async function bootstrap() {
   const uploadsDir = path.join(process.cwd(), "public", "uploads");
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-  // 👇 tell Nest this is an Express app so we can useStaticAssets
+  // Express app for cookie + ws adapter
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // 👇 serve /static/* from ./public/*
-  app.useStaticAssets(path.join(process.cwd(), "public"), {
-    prefix: "/static/",
-  });
+  // Note: ServeStaticModule already mounts /static -> ./public in AppModule.
+  // So we do NOT call app.useStaticAssets() again here.
 
   app.use(cookieParser());
   configureCors(app);
@@ -113,9 +118,6 @@ async function bootstrap() {
 
   const isProd = process.env.NODE_ENV === "production";
 
-  // ✅ Key change:
-  // - In prod: forbid unknown fields (security)
-  // - In dev: strip unknown fields instead of throwing 400 (unblocks UI during iteration)
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -127,62 +129,38 @@ async function bootstrap() {
 
   app.enableShutdownHooks();
 
-  app.getHttpAdapter().getInstance().get("/healthz", (_req: any, res: any) => res.send("OK"));
-
   await maybeSetupSwagger(app);
 
-  // ✅ Deny-by-default security: enforce auth globally
-  const reflector = app.get(Reflector);
-  const jwt = app.get(JwtService);
-  const pg = app.get(PgPoolService, { strict: false });
+  // ✅ Deny-by-default security: enforce auth globally via DI instances
+  // (This avoids APP_GUARD export/type issues and avoids "manual new()" problems.)
+  const authGuard = app.get(AuthCookieGuard, { strict: false });
+  const permGuard = app.get(PermissionsGuard, { strict: false });
 
-  if (!pg) {
-    console.warn("PgPoolService not found; global guards NOT enabled.");
-  } else {
-    // Prefer DI-resolved instances when possible
-    try {
-      const authGuard = app.get(AuthCookieGuard, { strict: false });
-      const permGuard = app.get(PermissionsGuard, { strict: false });
-
-      if (authGuard && permGuard) {
-        app.useGlobalGuards(authGuard, permGuard);
-        console.log("Global guards enabled via DI: AuthCookieGuard + PermissionsGuard");
-      } else {
-        app.useGlobalGuards(
-          new AuthCookieGuard(reflector as any, jwt as any, pg as any),
-          new PermissionsGuard(reflector as any, pg as any)
-        );
-        console.log("Global guards enabled via constructor: AuthCookieGuard + PermissionsGuard");
-      }
-    } catch {
-      app.useGlobalGuards(
-        new AuthCookieGuard(reflector as any, jwt as any, pg as any),
-        new PermissionsGuard(reflector as any, pg as any)
-      );
-      console.log("Global guards enabled via constructor: AuthCookieGuard + PermissionsGuard");
+  if (!authGuard || !permGuard) {
+    if (isProd) {
+      throw new Error("Global guards not found in DI; refusing to start in production.");
     }
+    console.warn("Global guards not found in DI; NOT enabling AuthCookieGuard/PermissionsGuard.");
+  } else {
+    app.useGlobalGuards(authGuard, permGuard);
+    console.log("Global guards enabled via DI: AuthCookieGuard + PermissionsGuard");
   }
 
-  // ✅ Register SessionHeartbeatInterceptor only if PgPoolService is resolvable
-  try {
-    const pg2 = app.get(PgPoolService, { strict: false });
-    if (pg2) {
-      app.useGlobalInterceptors(new SessionHeartbeatInterceptor(pg2));
-      console.log("SessionHeartbeatInterceptor enabled.");
-    } else {
-      console.warn(
-        "PgPoolService not found in AppModule context; SessionHeartbeatInterceptor NOT enabled."
-      );
+  // ✅ SessionHeartbeatInterceptor only if PgPoolService is resolvable
+  const pg = app.get(PgPoolService, { strict: false });
+  if (!pg) {
+    if (isProd) {
+      throw new Error("PgPoolService not found; refusing to start in production.");
     }
-  } catch (err) {
-    console.warn(
-      "Could not enable SessionHeartbeatInterceptor (continuing without it):",
-      (err as Error)?.message || err
-    );
+    console.warn("PgPoolService not found; SessionHeartbeatInterceptor NOT enabled.");
+  } else {
+    app.useGlobalInterceptors(new SessionHeartbeatInterceptor(pg));
+    console.log("SessionHeartbeatInterceptor enabled.");
   }
 
   const port = Number(process.env.PORT || 3001);
   await app.listen(port);
   console.log(`API up on http://localhost:${port}`);
 }
+
 bootstrap();

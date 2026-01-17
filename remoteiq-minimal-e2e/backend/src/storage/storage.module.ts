@@ -1,8 +1,6 @@
 // backend/src/storage/storage.module.ts
-
 import { Module } from "@nestjs/common";
-import { Reflector } from "@nestjs/core";
-import { PermissionsGuard } from "../auth/permissions.guard";
+
 import { PgBootstrap } from "./pg.bootstrap";
 import { OrganizationContextService } from "./organization-context.service";
 import { PgPoolService } from "./pg-pool.service";
@@ -17,9 +15,11 @@ import { StorageImportController } from "./storage-import.controller";
         PgBootstrap,
         OrganizationContextService,
         StorageConnectionsService,
-        PermissionsGuard,
-        Reflector,
     ],
-    exports: [PgPoolService, OrganizationContextService, StorageConnectionsService],
+    exports: [
+        PgPoolService,
+        OrganizationContextService,
+        StorageConnectionsService,
+    ],
 })
 export class StorageModule { }

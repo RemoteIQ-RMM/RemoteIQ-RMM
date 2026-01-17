@@ -6,6 +6,15 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { StatusPill, PriorityPill } from "@/components/pills";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 
 /* -------------------------------- Types -------------------------------- */
 
@@ -15,13 +24,13 @@ type Ticket = {
     title: string;
     description?: string | null;
 
-    status: "open" | "pending" | "resolved" | "closed" | string;
-    priority?: "low" | "normal" | "high" | "urgent" | string | null;
+    status: "open" | "resolved" | "closed" | "in_progress" | string;
+    priority?: "low" | "normal" | "medium" | "high" | "urgent" | string | null;
 
     requesterName?: string | null;
     requesterEmail?: string | null;
 
-    assignedTo?: string | null; // display name or email
+    assignedTo?: string | null; // legacy display
     assigneeUserId?: string | null;
 
     customerId?: string | null;
@@ -59,6 +68,15 @@ type CannedResponse = { id: string; title: string; body: string };
 type LinkedTicket = { id: string; number?: string | null; title: string; status: string };
 type HistoryItem = { at: string; who: string; what: string };
 
+// Search results from /api/tickets (backend returns ticketNumber, etc.)
+type SearchTicket = {
+    id: string;
+    title: string;
+    status: string;
+    ticketNumber?: number | null;
+    number?: string | null;
+};
+
 /* ----------------------------- Helpers --------------------------------- */
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "";
@@ -75,6 +93,122 @@ function SectionCard(props: React.HTMLAttributes<HTMLDivElement>) {
         />
     );
 }
+
+/* ----------------------- Persistent Ticket Timer ------------------------ */
+/**
+ * Persists "time worked" per ticket while the ticket page is open.
+ * - runs while open
+ * - pauses on navigation away / tab hidden / close
+ * - resumes when visible again
+ * - DOES NOT reset after sending a reply/note
+ */
+function usePersistentTicketTimer(ticketId: string, enabled: boolean) {
+    const storageKey = React.useMemo(() => `remoteiq.ticketTimer.${ticketId}`, [ticketId]);
+
+    const [seconds, setSeconds] = React.useState<number>(() => {
+        if (typeof window === "undefined") return 0;
+        try {
+            const raw = window.localStorage.getItem(storageKey);
+            if (!raw) return 0;
+            const parsed = JSON.parse(raw) as { seconds?: unknown } | null;
+            return typeof parsed?.seconds === "number" && Number.isFinite(parsed.seconds) && parsed.seconds >= 0
+                ? parsed.seconds
+                : 0;
+        } catch {
+            return 0;
+        }
+    });
+
+    const secondsRef = React.useRef(seconds);
+    React.useEffect(() => {
+        secondsRef.current = seconds;
+    }, [seconds]);
+
+    const enabledRef = React.useRef(enabled);
+    React.useEffect(() => {
+        enabledRef.current = enabled;
+    }, [enabled]);
+
+    const intervalRef = React.useRef<number | null>(null);
+
+    const persist = React.useCallback(
+        (overrideSeconds?: number) => {
+            if (typeof window === "undefined") return;
+            const value = {
+                seconds: typeof overrideSeconds === "number" ? overrideSeconds : secondsRef.current,
+                updatedAt: Date.now(),
+            };
+            try {
+                window.localStorage.setItem(storageKey, JSON.stringify(value));
+            } catch {
+                // ignore storage failures
+            }
+        },
+        [storageKey]
+    );
+
+    const start = React.useCallback(() => {
+        if (typeof window === "undefined") return;
+        if (!enabledRef.current) return;
+        if (document.visibilityState === "hidden") return;
+        if (intervalRef.current !== null) return;
+
+        intervalRef.current = window.setInterval(() => {
+            setSeconds((s) => s + 1);
+        }, 1000);
+    }, []);
+
+    const pause = React.useCallback(() => {
+        if (typeof window === "undefined") return;
+        if (intervalRef.current !== null) {
+            window.clearInterval(intervalRef.current);
+            intervalRef.current = null;
+        }
+        persist();
+    }, [persist]);
+
+    // respond immediately when enabled changes (resolved/closed should stop timer)
+    React.useEffect(() => {
+        if (!enabled) {
+            pause();
+            return;
+        }
+        start();
+    }, [enabled, pause, start]);
+
+    React.useEffect(() => {
+        const onVis = () => {
+            if (document.visibilityState === "hidden") {
+                pause();
+                return;
+            }
+            // only resume if still enabled
+            start();
+        };
+
+        document.addEventListener("visibilitychange", onVis);
+        window.addEventListener("beforeunload", pause);
+
+        const t = window.setInterval(() => {
+            // keep persisted even if running; cheap and helps crash scenarios
+            persist();
+        }, 5000);
+
+        return () => {
+            document.removeEventListener("visibilitychange", onVis);
+            window.removeEventListener("beforeunload", pause);
+            window.clearInterval(t);
+            pause();
+        };
+    }, [pause, persist, start]);
+
+    React.useEffect(() => {
+        persist(seconds);
+    }, [seconds, persist]);
+
+    return { seconds, setSeconds, start, pause, persist };
+}
+
 
 /* ----------------------------- Data hooks ------------------------------ */
 
@@ -141,7 +275,6 @@ function useTicketExtras(id: string) {
 
 type Option = { value: string; label: string };
 
-// Tries endpoints in order until one returns 200. Maps items to Option via best-effort fields.
 function useOptions(candidates: string[], mapper: (item: any) => Option | null) {
     const [options, setOptions] = React.useState<Option[]>([]);
     const [loading, setLoading] = React.useState(true);
@@ -160,12 +293,11 @@ function useOptions(candidates: string[], mapper: (item: any) => Option | null) 
                         const mapped = arr
                             .map(mapper)
                             .filter((x): x is Option => !!x)
-                            // dedupe by value
                             .filter((x, i, a) => a.findIndex((y) => y.value === x.value) === i);
                         if (!cancelled) setOptions(mapped);
-                        break; // stop after first success
+                        break;
                     } catch {
-                        // try next candidate
+                        // try next
                     }
                 }
             } finally {
@@ -175,16 +307,17 @@ function useOptions(candidates: string[], mapper: (item: any) => Option | null) 
         return () => {
             cancelled = true;
         };
-    }, [candidates.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [candidates.join("|")]);
 
     return { options, loading };
 }
 
-// Mappers
 const userMapper = (u: any): Option | null => {
-    const label = (u?.name || u?.fullName || u?.email || u?.username || u?.id || "").toString().trim();
-    if (!label) return null;
-    return { value: label, label };
+    const id = (u?.id ?? "").toString().trim();
+    const label = (u?.name || u?.fullName || u?.email || u?.username || id || "").toString().trim();
+    if (!id || !label) return null;
+    return { value: id, label };
 };
 
 const clientMapper = (c: any): Option | null => {
@@ -200,10 +333,18 @@ const siteMapper = (s: any): Option | null => {
 };
 
 const deviceMapper = (d: any): Option | null => {
-    const label = (d?.hostname || d?.name || d?.title || d?.id || "").toString().trim();
-    if (!label) return null;
-    return { value: label, label };
+    const id = (d?.id ?? "").toString().trim();
+    const label = (d?.hostname || d?.name || d?.title || id || "").toString().trim();
+    if (!id || !label) return null;
+    return { value: id, label };
 };
+
+const PRIORITY_OPTIONS: Option[] = [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Normal" },
+    { value: "high", label: "High" },
+    { value: "urgent", label: "Urgent" },
+];
 
 /* ------------------------ Inline editable SELECT ----------------------- */
 
@@ -214,6 +355,7 @@ function EditableSelectRow({
     options,
     saving,
     onSave,
+    displayValue,
 }: {
     label: string;
     value?: string | null;
@@ -221,6 +363,7 @@ function EditableSelectRow({
     options: Option[];
     saving?: boolean;
     onSave: (v: string | null) => Promise<void> | void;
+    displayValue?: string;
 }) {
     const [editing, setEditing] = React.useState(false);
     const [draft, setDraft] = React.useState(value ?? "");
@@ -231,6 +374,7 @@ function EditableSelectRow({
     }, [value]);
 
     const hasValue = !!(value && value.toString().trim());
+    const labelForValue = displayValue ?? (hasValue ? options.find((o) => o.value === value)?.label ?? value : "");
 
     return (
         <div>
@@ -243,7 +387,7 @@ function EditableSelectRow({
                             onClick={() => setEditing(true)}
                             title={`Edit ${label.toLowerCase()}`}
                         >
-                            {value}
+                            {labelForValue}
                         </button>
                     ) : (
                         <button
@@ -299,6 +443,218 @@ function EditableSelectRow({
     );
 }
 
+/* ------------------------- Link Ticket Modal -------------------------- */
+
+function TicketLinkModal({
+    open,
+    onOpenChange,
+    currentTicketId,
+    onLinked,
+    btnBase,
+    btnSecondary,
+}: {
+    open: boolean;
+    onOpenChange: (v: boolean) => void;
+    currentTicketId: string;
+    onLinked: () => void;
+    btnBase: string;
+    btnSecondary: string;
+}) {
+    const [q, setQ] = React.useState("");
+    const [busy, setBusy] = React.useState(false);
+    const [results, setResults] = React.useState<SearchTicket[]>([]);
+    const [err, setErr] = React.useState<string | null>(null);
+
+    React.useEffect(() => {
+        if (!open) {
+            setQ("");
+            setResults([]);
+            setErr(null);
+            setBusy(false);
+        }
+    }, [open]);
+
+    React.useEffect(() => {
+        if (!open) return;
+        const needle = q.trim();
+        if (!needle) {
+            setResults([]);
+            setErr(null);
+            return;
+        }
+
+        let cancelled = false;
+        const t = window.setTimeout(async () => {
+            try {
+                setBusy(true);
+                setErr(null);
+
+                const params = new URLSearchParams();
+                params.set("search", needle);
+                params.set("pageSize", "20");
+
+                const res = await fetch(`${API}/api/tickets?${params.toString()}`, { credentials: "include" });
+                if (!res.ok) throw new Error(`Search failed (${res.status})`);
+
+                const raw = await res.json();
+                const arr: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.items) ? raw.items : [];
+
+                const mapped: SearchTicket[] = arr
+                    .map((t: any) => ({
+                        id: String(t?.id ?? ""),
+                        title: String(t?.title ?? ""),
+                        status: String(t?.status ?? ""),
+                        ticketNumber: t?.ticketNumber !== undefined && t?.ticketNumber !== null ? Number(t.ticketNumber) : null,
+                        number: t?.number ?? null,
+                    }))
+                    .filter((t) => t.id && t.title)
+                    .filter((t) => t.id !== currentTicketId);
+
+                if (!cancelled) setResults(mapped);
+            } catch (e: any) {
+                if (!cancelled) {
+                    setErr(e?.message ?? String(e));
+                    setResults([]);
+                }
+            } finally {
+                if (!cancelled) setBusy(false);
+            }
+        }, 250);
+
+        return () => {
+            cancelled = true;
+            clearTimeout(t);
+        };
+    }, [open, q, currentTicketId]);
+
+    async function linkTicket(target: SearchTicket) {
+        if (!target?.id) return;
+        setBusy(true);
+        setErr(null);
+        try {
+            const res = await fetch(`${API}/api/tickets/${currentTicketId}/linked`, {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ linkedId: target.id }), // send full UUID
+            });
+
+            if (!res.ok) {
+                const msg = await safeReadErrorMessage(res);
+                throw new Error(msg || `Link failed (${res.status})`);
+            }
+
+            onOpenChange(false);
+            onLinked();
+        } catch (e: any) {
+            setErr(e?.message ?? String(e));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="sm:max-w-[680px]">
+                <DialogHeader>
+                    <DialogTitle>Link a ticket</DialogTitle>
+                    <DialogDescription>
+                        Type a ticket number, title, or the first 8 characters of a ticket UUID, then click the ticket to link it.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-3">
+                    <Input
+                        value={q}
+                        onChange={(e) => setQ(e.target.value)}
+                        placeholder="Example: 1234  |  printer  |  d45157b8"
+                        autoFocus
+                    />
+
+                    {err && (
+                        <div className="rounded-md border border-red-700/40 bg-red-900/10 p-2 text-sm text-red-300">
+                            {err}
+                        </div>
+                    )}
+
+                    <div className="max-h-[340px] overflow-auto rounded-md border border-zinc-800">
+                        {busy && <div className="p-3 text-sm text-gray-400">Searching…</div>}
+
+                        {!busy && q.trim() && results.length === 0 && <div className="p-3 text-sm text-gray-400">No matches.</div>}
+
+                        {!busy && results.length > 0 && (
+                            <ul className="divide-y divide-zinc-800">
+                                {results.map((t) => {
+                                    const displayNum =
+                                        t.ticketNumber !== null && t.ticketNumber !== undefined
+                                            ? String(t.ticketNumber)
+                                            : t.number ?? shortId(t.id);
+
+                                    return (
+                                        <li key={t.id}>
+                                            <button
+                                                type="button"
+                                                className={cn(
+                                                    "w-full text-left p-3 hover:bg-zinc-900/60 transition-colors",
+                                                    "flex items-start justify-between gap-3"
+                                                )}
+                                                onClick={() => linkTicket(t)}
+                                                disabled={busy}
+                                                title="Click to link this ticket"
+                                            >
+                                                <div className="min-w-0">
+                                                    <div className="text-sm text-gray-200 truncate">
+                                                        <span className="font-semibold">#{displayNum}</span>{" "}
+                                                        <span className="text-gray-300">—</span>{" "}
+                                                        <span>{t.title}</span>
+                                                    </div>
+                                                    <div className="mt-1 text-xs text-gray-500">
+                                                        UUID: <span className="font-mono">{shortId(t.id)}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="shrink-0">
+                                                    <StatusPill value={t.status} />
+                                                </div>
+                                            </button>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        )}
+
+                        {!q.trim() && <div className="p-3 text-sm text-gray-400">Start typing to search…</div>}
+                    </div>
+                </div>
+
+                <DialogFooter>
+                    <button
+                        type="button"
+                        className={cn(btnBase, btnSecondary, "h-9 px-3 text-sm")}
+                        onClick={() => onOpenChange(false)}
+                        disabled={busy}
+                    >
+                        Close
+                    </button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+async function safeReadErrorMessage(res: Response): Promise<string> {
+    try {
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+            const j = await res.json();
+            return String(j?.message ?? j?.error ?? "").trim();
+        }
+        const t = await res.text();
+        return String(t ?? "").trim();
+    } catch {
+        return "";
+    }
+}
+
 /* -------------------------------- Page --------------------------------- */
 
 export default function TicketDetailPage() {
@@ -308,13 +664,11 @@ export default function TicketDetailPage() {
     const { ticket, setTicket, loading, error, refetch } = useTicket(id);
     const extras = useTicketExtras(id);
 
-    // Dropdown data
     const users = useOptions(["/api/users"], userMapper);
     const clients = useOptions(["/api/clients", "/api/customers"], clientMapper);
     const sites = useOptions(["/api/sites", "/api/locations"], siteMapper);
     const devices = useOptions(["/api/devices"], deviceMapper);
 
-    // Brand-aware buttons
     const btnBase =
         "font-semibold rounded-md transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-zinc-950 inline-flex items-center justify-center";
     const btnPrimary =
@@ -322,30 +676,48 @@ export default function TicketDetailPage() {
     const btnSecondary = "bg-zinc-700 hover:bg-zinc-600 text-gray-200 focus:ring-zinc-500";
 
     const [savingField, setSavingField] = React.useState<string | null>(null);
+    const [linkModalOpen, setLinkModalOpen] = React.useState(false);
+
+    // Persistent time worked
+    const timerEnabled = !ticket || (ticket.status !== "resolved" && ticket.status !== "closed");
+    const timer = usePersistentTicketTimer(id, timerEnabled);
+
 
     async function patchTicket(body: Partial<Ticket>, fieldName?: string) {
         if (!ticket) return;
         if (fieldName) setSavingField(fieldName);
-        // optimistic
         setTicket({ ...ticket, ...body });
+
         const res = await fetch(`${API}/api/tickets/${id}`, {
             method: "PATCH",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
         });
+
         if (!res.ok) await refetch();
         await extras.refetch();
         if (fieldName) setSavingField(null);
     }
 
-    const markResolved = () => patchTicket({ status: "resolved" });
-    const markClosed = () => patchTicket({ status: "closed" });
-    const reopen = () => patchTicket({ status: "open" });
+    const isResolvedOrClosed = ticket?.status === "resolved" || ticket?.status === "closed";
+    const isClosed = ticket?.status === "closed";
+
+    const markResolved = () => {
+        if (!ticket || isResolvedOrClosed) return;
+        return patchTicket({ status: "resolved" });
+    };
+    const markClosed = () => {
+        if (!ticket || isResolvedOrClosed) return;
+        return patchTicket({ status: "closed" });
+    };
+    const reopen = () => {
+        if (!ticket) return;
+        return patchTicket({ status: "open" });
+    };
 
     return (
         <div className="min-h-screen bg-zinc-950 text-gray-200 p-6 overflow-y-auto [scrollbar-gutter:stable]">
-            {/* Header */}
             <header className="mb-5 flex items-center justify-between">
                 <div className="flex items-center gap-2 text-sm text-gray-400">
                     <Link href="/tickets" className="hover:underline underline-offset-2">
@@ -385,7 +757,6 @@ export default function TicketDetailPage() {
 
             {ticket && (
                 <div className="grid gap-6 lg:grid-cols-3">
-                    {/* Main column */}
                     <div className="space-y-6 lg:col-span-2">
                         <SectionCard>
                             <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
@@ -394,9 +765,7 @@ export default function TicketDetailPage() {
                                     <div className="mt-2 flex items-center gap-2">
                                         <StatusPill value={ticket.status} />
                                         <PriorityPill value={ticket.priority} />
-                                        <span className="text-xs text-gray-400">
-                                            # {ticket.number ?? shortId(ticket.id)}
-                                        </span>
+                                        <span className="text-xs text-gray-400"># {ticket.number ?? shortId(ticket.id)}</span>
                                     </div>
                                 </div>
 
@@ -404,14 +773,16 @@ export default function TicketDetailPage() {
                                     {ticket.status !== "resolved" && ticket.status !== "closed" ? (
                                         <>
                                             <button
-                                                className={cn(btnBase, btnSecondary, "h-9 px-3 text-sm")}
+                                                className={cn(btnBase, btnSecondary, "h-9 px-3 text-sm disabled:opacity-50")}
                                                 onClick={markResolved}
+                                                disabled={isResolvedOrClosed}
                                             >
                                                 Mark as Resolved
                                             </button>
                                             <button
-                                                className={cn(btnBase, btnSecondary, "h-9 px-3 text-sm")}
+                                                className={cn(btnBase, btnSecondary, "h-9 px-3 text-sm disabled:opacity-50")}
                                                 onClick={markClosed}
+                                                disabled={isResolvedOrClosed}
                                             >
                                                 Close
                                             </button>
@@ -434,22 +805,20 @@ export default function TicketDetailPage() {
                             )}
                         </SectionCard>
 
-                        {/* Composer */}
                         <Composer
                             ticketId={ticket.id}
+                            ticketStatus={ticket.status}
                             canned={extras.canned}
                             onSent={() => {
                                 extras.refetch();
                                 refetch();
                             }}
-                            onAssignMe={(me) => patchTicket({ assignedTo: me })}
-                            onChangePriority={(p) => patchTicket({ priority: p as any })}
                             btnBase={btnBase}
                             btnPrimary={btnPrimary}
                             btnSecondary={btnSecondary}
+                            timeWorkedSeconds={timer.seconds}
                         />
 
-                        {/* Activity */}
                         <SectionCard>
                             <div className="mb-3 flex items-center justify-between">
                                 <h2 className="text-base font-semibold text-white">Activity</h2>
@@ -480,12 +849,20 @@ export default function TicketDetailPage() {
                                     ) : (
                                         <li key={a.id} className="text-sm">
                                             <div className="flex items-start gap-3">
-                                                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-blue-500/15 text-blue-300">
-                                                    Reply
+                                                <span
+                                                    className={cn(
+                                                        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                                                        a.kind === "note"
+                                                            ? "bg-amber-500/15 text-amber-300"
+                                                            : "bg-blue-500/15 text-blue-300"
+                                                    )}
+                                                >
+                                                    {a.kind === "note" ? "Note" : "Reply"}
                                                 </span>
                                                 <div className="flex-1">
                                                     <div className="text-gray-400">
-                                                        {fmtWhen(a.createdAt)} • {a.author}
+                                                        {fmtWhen(a.createdAt)} • {a.author}{" "}
+                                                        {a.isInternal ? "• Internal" : ""}
                                                     </div>
                                                     <div className="mt-1 whitespace-pre-wrap text-gray-200">{a.body}</div>
                                                     {a.attachments && a.attachments.length > 0 && (
@@ -515,28 +892,32 @@ export default function TicketDetailPage() {
                         </SectionCard>
                     </div>
 
-                    {/* Right column */}
                     <div className="space-y-6">
                         <SectionCard>
                             <h3 className="mb-3 text-base font-semibold text-white">Ticket Details</h3>
                             <dl className="grid grid-cols-1 gap-3 text-sm">
                                 <MetaRow label="Ticket #">{ticket.number ?? shortId(ticket.id)}</MetaRow>
 
-                                <MetaRow label="Requester">
-                                    {ticket.requesterName ?? ticket.requesterEmail ?? "-"}
-                                </MetaRow>
+                                <MetaRow label="Requester">{ticket.requesterName ?? ticket.requesterEmail ?? "-"}</MetaRow>
 
-                                {/* Assignee dropdown */}
                                 <EditableSelectRow
-                                    label="Assignee"
-                                    value={ticket.assignedTo}
-                                    placeholder="Select assignee"
-                                    options={users.options}
-                                    saving={savingField === "assignedTo"}
-                                    onSave={(v) => patchTicket({ assignedTo: v }, "assignedTo")}
+                                    label="Priority"
+                                    value={(ticket.priority ?? "") as any}
+                                    placeholder="Select priority"
+                                    options={PRIORITY_OPTIONS}
+                                    saving={savingField === "priority"}
+                                    onSave={(v) => patchTicket({ priority: v as any }, "priority")}
                                 />
 
-                                {/* Client dropdown */}
+                                <EditableSelectRow
+                                    label="Assignee"
+                                    value={ticket.assigneeUserId ?? ""}
+                                    placeholder="Select assignee"
+                                    options={users.options}
+                                    saving={savingField === "assigneeUserId"}
+                                    onSave={(v) => patchTicket({ assigneeUserId: v }, "assigneeUserId")}
+                                />
+
                                 <EditableSelectRow
                                     label="Client"
                                     value={ticket.client}
@@ -546,7 +927,6 @@ export default function TicketDetailPage() {
                                     onSave={(v) => patchTicket({ client: v as any }, "client")}
                                 />
 
-                                {/* Site dropdown */}
                                 <EditableSelectRow
                                     label="Site"
                                     value={ticket.site}
@@ -556,17 +936,15 @@ export default function TicketDetailPage() {
                                     onSave={(v) => patchTicket({ site: v as any }, "site")}
                                 />
 
-                                {/* Device dropdown */}
                                 <EditableSelectRow
                                     label="Device"
-                                    value={ticket.deviceId}
+                                    value={ticket.deviceId ?? ""}
                                     placeholder="Select device"
                                     options={devices.options}
                                     saving={savingField === "deviceId"}
                                     onSave={(v) => patchTicket({ deviceId: v as any }, "deviceId")}
                                 />
 
-                                {/* Due date (datetime picker) */}
                                 <InlineDateRow
                                     label="Due date"
                                     value={ticket.dueAt}
@@ -576,52 +954,6 @@ export default function TicketDetailPage() {
 
                                 <MetaRow label="Updated">{fmtWhen(ticket.updatedAt)}</MetaRow>
                                 <MetaRow label="Created">{fmtWhen(ticket.createdAt)}</MetaRow>
-
-                                {/* Collaborators (keep as-is for now) */}
-                                <div>
-                                    <dt className="text-gray-400">Collaborators</dt>
-                                    <dd className="mt-1 flex flex-wrap gap-2">
-                                        {(ticket.collaborators ?? []).length === 0 && (
-                                            <span className="text-gray-400">None</span>
-                                        )}
-                                        {(ticket.collaborators ?? []).map((c) => (
-                                            <span
-                                                key={c}
-                                                className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-zinc-800 text-gray-300"
-                                            >
-                                                {c}
-                                            </span>
-                                        ))}
-                                    </dd>
-                                    <div className="mt-2 flex gap-2">
-                                        <SmallBtn
-                                            className={cn(btnBase, btnSecondary)}
-                                            onClick={async () => {
-                                                const email = prompt("Add collaborator (email):");
-                                                if (!email) return;
-                                                await patchTicket({
-                                                    collaborators: [...(ticket.collaborators ?? []), email],
-                                                });
-                                            }}
-                                        >
-                                            + Add collaborator
-                                        </SmallBtn>
-                                        {(ticket.collaborators ?? []).length > 0 && (
-                                            <SmallBtn
-                                                className={cn(btnBase, btnSecondary)}
-                                                onClick={async () => {
-                                                    const email = prompt("Remove which collaborator (email)?");
-                                                    if (!email) return;
-                                                    await patchTicket({
-                                                        collaborators: (ticket.collaborators ?? []).filter((x) => x !== email),
-                                                    });
-                                                }}
-                                            >
-                                                Remove
-                                            </SmallBtn>
-                                        )}
-                                    </div>
-                                </div>
                             </dl>
                         </SectionCard>
 
@@ -630,37 +962,29 @@ export default function TicketDetailPage() {
                             <ul className="space-y-2 text-sm">
                                 {extras.linked.map((lt) => (
                                     <li key={lt.id} className="flex items-center justify-between gap-2">
-                                        <Link
-                                            href={`/tickets/${lt.id}`}
-                                            className="underline underline-offset-2 hover:opacity-80"
-                                        >
+                                        <Link href={`/tickets/${lt.id}`} className="underline underline-offset-2 hover:opacity-80">
                                             {lt.number ?? shortId(lt.id)} — {lt.title}
                                         </Link>
                                         <StatusPill value={lt.status} />
                                     </li>
                                 ))}
-                                {extras.linked.length === 0 && (
-                                    <li className="text-gray-400">No linked tickets.</li>
-                                )}
+                                {extras.linked.length === 0 && <li className="text-gray-400">No linked tickets.</li>}
                             </ul>
+
                             <div className="mt-2">
-                                <SmallBtn
-                                    className={cn(btnBase, btnSecondary)}
-                                    onClick={async () => {
-                                        const other = prompt("Link ticket by ID:");
-                                        if (!other) return;
-                                        await fetch(`${API}/api/tickets/${id}/linked`, {
-                                            method: "POST",
-                                            credentials: "include",
-                                            headers: { "Content-Type": "application/json" },
-                                            body: JSON.stringify({ linkedId: other }),
-                                        });
-                                        extras.refetch();
-                                    }}
-                                >
+                                <SmallBtn className={cn(btnBase, btnSecondary)} onClick={() => setLinkModalOpen(true)}>
                                     + Link a ticket
                                 </SmallBtn>
                             </div>
+
+                            <TicketLinkModal
+                                open={linkModalOpen}
+                                onOpenChange={setLinkModalOpen}
+                                currentTicketId={id}
+                                onLinked={() => extras.refetch()}
+                                btnBase={btnBase}
+                                btnSecondary={btnSecondary}
+                            />
                         </SectionCard>
 
                         <SectionCard>
@@ -674,10 +998,18 @@ export default function TicketDetailPage() {
                                         </div>
                                     </li>
                                 ))}
-                                {extras.history.length === 0 && (
-                                    <li className="text-gray-400">No history entries.</li>
-                                )}
+                                {extras.history.length === 0 && <li className="text-gray-400">No history entries.</li>}
                             </ul>
+                        </SectionCard>
+
+                        <SectionCard>
+                            <h3 className="mb-2 text-base font-semibold text-white">Time worked</h3>
+                            <div className="text-sm text-gray-300 tabular-nums">{formatHHMMSS(timer.seconds)}</div>
+                            {isClosed && (
+                                <div className="mt-2 text-xs text-amber-300">
+                                    Ticket is closed. Replies/notes are disabled.
+                                </div>
+                            )}
                         </SectionCard>
                     </div>
                 </div>
@@ -697,16 +1029,11 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
     );
 }
 
-function SmallBtn(
-    props: React.ButtonHTMLAttributes<HTMLButtonElement> & { className?: string }
-) {
+function SmallBtn(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { className?: string }) {
     return (
         <button
             {...props}
-            className={cn(
-                "inline-flex h-8 items-center rounded-md px-2 text-xs transition-colors",
-                props.className
-            )}
+            className={cn("inline-flex h-8 items-center rounded-md px-2 text-xs transition-colors", props.className)}
         />
     );
 }
@@ -732,9 +1059,9 @@ function InlineDateRow({
         const d = new Date(iso);
         if (isNaN(d.getTime())) return "";
         const pad = (n: number) => String(n).padStart(2, "0");
-        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-            d.getHours()
-        )}:${pad(d.getMinutes())}`;
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(
+            d.getMinutes()
+        )}`;
     };
     const fromLocalInput = (v: string) => {
         if (!v.trim()) return null;
@@ -754,18 +1081,13 @@ function InlineDateRow({
             <dd className="mt-1">
                 {!editing ? (
                     hasValue ? (
-                        <button
-                            className="font-medium text-gray-200 hover:underline underline-offset-2"
-                            onClick={() => setEditing(true)}
-                            title={`Edit ${label.toLowerCase()}`}
-                        >
+                        <button className="font-medium text-gray-200 hover:underline underline-offset-2" onClick={() => setEditing(true)}>
                             {fmtWhen(value)}
                         </button>
                     ) : (
                         <button
                             className="text-xs rounded-md border border-zinc-700 px-2 py-1 text-gray-300 hover:bg-zinc-800/70"
                             onClick={() => setEditing(true)}
-                            title={`Set ${label.toLowerCase()}`}
                         >
                             + Set due date
                         </button>
@@ -813,40 +1135,30 @@ function InlineDateRow({
 
 function Composer({
     ticketId,
+    ticketStatus,
     canned,
     onSent,
-    onAssignMe,
-    onChangePriority,
     btnBase,
     btnPrimary,
     btnSecondary,
+    timeWorkedSeconds,
 }: {
     ticketId: string;
+    ticketStatus: string;
     canned: CannedResponse[];
     onSent: () => void;
-    onAssignMe: (meDisplay: string) => void;
-    onChangePriority: (p: "low" | "normal" | "high" | "urgent") => void;
     btnBase: string;
     btnPrimary: string;
     btnSecondary: string;
+    timeWorkedSeconds: number;
 }) {
-    const [mode] = React.useState<"reply" | "note">("reply");
+    const [mode, setMode] = React.useState<"reply" | "note">("reply");
     const [body, setBody] = React.useState("");
-    const [timeWorked, setTimeWorked] = React.useState(0);
     const [attach, setAttach] = React.useState<File[]>([]);
-    const [assignToMe, setAssignToMe] = React.useState(false);
-    const [changePriority, setChangePriority] =
-        React.useState<"low" | "normal" | "high" | "urgent" | "">("");
     const [dontEmailCustomer, setDontEmailCustomer] = React.useState(false);
     const [submitting, setSubmitting] = React.useState(false);
-    const timerRef = React.useRef<NodeJS.Timeout | null>(null);
 
-    React.useEffect(() => {
-        timerRef.current = setInterval(() => setTimeWorked((s) => s + 1), 1000);
-        return () => {
-            if (timerRef.current) clearInterval(timerRef.current);
-        };
-    }, []);
+    const isClosed = ticketStatus === "closed";
 
     function pickCanned(id: string) {
         const match = canned.find((c) => c.id === id);
@@ -871,7 +1183,9 @@ function Composer({
         kind: "reply" | "note",
         submitAs?: "reply" | "reply_and_close" | "reply_and_resolve"
     ) {
+        if (isClosed) return;
         if (!body.trim() && attach.length === 0) return;
+
         setSubmitting(true);
         try {
             const files = await uploadFiles();
@@ -881,7 +1195,7 @@ function Composer({
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     body,
-                    timeWorkedSeconds: timeWorked,
+                    timeWorkedSeconds,
                     attachments: files,
                     notifyCustomer: kind === "reply" && !dontEmailCustomer,
                     submitAs,
@@ -889,14 +1203,8 @@ function Composer({
             });
             if (!res.ok) throw new Error(`Submit failed (${res.status})`);
 
-            if (assignToMe) onAssignMe("Me");
-            if (changePriority) {
-                onChangePriority(changePriority);
-                setChangePriority("");
-            }
             setBody("");
             setAttach([]);
-            setTimeWorked(0);
             onSent();
         } catch (e) {
             alert((e as any)?.message ?? String(e));
@@ -909,23 +1217,49 @@ function Composer({
         <SectionCard>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-sm">
-                    <span className="rounded-md border border-zinc-700 px-3 py-1 text-gray-200 bg-zinc-800">
+                    <button
+                        type="button"
+                        className={cn(
+                            "rounded-md border border-zinc-700 px-3 py-1",
+                            mode === "reply" ? "bg-zinc-800 text-gray-200" : "bg-zinc-900 text-gray-400 hover:bg-zinc-800/50"
+                        )}
+                        onClick={() => setMode("reply")}
+                        disabled={isClosed}
+                    >
                         Reply
-                    </span>
+                    </button>
+                    <button
+                        type="button"
+                        className={cn(
+                            "rounded-md border border-zinc-700 px-3 py-1",
+                            mode === "note" ? "bg-zinc-800 text-amber-200" : "bg-zinc-900 text-gray-400 hover:bg-zinc-800/50"
+                        )}
+                        onClick={() => setMode("note")}
+                        disabled={isClosed}
+                        title="Internal note (technicians only)"
+                    >
+                        Internal note
+                    </button>
                 </div>
 
                 <div className="text-xs text-gray-400">
-                    Time worked: <span className="tabular-nums">{formatHHMMSS(timeWorked)}</span>
+                    Time worked: <span className="tabular-nums">{formatHHMMSS(timeWorkedSeconds)}</span>
                 </div>
             </div>
 
-            {/* Toolbar */}
+            {isClosed && (
+                <div className="mb-3 rounded-md border border-amber-700/40 bg-amber-900/10 p-2 text-sm text-amber-200">
+                    This ticket is closed. You can’t add replies or internal notes.
+                </div>
+            )}
+
             <div className="mb-2 flex flex-wrap items-center gap-2">
                 <select
                     className="h-9 rounded-md border border-zinc-700 bg-zinc-900 px-2 text-sm text-gray-200"
                     onChange={(e) => pickCanned(e.currentTarget.value)}
                     defaultValue=""
                     title="Canned responses"
+                    disabled={isClosed}
                 >
                     <option value="" disabled>
                         Select a canned response…
@@ -937,88 +1271,83 @@ function Composer({
                     ))}
                 </select>
 
-                <label className="ml-auto inline-flex cursor-pointer items-center gap-2 text-sm">
+                <label className={cn("ml-auto inline-flex cursor-pointer items-center gap-2 text-sm", isClosed && "opacity-50 cursor-not-allowed")}>
                     <input
                         type="file"
                         multiple
                         className="hidden"
+                        disabled={isClosed}
                         onChange={(e) => setAttach(Array.from(e.currentTarget.files ?? []))}
                     />
                     <span className="rounded-md border border-zinc-700 px-3 py-1 text-gray-200 hover:bg-zinc-800/70">
                         Add file
                     </span>
-                    {attach.length > 0 && (
-                        <span className="text-xs text-gray-400">{attach.length} file(s)</span>
-                    )}
+                    {attach.length > 0 && <span className="text-xs text-gray-400">{attach.length} file(s)</span>}
                 </label>
             </div>
 
             <textarea
-                className="min-h-[160px] w-full rounded-md border border-zinc-700 bg-zinc-900 p-3 text-sm text-gray-200 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
-                placeholder="Type your reply…"
+                className="min-h-[160px] w-full rounded-md border border-zinc-700 bg-zinc-900 p-3 text-sm text-gray-200 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))] disabled:opacity-50"
+                placeholder={mode === "note" ? "Type an internal note (technicians only)…" : "Type your reply…"}
                 value={body}
                 onChange={(e) => setBody(e.currentTarget.value)}
+                disabled={isClosed}
             />
 
-            {/* Footer controls */}
             <div className="mt-3 grid gap-3 md:grid-cols-2">
                 <div className="space-y-2 text-sm">
-                    <label className="flex items-center gap-2">
-                        <input
-                            type="checkbox"
-                            checked={assignToMe}
-                            onChange={(e) => setAssignToMe(e.currentTarget.checked)}
-                        />
-                        Assign this ticket to me
-                    </label>
-
-                    <div className="flex items-center gap-2">
-                        <span>Change priority to:</span>
-                        <select
-                            className="h-8 rounded-md border border-zinc-700 bg-zinc-900 px-2 text-gray-200"
-                            value={changePriority}
-                            onChange={(e) => setChangePriority(e.currentTarget.value as any)}
-                        >
-                            <option value="">(don’t change)</option>
-                            <option value="low">Low</option>
-                            <option value="normal">Normal</option>
-                            <option value="high">High</option>
-                            <option value="urgent">Urgent</option>
-                        </select>
-                    </div>
-
-                    <label className="flex items-center gap-2">
-                        <input
-                            type="checkbox"
-                            checked={dontEmailCustomer}
-                            onChange={(e) => setDontEmailCustomer(e.currentTarget.checked)}
-                        />
-                        Don’t send email notification of this reply to the customer
-                    </label>
+                    {mode === "reply" && (
+                        <label className="flex items-center gap-2">
+                            <input
+                                type="checkbox"
+                                checked={dontEmailCustomer}
+                                onChange={(e) => setDontEmailCustomer(e.currentTarget.checked)}
+                                disabled={isClosed}
+                            />
+                            Don’t send email notification of this reply to the customer
+                        </label>
+                    )}
+                    {mode === "note" && (
+                        <div className="text-xs text-amber-200/90">
+                            Internal notes are visible to technicians only.
+                        </div>
+                    )}
                 </div>
 
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                    <button
-                        className={cn(btnBase, btnSecondary, "h-9 px-3 text-sm disabled:opacity-50")}
-                        disabled={submitting}
-                        onClick={() => submit("reply")}
-                    >
-                        Submit reply
-                    </button>
-                    <button
-                        className={cn(btnBase, btnPrimary, "h-9 px-3 text-sm disabled:opacity-50")}
-                        disabled={submitting}
-                        onClick={() => submit("reply", "reply_and_resolve")}
-                    >
-                        Submit & Resolve
-                    </button>
-                    <button
-                        className={cn(btnBase, btnPrimary, "h-9 px-3 text-sm disabled:opacity-50")}
-                        disabled={submitting}
-                        onClick={() => submit("reply", "reply_and_close")}
-                    >
-                        Submit & Close
-                    </button>
+                    {mode === "note" ? (
+                        <button
+                            className={cn(btnBase, btnSecondary, "h-9 px-3 text-sm disabled:opacity-50")}
+                            disabled={submitting || isClosed}
+                            onClick={() => submit("note")}
+                        >
+                            Add internal note
+                        </button>
+                    ) : (
+                        <>
+                            <button
+                                className={cn(btnBase, btnSecondary, "h-9 px-3 text-sm disabled:opacity-50")}
+                                disabled={submitting || isClosed}
+                                onClick={() => submit("reply")}
+                            >
+                                Submit reply
+                            </button>
+                            <button
+                                className={cn(btnBase, btnPrimary, "h-9 px-3 text-sm disabled:opacity-50")}
+                                disabled={submitting || isClosed}
+                                onClick={() => submit("reply", "reply_and_resolve")}
+                            >
+                                Submit & Resolve
+                            </button>
+                            <button
+                                className={cn(btnBase, btnPrimary, "h-9 px-3 text-sm disabled:opacity-50")}
+                                disabled={submitting || isClosed}
+                                onClick={() => submit("reply", "reply_and_close")}
+                            >
+                                Submit & Close
+                            </button>
+                        </>
+                    )}
                 </div>
             </div>
         </SectionCard>

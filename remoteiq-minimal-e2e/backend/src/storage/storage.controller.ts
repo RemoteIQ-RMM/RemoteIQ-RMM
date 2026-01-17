@@ -6,14 +6,11 @@ import {
     Param,
     Post,
     Put,
-    UseGuards,
 } from "@nestjs/common";
 import { StorageConnectionsService } from "./storage-connections.service";
-import { PermissionsGuard } from "../auth/permissions.guard";
 import { RequirePerm } from "../auth/require-perm.decorator";
 
 @Controller("/api/admin/storage")
-@UseGuards(PermissionsGuard)
 export class StorageController {
     constructor(private readonly svc: StorageConnectionsService) { }
 

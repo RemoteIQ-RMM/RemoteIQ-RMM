@@ -4,10 +4,20 @@ import type { Request, Response } from "express";
 import { LoginDto } from "./dto/login.dto";
 import { Verify2FADto } from "./dto/verify-2fa.dto";
 import { UserAuthService } from "./user-auth.service";
+import { Public } from "./public.decorator";
 
+/**
+ * NOTE:
+ * This file previously declared another AuthController under "api/auth",
+ * colliding with auth.controller.ts routes.
+ *
+ * It is moved to /api/auth-legacy to avoid conflicts.
+ * Prefer using backend/src/auth/auth.controller.ts going forward.
+ */
 @ApiTags("auth")
-@Controller("api/auth")
-export class AuthController {
+@Public() // ✅ bypass global AuthCookieGuard (legacy endpoints handle their own flow)
+@Controller("api/auth-legacy")
+export class LegacyAuthController {
     constructor(private readonly users: UserAuthService) { }
 
     @Post("login")
@@ -15,12 +25,10 @@ export class AuthController {
     async login(
         @Body() dto: LoginDto & { deviceFingerprint?: string },
         @Req() req: Request,
-        @Res({ passthrough: true }) res: Response,
+        @Res({ passthrough: true }) res: Response
     ) {
-        // 1) Validate user
         const user = await this.users.validateUser(dto.email, dto.password);
 
-        // 2) 2FA gate
         const is2FAEnabled = await this.users.isTwoFactorEnabled(user.id);
         const deviceTrusted = await this.users.isDeviceTrusted(user.id, dto.deviceFingerprint ?? null);
         if (is2FAEnabled && !deviceTrusted) {
@@ -28,10 +36,8 @@ export class AuthController {
             return { status: "2fa_required" as const, challengeToken, jti };
         }
 
-        // 3) Issue JWT with JTI
         const { token, jti } = await this.users.signWithJti(user);
 
-        // 4) Record session
         const ua = req.headers["user-agent"] || "";
         const ip =
             (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
@@ -39,9 +45,8 @@ export class AuthController {
             "";
         await this.users.recordSessionOnLogin(user.id, jti, String(ua), String(ip));
 
-        // 5) Set cookie
         const cookieName = process.env.AUTH_COOKIE_NAME || "auth_token";
-        const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000); // 7d
+        const maxAgeMs = Number(process.env.AUTH_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000);
         res.cookie(cookieName, token, {
             httpOnly: true,
             sameSite: "lax",
@@ -55,8 +60,11 @@ export class AuthController {
 
     @Post("2fa/verify")
     @ApiOkResponse({ description: "Verifies TOTP or recovery code and sets auth cookie" })
-    async verify2FA(@Body() dto: Verify2FADto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
-        // Normalize incoming values
+    async verify2FA(
+        @Body() dto: Verify2FADto,
+        @Req() req: Request,
+        @Res({ passthrough: true }) res: Response
+    ) {
         if (dto.code) dto.code = dto.code.trim();
         if (dto.recoveryCode) dto.recoveryCode = dto.recoveryCode.trim();
 
@@ -64,17 +72,14 @@ export class AuthController {
             throw new BadRequestException("Provide either 'code' or 'recoveryCode'.");
         }
 
-        // 1) Validate challenge and extract userId + jti
         const { userId, jti } = await this.users.verifyChallengeToken(dto.challengeToken);
 
-        // 2) Verify TOTP or recovery
         let ok = false;
         if (dto.code) ok = await this.users.verifyTOTP(userId, dto.code);
         else if (dto.recoveryCode) ok = await this.users.consumeRecoveryCode(userId, dto.recoveryCode);
 
         if (!ok) throw new BadRequestException("Invalid code");
 
-        // 3) Sign normal auth token with JTI and set cookie
         const user = await this.users.findUserById(userId);
         const { token, jti: newJti } = await this.users.signWithJti(user);
 
@@ -95,7 +100,6 @@ export class AuthController {
             maxAge: maxAgeMs,
         });
 
-        // 4) Trust device if requested
         if (dto.rememberDevice) {
             const fp = dto.deviceFingerprint ?? jti;
             await this.users.trustCurrentDevice(userId, fp);

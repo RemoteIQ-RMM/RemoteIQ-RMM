@@ -1,16 +1,15 @@
-//remoteiq-minimal-e2e\backend\src\roles\roles.module.ts
+// backend/src/roles/roles.module.ts
+import { Module } from "@nestjs/common";
+import { StorageModule } from "../storage/storage.module";
 
-import { Module } from '@nestjs/common';
-import { StorageModule } from '../storage/storage.module';
-import { RolesService } from './roles.service';
-import { RolesController } from './roles.controller';
-import { PermissionsIntrospectService } from './permissions-introspect.service';
-import { RolesPermissionsController } from './permissions.controller';
-import { PermissionsGuard } from '../auth/permissions.guard';
+import { RolesService } from "./roles.service";
+import { RolesController } from "./roles.controller";
+import { PermissionsIntrospectService } from "./permissions-introspect.service";
+import { RolesPermissionsController } from "./permissions.controller";
 
 @Module({
     imports: [StorageModule],
-    providers: [RolesService, PermissionsIntrospectService, PermissionsGuard],
+    providers: [RolesService, PermissionsIntrospectService],
     controllers: [RolesController, RolesPermissionsController],
     exports: [RolesService],
 })

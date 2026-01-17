@@ -13,6 +13,7 @@ import {
 import { RunsService } from "./runs.service";
 import { IsIn, IsInt, IsOptional, IsString, Min } from "class-validator";
 import { Transform } from "class-transformer";
+import { RequirePerm } from "../auth/require-perm.decorator";
 
 class RunScriptDto {
     @IsString()
@@ -43,6 +44,7 @@ export class RunsController {
      */
     @Post("runs")
     @HttpCode(202)
+    @RequirePerm("automation.run")
     async start(@Body() body: RunScriptDto): Promise<{ jobId: string }> {
         const jobId = await this.runs.startRun(body);
         return { jobId };
@@ -50,12 +52,10 @@ export class RunsController {
 
     /**
      * Get the *full* job snapshot (status, log, times, exitCode).
-     * Useful for polling if WS isn’t available.
      */
     @Get("runs/:jobId")
-    async getSnapshot(
-        @Param("jobId") jobId: string
-    ): Promise<ReturnType<RunsService["get"]>> {
+    @RequirePerm("automation.read")
+    async getSnapshot(@Param("jobId") jobId: string): Promise<ReturnType<RunsService["get"]>> {
         const snap = this.runs.get(jobId);
         if (!snap) throw new NotFoundException("Job not found");
         return snap;
@@ -65,9 +65,8 @@ export class RunsController {
      * Get just the job logs (kept for compatibility with your current UI).
      */
     @Get("runs/:jobId/log")
-    async log(
-        @Param("jobId") jobId: string
-    ): Promise<{ jobId: string; log: string }> {
+    @RequirePerm("automation.read")
+    async log(@Param("jobId") jobId: string): Promise<{ jobId: string; log: string }> {
         const snap = this.runs.get(jobId);
         if (!snap) throw new NotFoundException("Job not found");
         return { jobId, log: snap.log };

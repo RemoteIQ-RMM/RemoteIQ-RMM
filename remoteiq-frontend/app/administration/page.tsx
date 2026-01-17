@@ -3,6 +3,11 @@
 
 import * as React from "react";
 import dynamic from "next/dynamic";
+import PermGate from "@/components/perm-gate";
+import NoPermission from "@/components/no-permission";
+import { useMe } from "@/lib/use-me";
+import { hasPerm } from "@/lib/permissions";
+
 import { useRouter, useSearchParams } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -121,10 +126,7 @@ function useToasts() {
     const push = React.useCallback((t: Omit<Toast, "id">) => {
         const id = Math.random().toString(36).slice(2);
         setToasts((prev) => [...prev, { ...t, id }]);
-        window.setTimeout(
-            () => setToasts((prev) => prev.filter((x) => x.id !== id)),
-            4200
-        );
+        window.setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), 4200);
     }, []);
     return { toasts, push };
 }
@@ -170,9 +172,68 @@ function mapLocalization(apiLoc: any): LocalizationSettings {
     };
 }
 
+/**
+ * Admin tab -> permission required to VIEW the content.
+ * Tabs remain clickable; content area shows "No permission" when missing.
+ *
+ * NOTE: These are intentionally "read/view" perms where possible.
+ * Adjust strings to match your backend permission registry.
+ */
+const ADMIN_TAB_PERMS: Record<string, string | string[]> = {
+    // General
+    company: "settings.read",
+    branding: "settings.read",
+    localization: "settings.read",
+    support: "settings.read",
+
+    // Access Management
+    users: "users.read",
+    roles: "roles.read",
+    sso: "settings.read",
+    security_policies: "settings.read",
+    sessions: "users.read",
+    roles_matrix: "roles.read",
+
+    // Billing
+    subscription: "billing.read",
+    billing: "billing.read",
+    invoices: "billing.read",
+
+    // Communications
+    smtp: "settings.read",
+    notifications: "settings.read",
+    templates: "settings.read",
+
+    // Infrastructure
+    system: "settings.read",
+    database: "settings.read",
+    storage: "settings.read",
+    backups: "backups.read",
+    agents: "devices.read",
+    migrations: "settings.read",
+
+    // Advanced
+    audit: "admin.access",
+    api: "settings.read",
+    integrations: "settings.read",
+    secrets: "settings.read",
+    workflows: "automation.read",
+    import_export: "settings.read",
+    custom_fields: "settings.read",
+    client_portal: "settings.read",
+    sla: "settings.read",
+    ticketing: "tickets.read",
+    reports: "admin.access",
+    flags: "settings.read",
+    compliance: "settings.read",
+};
+
 export default function AdministrationPage() {
     const { toasts, push: pushToast } = useToasts();
     const push = pushToast;
+
+    // Current user (permissions)
+    const { permissions } = useMe();
 
     // -------- tab state with URL + localStorage persistence --------
     const router = useRouter();
@@ -272,9 +333,11 @@ export default function AdministrationPage() {
             typeof window !== "undefined" ? localStorage.getItem("admin.tab") || "" : "";
 
         const initial =
-            (fromQuery && VALID_TABS.has(fromQuery)) ? fromQuery :
-                (fromStorage && VALID_TABS.has(fromStorage)) ? fromStorage :
-                    "company";
+            fromQuery && VALID_TABS.has(fromQuery)
+                ? fromQuery
+                : fromStorage && VALID_TABS.has(fromStorage)
+                    ? fromStorage
+                    : "company";
 
         setTab(initial);
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -440,9 +503,7 @@ export default function AdministrationPage() {
     const [openGroups, setOpenGroups] = React.useState<string[]>([]);
 
     React.useEffect(() => {
-        const currentGroup = navItemGroups.find((g) =>
-            g.items.some((item) => item.v === tab)
-        );
+        const currentGroup = navItemGroups.find((g) => g.items.some((item) => item.v === tab));
         if (currentGroup) {
             setOpenGroups((prev) =>
                 prev.includes(currentGroup.title) ? prev : [...prev, currentGroup.title]
@@ -456,6 +517,10 @@ export default function AdministrationPage() {
         );
     };
 
+    // Determine permission required for the currently-selected tab
+    const requiredForTab = ADMIN_TAB_PERMS[tab] ?? "admin.access";
+    const canViewTab = hasPerm(permissions, requiredForTab);
+
     return (
         <main className="p-4 sm:p-6">
             <div className="mx-auto max-w-7xl">
@@ -464,16 +529,11 @@ export default function AdministrationPage() {
                         <Shield className="h-5 w-5" /> Administration
                     </h1>
                     <p className="text-sm text-muted-foreground">
-                        Organization-wide settings, users, roles, storage, billing and system
-                        controls.
+                        Organization-wide settings, users, roles, storage, billing and system controls.
                     </p>
                 </div>
 
-                <Tabs
-                    value={tab}
-                    onValueChange={setTab}
-                    className="grid grid-cols-[240px_1fr] items-start gap-6"
-                >
+                <Tabs value={tab} onValueChange={setTab} className="grid grid-cols-[240px_1fr] items-start gap-6">
                     {/* Left rail */}
                     <aside className="w-[240px] shrink-0 self-start sticky top-[70px] sm:top-[70px]">
                         <Card>
@@ -495,6 +555,7 @@ export default function AdministrationPage() {
                                             />
                                             {group.title}
                                         </button>
+
                                         {group.items.map(({ v, label, Icon }) => {
                                             const isOpen = openGroups.includes(group.title);
                                             const isActive = tab === v;
@@ -518,72 +579,228 @@ export default function AdministrationPage() {
 
                     {/* Right side */}
                     <div className="min-w-0 flex-1">
-                        {tab === "users" && (
-                            <UsersTab
-                                users={users}
-                                setUsers={setUsers}
-                                roles={roles as any[]}
-                                push={push}
-                                setRemoveUserId={() => { }}
-                                setReset2FAUserId={() => { }}
-                                setInviteOpen={() => { }}
-                                refetchUsers={refetchUsers}
-                                localization={loc ?? undefined}
+                        {/* Global content replacement:
+                If user lacks permission for the selected tab, show the message where content would be.
+                Tabs remain clickable (your requirement).
+             */}
+                        {!canViewTab ? (
+                            <NoPermission
+                                title="No permission"
+                                message="You don’t have permission to view this Administration section."
+                                required={requiredForTab}
                             />
+                        ) : (
+                            <>
+                                {tab === "users" && (
+                                    <PermGate
+                                        require={ADMIN_TAB_PERMS.users}
+                                        title="No permission"
+                                        message="You don’t have permission to view Users."
+                                    >
+                                        <UsersTab
+                                            users={users}
+                                            setUsers={setUsers}
+                                            roles={roles as any[]}
+                                            push={push}
+                                            setRemoveUserId={() => { }}
+                                            setReset2FAUserId={() => { }}
+                                            setInviteOpen={() => { }}
+                                            refetchUsers={refetchUsers}
+                                            localization={loc ?? undefined}
+                                        />
+                                    </PermGate>
+                                )}
+
+                                {tab === "roles" && (
+                                    <PermGate
+                                        require={ADMIN_TAB_PERMS.roles}
+                                        title="No permission"
+                                        message="You don’t have permission to view Roles."
+                                    >
+                                        <RolesTab
+                                            roles={roles as any[]} // pass-through (keeps description + permissions)
+                                            setRoles={setRoles as any}
+                                            push={push}
+                                        />
+                                    </PermGate>
+                                )}
+
+                                {tab === "company" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.company} title="No permission" message="You don’t have permission to view Company settings.">
+                                        <CompanyTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "branding" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.branding} title="No permission" message="You don’t have permission to view Branding.">
+                                        <BrandingTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "localization" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.localization} title="No permission" message="You don’t have permission to view Localization.">
+                                        <LocalizationTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "support" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.support} title="No permission" message="You don’t have permission to view Support & Legal.">
+                                        <SupportTab push={push} />
+                                    </PermGate>
+                                )}
+
+                                {tab === "subscription" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.subscription} title="No permission" message="You don’t have permission to view Subscription.">
+                                        <SubscriptionTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "billing" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.billing} title="No permission" message="You don’t have permission to view Billing.">
+                                        <BillingTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "invoices" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.invoices} title="No permission" message="You don’t have permission to view Invoices.">
+                                        <InvoicesTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "security_policies" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.security_policies} title="No permission" message="You don’t have permission to view Security Policies.">
+                                        <SecurityPoliciesTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "smtp" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.smtp} title="No permission" message="You don’t have permission to view SMTP settings.">
+                                        <SmtpTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "notifications" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.notifications} title="No permission" message="You don’t have permission to view Notifications.">
+                                        <NotificationsTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "templates" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.templates} title="No permission" message="You don’t have permission to view Email Templates.">
+                                        <EmailTemplatesTab push={push} />
+                                    </PermGate>
+                                )}
+
+                                {tab === "system" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.system} title="No permission" message="You don’t have permission to view System settings.">
+                                        <SystemTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "database" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.database} title="No permission" message="You don’t have permission to view Database settings.">
+                                        <DatabaseTab push={push} />
+                                    </PermGate>
+                                )}
+
+                                {/* ⬇️ FIX: stop passing `push` to StorageTab and BackupsTab */}
+                                {tab === "storage" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.storage} title="No permission" message="You don’t have permission to view Storage settings.">
+                                        <StorageTab />
+                                    </PermGate>
+                                )}
+                                {tab === "backups" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.backups} title="No permission" message="You don’t have permission to view Backups.">
+                                        <BackupsTab />
+                                    </PermGate>
+                                )}
+
+                                {tab === "agents" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.agents} title="No permission" message="You don’t have permission to view Agents.">
+                                        <AgentsTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "migrations" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.migrations} title="No permission" message="You don’t have permission to view Data Migrations.">
+                                        <MigrationsTab push={push} />
+                                    </PermGate>
+                                )}
+
+                                {tab === "audit" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.audit} title="No permission" message="You don’t have permission to view Audit Logs.">
+                                        <AuditLogsTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "api" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.api} title="No permission" message="You don’t have permission to view API settings.">
+                                        <ApiTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "integrations" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.integrations} title="No permission" message="You don’t have permission to view Integrations.">
+                                        <IntegrationsTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "secrets" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.secrets} title="No permission" message="You don’t have permission to view Secrets.">
+                                        <SecretsTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "workflows" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.workflows} title="No permission" message="You don’t have permission to view Workflows.">
+                                        <WorkflowsTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "import_export" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.import_export} title="No permission" message="You don’t have permission to view Import / Export.">
+                                        <ImportExportTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "custom_fields" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.custom_fields} title="No permission" message="You don’t have permission to view Custom Fields.">
+                                        <CustomFieldsTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "client_portal" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.client_portal} title="No permission" message="You don’t have permission to view Client Portal.">
+                                        <ClientPortalTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "sla" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.sla} title="No permission" message="You don’t have permission to view SLA settings.">
+                                        <SlaTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "ticketing" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.ticketing} title="No permission" message="You don’t have permission to view Ticketing settings.">
+                                        <TicketingTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "reports" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.reports} title="No permission" message="You don’t have permission to view Reports.">
+                                        <ReportsTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "flags" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.flags} title="No permission" message="You don’t have permission to view Feature Flags.">
+                                        <FeatureFlagsTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "compliance" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.compliance} title="No permission" message="You don’t have permission to view Compliance settings.">
+                                        <ComplianceTab push={push} />
+                                    </PermGate>
+                                )}
+
+                                {/* ✅ Sessions tab now imports the account version with matching props */}
+                                {tab === "sessions" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.sessions} title="No permission" message="You don’t have permission to view Session Management.">
+                                        <SessionsTab onDirtyChange={() => { }} saveHandleRef={() => { }} />
+                                    </PermGate>
+                                )}
+
+                                {tab === "roles_matrix" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.roles_matrix} title="No permission" message="You don’t have permission to view the Roles Matrix.">
+                                        <RolesMatrixTab push={push} />
+                                    </PermGate>
+                                )}
+                                {tab === "sso" && (
+                                    <PermGate require={ADMIN_TAB_PERMS.sso} title="No permission" message="You don’t have permission to view SSO settings.">
+                                        <SsoTab push={push} />
+                                    </PermGate>
+                                )}
+                            </>
                         )}
-
-                        {tab === "roles" && (
-                            <RolesTab
-                                roles={roles as any[]} // pass-through (keeps description + permissions)
-                                setRoles={setRoles as any}
-                                push={push}
-                            />
-                        )}
-
-                        {tab === "company" && <CompanyTab push={push} />}
-                        {tab === "branding" && <BrandingTab push={push} />}
-                        {tab === "localization" && <LocalizationTab push={push} />}
-                        {tab === "support" && <SupportTab push={push} />}
-
-                        {tab === "subscription" && <SubscriptionTab push={push} />}
-                        {tab === "billing" && <BillingTab push={push} />}
-                        {tab === "invoices" && <InvoicesTab push={push} />}
-                        {tab === "security_policies" && <SecurityPoliciesTab push={push} />}
-                        {tab === "smtp" && <SmtpTab push={push} />}
-                        {tab === "notifications" && <NotificationsTab push={push} />}
-                        {tab === "templates" && <EmailTemplatesTab push={push} />}
-
-                        {tab === "system" && <SystemTab push={push} />}
-                        {tab === "database" && <DatabaseTab push={push} />}
-
-                        {/* ⬇️ FIX: stop passing `push` to StorageTab and BackupsTab */}
-                        {tab === "storage" && <StorageTab />}
-                        {tab === "backups" && <BackupsTab />}
-
-                        {tab === "agents" && <AgentsTab push={push} />}
-                        {tab === "migrations" && <MigrationsTab push={push} />}
-
-                        {tab === "audit" && <AuditLogsTab push={push} />}
-                        {tab === "api" && <ApiTab push={push} />}
-                        {tab === "integrations" && <IntegrationsTab push={push} />}
-                        {tab === "secrets" && <SecretsTab push={push} />}
-                        {tab === "workflows" && <WorkflowsTab push={push} />}
-                        {tab === "import_export" && <ImportExportTab push={push} />}
-                        {tab === "custom_fields" && <CustomFieldsTab push={push} />}
-                        {tab === "client_portal" && <ClientPortalTab push={push} />}
-                        {tab === "sla" && <SlaTab push={push} />}
-                        {tab === "ticketing" && <TicketingTab push={push} />}
-                        {tab === "reports" && <ReportsTab push={push} />}
-                        {tab === "flags" && <FeatureFlagsTab push={push} />}
-                        {tab === "compliance" && <ComplianceTab push={push} />}
-
-                        {/* ✅ Sessions tab now imports the account version with matching props */}
-                        {tab === "sessions" && (
-                            <SessionsTab onDirtyChange={() => { }} saveHandleRef={() => { }} />
-                        )}
-
-                        {tab === "roles_matrix" && <RolesMatrixTab push={push} />}
-                        {tab === "sso" && <SsoTab push={push} />}
                     </div>
                 </Tabs>
             </div>
@@ -628,6 +845,7 @@ export default function AdministrationPage() {
                                 : t.kind === "warning"
                                     ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-900/20 dark:text-amber-200"
                                     : "border-border bg-card text-card-foreground";
+
                     return (
                         <div
                             key={t.id}

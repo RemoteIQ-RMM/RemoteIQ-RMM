@@ -11,54 +11,41 @@ import {
 import { JobsService } from "../jobs/jobs.service";
 import { PgPoolService } from "../storage/pg-pool.service";
 import { UninstallSoftwareDto } from "./dto/uninstall-software.dto";
+import { RequirePerm } from "../auth/require-perm.decorator";
 
 class ActionRequestDto {
-    // Optional free-form reason; kept permissive
     reason?: string;
 }
 
 type ActionResponse = { accepted: true; jobId: string };
 
-// Resolve :id to an agentId. If there is a device row with that id, return its agent_id.
-// Otherwise, treat the id as an agentId directly (back-compat with existing callers).
 async function resolveAgentIdOrThrow(pg: PgPoolService, id: string): Promise<string> {
     const key = String(id);
     const { rows } = await pg.query<{ agent_id: string }>(
         `SELECT agent_id FROM devices WHERE id = $1 LIMIT 1`,
-        [key],
+        [key]
     );
     if (rows.length && rows[0]?.agent_id) {
         return String(rows[0].agent_id);
     }
-    // Back-compat: allow direct agentId usage if device not found
     return key;
 }
 
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller("/api/devices/:id/actions")
 export class DeviceActionsController {
-    constructor(
-        private readonly jobs: JobsService,
-        private readonly pg: PgPoolService,
-    ) { }
+    constructor(private readonly jobs: JobsService, private readonly pg: PgPoolService) { }
 
-    /**
-     * Reboot the device.
-     * POST /api/devices/:id/actions/reboot -> { accepted, jobId }
-     */
     @Post("reboot")
+    @RequirePerm("devices.actions")
     @HttpCode(202)
-    async reboot(
-        @Param("id") id: string,
-        @Body() _body: ActionRequestDto
-    ): Promise<ActionResponse> {
+    async reboot(@Param("id") id: string, @Body() _body: ActionRequestDto): Promise<ActionResponse> {
         if (!id) throw new NotFoundException("Missing device id");
-
         const agentId = await resolveAgentIdOrThrow(this.pg, id);
 
         const job = await this.jobs.createRunScriptJob({
             agentId,
-            language: "powershell",     // Windows reboot (powershell)
+            language: "powershell",
             scriptText: 'Start-Process "shutdown" -ArgumentList "/r /t 5" -Verb RunAs',
             timeoutSec: 60,
         });
@@ -66,24 +53,16 @@ export class DeviceActionsController {
         return { accepted: true, jobId: job.id };
     }
 
-    /**
-     * Trigger patch now.
-     * POST /api/devices/:id/actions/patch -> { accepted, jobId }
-     */
     @Post("patch")
+    @RequirePerm("devices.actions")
     @HttpCode(202)
-    async patch(
-        @Param("id") id: string,
-        @Body() _body: ActionRequestDto
-    ): Promise<ActionResponse> {
+    async patch(@Param("id") id: string, @Body() _body: ActionRequestDto): Promise<ActionResponse> {
         if (!id) throw new NotFoundException("Missing device id");
-
         const agentId = await resolveAgentIdOrThrow(this.pg, id);
 
         const job = await this.jobs.createRunScriptJob({
             agentId,
             language: "powershell",
-            // Example PSWindowsUpdate invocation (placeholder; keep your real script as needed)
             scriptText:
                 'Install-Module PSWindowsUpdate -Force -Scope CurrentUser; Import-Module PSWindowsUpdate; Get-WindowsUpdate -AcceptAll -Install -AutoReboot',
             timeoutSec: 15 * 60,
@@ -92,22 +71,15 @@ export class DeviceActionsController {
         return { accepted: true, jobId: job.id };
     }
 
-    /**
-     * Uninstall software by display name.
-     * POST /api/devices/:id/actions/uninstall { name, version? } -> { accepted, jobId }
-     */
     @Post("uninstall")
+    @RequirePerm("devices.actions")
     @HttpCode(202)
-    async uninstall(
-        @Param("id") id: string,
-        @Body() body: UninstallSoftwareDto
-    ): Promise<ActionResponse> {
+    async uninstall(@Param("id") id: string, @Body() body: UninstallSoftwareDto): Promise<ActionResponse> {
         if (!id) throw new NotFoundException("Missing device id");
         if (!body?.name) throw new NotFoundException("Missing software name");
 
         const agentId = await resolveAgentIdOrThrow(this.pg, id);
 
-        // Prefer an uninstall string lookup; otherwise attempt ARP-guided uninstall
         const ps = `
 $ErrorActionPreference = 'Stop'
 $targetName = ${JSON.stringify(body.name)}
@@ -120,13 +92,13 @@ $uninstall = $target.UninstallString
 if (-not $uninstall) { Write-Error "No uninstall string found for $targetName"; exit 3 }
 Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $uninstall -Wait -NoNewWindow -PassThru | Out-Null
 exit $LASTEXITCODE
-        `.trim();
+    `.trim();
 
         const job = await this.jobs.createRunScriptJob({
             agentId,
             language: "powershell",
             scriptText: ps,
-            timeoutSec: 30 * 60, // allow time for larger uninstallers
+            timeoutSec: 30 * 60,
         });
 
         return { accepted: true, jobId: job.id };

@@ -9,17 +9,14 @@ import {
     Res,
     HttpException,
     HttpStatus,
-    UseGuards,
 } from "@nestjs/common";
 import { Response } from "express";
 import { BackupsService } from "./backups.service";
 import { HistoryQueryDto, BackupConfigDto } from "./dto";
-import { PermissionsGuard } from "../auth/permissions.guard";
 import { RequirePerm } from "../auth/require-perm.decorator";
 import { WorkerService } from "./worker.service";
 
 @Controller("/api/admin/backups")
-@UseGuards(PermissionsGuard)
 export class BackupsController {
     constructor(
         private readonly svc: BackupsService,

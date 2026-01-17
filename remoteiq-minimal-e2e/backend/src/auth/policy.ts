@@ -16,7 +16,11 @@ export const PERMISSION_GROUPS = [
         key: "administration",
         label: "Administration",
         items: [
-            { key: "admin.access", label: "Access admin dashboard", description: "View and access the Administration area." },
+            {
+                key: "admin.access",
+                label: "Access admin dashboard",
+                description: "View and access the Administration area.",
+            },
         ] as const,
     },
 
@@ -43,24 +47,119 @@ export const PERMISSION_GROUPS = [
         ] as const,
     },
 
-    // ── Teams
-    {
-        key: "teams",
-        label: "Teams",
-        items: [
-            { key: "teams.read", label: "View teams" },
-            { key: "teams.write", label: "Create/edit teams" },
-            { key: "teams.delete", label: "Delete teams" },
-        ] as const,
-    },
-
     // ── Billing
     {
         key: "billing",
         label: "Billing",
         items: [
-            { key: "billing.read", label: "View billing" },
-            { key: "billing.write", label: "Manage billing" },
+            {
+                key: "billing.read",
+                label: "View billing",
+                description: "View billing settings, plans, payment methods, and billing overview.",
+            },
+            {
+                key: "billing.write",
+                label: "Manage billing",
+                description: "Update billing settings, payment methods, and billing configuration.",
+            },
+            {
+                key: "subscription.read",
+                label: "View subscription",
+                description: "View subscription plan and subscription status.",
+            },
+            {
+                key: "subscription.write",
+                label: "Manage subscription",
+                description: "Change subscription plan, seats, cancellations, etc.",
+            },
+            {
+                key: "invoices.read",
+                label: "View invoices",
+                description: "View invoice history and invoice details.",
+            },
+            {
+                key: "invoices.write",
+                label: "Manage invoices",
+                description: "Create/adjust invoices, issue refunds/credits (where applicable).",
+            },
+        ] as const,
+    },
+
+    // ── Customers / Orgs
+    {
+        key: "customers",
+        label: "Customers",
+        items: [{ key: "customers.read", label: "View customers/sites" }] as const,
+    },
+
+    // ── Devices
+    {
+        key: "devices",
+        label: "Devices",
+        items: [
+            { key: "devices.read", label: "View devices" },
+            {
+                key: "devices.actions",
+                label: "Run device actions",
+                description: "Reboot, patch, uninstall software, etc.",
+            },
+        ] as const,
+    },
+
+    // ── Checks
+    {
+        key: "checks",
+        label: "Checks",
+        items: [
+            { key: "checks.read", label: "View checks and results" },
+            { key: "checks.write", label: "Create/edit checks" },
+            { key: "checks.delete", label: "Delete checks" },
+            { key: "checks.run", label: "Run checks on-demand" },
+        ] as const,
+    },
+
+    // ── Alerts
+    {
+        key: "alerts",
+        label: "Alerts",
+        items: [
+            { key: "alerts.read", label: "View alerts" },
+            { key: "alerts.manage", label: "Acknowledge/silence/resolve alerts" },
+        ] as const,
+    },
+
+    // ── Tickets
+    {
+        key: "tickets",
+        label: "Tickets",
+        items: [
+            { key: "tickets.read", label: "View tickets" },
+            { key: "tickets.write", label: "Create/update tickets" },
+        ] as const,
+    },
+
+    // ── Automation
+    {
+        key: "automation",
+        label: "Automation",
+        items: [
+            { key: "automation.run", label: "Run automation jobs" },
+            { key: "automation.read", label: "View automation job status/logs" },
+        ] as const,
+    },
+
+    // ── Me (self-service)
+    {
+        key: "me",
+        label: "My Account",
+        items: [
+            { key: "me.read", label: "View my profile" },
+            { key: "me.write", label: "Edit my profile" },
+            {
+                key: "me.security",
+                label: "Manage my security",
+                description: "Change password, 2FA, tokens, sessions, WebAuthn",
+            },
         ] as const,
     },
 
@@ -90,7 +189,6 @@ export const PERMISSION_GROUPS = [
 ] as const satisfies readonly PermissionGroup[];
 
 type PermissionItem = (typeof PERMISSION_GROUPS)[number]["items"][number];
-
 export type Permission = PermissionItem["key"];
 
 export type PermissionDefinition = PermissionItem & {
@@ -98,14 +196,13 @@ export type PermissionDefinition = PermissionItem & {
     groupLabel: string;
 };
 
-export const PERMISSION_DEFINITIONS: PermissionDefinition[] =
-    PERMISSION_GROUPS.flatMap((group) =>
-        group.items.map((item) => ({
-            ...item,
-            groupKey: group.key,
-            groupLabel: group.label,
-        })),
-    );
+export const PERMISSION_DEFINITIONS: PermissionDefinition[] = PERMISSION_GROUPS.flatMap((group) =>
+    group.items.map((item) => ({
+        ...item,
+        groupKey: group.key,
+        groupLabel: group.label,
+    })),
+);
 
 export const ALL_PERMISSIONS: Permission[] = PERMISSION_DEFINITIONS.map((d) => d.key);
 
@@ -117,20 +214,46 @@ export const rolePermissions: Record<Role, Permission[]> = {
     owner: [...ALL_PERMISSIONS],
     admin: [...ALL_PERMISSIONS],
     operator: [
+        "admin.access",
         "users.read",
         "roles.read",
-        "teams.read",
+
+        // billing (operator can view, not manage)
         "billing.read",
+        "subscription.read",
+        "invoices.read",
+
+        "customers.read",
+        "devices.read",
+        "devices.actions",
+        "checks.read",
+        "checks.run",
+        "alerts.read",
+        "alerts.manage",
+        "tickets.read",
+        "tickets.write",
+        "automation.run",
+        "automation.read",
         "settings.read",
         "backups.read",
         "backups.run",
         "backups.download",
     ],
     viewer: [
+        "admin.access",
         "users.read",
         "roles.read",
-        "teams.read",
+
+        // billing (viewer can view)
         "billing.read",
+        "subscription.read",
+        "invoices.read",
+
+        "customers.read",
+        "devices.read",
+        "checks.read",
+        "alerts.read",
+        "tickets.read",
         "settings.read",
         "backups.read",
     ],

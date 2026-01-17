@@ -59,16 +59,18 @@ function isPublicRequest(req: Request): boolean {
   // Health endpoints
   if (method === "GET" && path === "/healthz") return true;
   if (method === "GET" && path === "/healthz/email") return true;
+  if (method === "GET" && path === "/healthz/ping") return true; // ✅ moved common health check
 
   // Auth endpoints that must be reachable without an existing session
   if (method === "POST" && path === "/api/auth/login") return true;
   if (method === "POST" && path === "/api/auth/2fa/verify") return true;
-
-  // Optional: allow logout even if session already expired; it only clears cookie.
   if (method === "POST" && path === "/api/auth/logout") return true;
-
-  // Optional: allow branding fetch pre-login (common for branded login pages)
   if (method === "GET" && path === "/api/branding") return true;
+
+  // ✅ Optional legacy auth routes (if you keep /api/auth-legacy enabled)
+  if (method === "POST" && path === "/api/auth-legacy/login") return true;
+  if (method === "POST" && path === "/api/auth-legacy/2fa/verify") return true;
+  if (method === "POST" && path === "/api/auth-legacy/logout") return true;
 
   return false;
 }
@@ -127,6 +129,7 @@ export class AuthCookieGuard implements CanActivate {
     const permissions = Array.isArray(userRow.permissions)
       ? userRow.permissions.map((p) => String(p).toLowerCase())
       : [];
+
     const displayName = buildDisplayName(
       userRow.first_name,
       userRow.last_name,

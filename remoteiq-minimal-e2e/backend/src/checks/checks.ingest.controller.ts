@@ -12,6 +12,7 @@ import type { Request } from "express";
 import { IsArray, IsObject, IsOptional, IsString, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 import { ChecksRuntimeService } from "./checks.runtime.service";
+import { Public } from "../auth/public.decorator";
 
 /* ----------------------------- DTOs (light) ----------------------------- */
 
@@ -42,7 +43,6 @@ class IngestBodyDto {
 /* -------------------------------- Helper -------------------------------- */
 
 function extractAgentId(req: Request): string {
-    // Priority 1: Authorization: Bearer <agentId>
     const authRaw =
         (req.headers["authorization"] as string | undefined) ||
         (req.headers["Authorization"] as unknown as string | undefined);
@@ -52,7 +52,6 @@ function extractAgentId(req: Request): string {
         if (m && m[1]) return m[1].trim();
     }
 
-    // Priority 2 (dev): x-agent-id header when AGENT_DEV_BYPASS=1
     const devBypass = process.env.AGENT_DEV_BYPASS === "1";
     const headerAgent = (req.headers["x-agent-id"] as string | undefined)?.trim();
     if (devBypass && headerAgent) return headerAgent;
@@ -61,25 +60,21 @@ function extractAgentId(req: Request): string {
 }
 
 /* ----------------------------- Controller ------------------------------- */
-
-@Controller("api/agent")
+/**
+ * NOTE:
+ * This endpoint used to collide with AgentsController POST /api/agent/check-runs.
+ * It has been moved to /api/agent/ingest/check-runs to avoid duplicate route mapping.
+ */
+@Public()
+@Controller("api/agent/ingest")
 export class ChecksIngestController {
     constructor(private readonly checks: ChecksRuntimeService) { }
 
-    /**
-     * POST /api/agent/check-runs
-     * Accepts batched check run payloads from agents.
-     *
-     * Auth:
-     *  - Production: "Authorization: Bearer <agentId>"
-     *  - Dev (set AGENT_DEV_BYPASS=1): optionally use "x-agent-id: <agentId>"
-     */
     @Post("check-runs")
     @HttpCode(HttpStatus.CREATED)
     async postCheckRuns(@Req() req: Request, @Body() body: IngestBodyDto) {
         const agentId = extractAgentId(req);
 
-        // Delegate to runtime service (which normalizes, upserts assignments and inserts runs)
         const result = await this.checks.ingestAgentRuns({
             agentId,
             deviceId: body.deviceId,
@@ -97,7 +92,6 @@ export class ChecksIngestController {
             })),
         });
 
-        // 201 with simple counts
         return result; // { inserted, assignmentsCreated }
     }
 }

@@ -3,7 +3,6 @@ import {
     Controller,
     Delete,
     Get,
-    HttpCode,
     HttpException,
     HttpStatus,
     Inject,
@@ -11,21 +10,14 @@ import {
     Post,
     Req,
     UnauthorizedException,
-    UseGuards,
+    HttpCode,
 } from "@nestjs/common";
 import type { Request } from "express";
 import { SecurityService } from "./security.service";
-import {
-    IsBoolean,
-    IsOptional,
-    IsString,
-    Length,
-    IsUUID,
-    MinLength,
-} from "class-validator";
+import { IsBoolean, IsOptional, IsString, Length, IsUUID, MinLength } from "class-validator";
 import { plainToInstance } from "class-transformer";
 import { validateSync } from "class-validator";
-import { AuthCookieGuard } from "../auth/auth-cookie.guard";
+import { RequirePerm } from "../auth/require-perm.decorator";
 
 /* ---------------- DTOs ---------------- */
 
@@ -77,7 +69,6 @@ class TrustDto {
     trusted!: boolean;
 }
 
-/** validate without relying on global pipes */
 function assertDto<T>(cls: new () => T, payload: any) {
     const inst = plainToInstance(cls, payload, { enableImplicitConversion: true });
     const errs = validateSync(inst as any, {
@@ -95,23 +86,20 @@ function assertDto<T>(cls: new () => T, payload: any) {
     return inst;
 }
 
-/* -------------------------------- Controller -------------------------------- */
-
 @Controller("/api/users/me")
-@UseGuards(AuthCookieGuard) // ensures req.user and req.jti are populated
 export class SecurityController {
     constructor(@Inject(SecurityService) private readonly security: SecurityService) { }
 
-    // -------- Overview --------
     @Get("security")
+    @RequirePerm("me.security")
     async getOverview(@Req() req: Request) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
         return this.security.securityOverview(user.id, (req as any).jti);
     }
 
-    // -------- Password --------
     @Post("password")
+    @RequirePerm("me.security")
     async changePassword(@Req() req: Request, @Body() body: any) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -120,8 +108,8 @@ export class SecurityController {
         return { ok: true };
     }
 
-    // -------- TOTP 2FA --------
     @Post("2fa/start")
+    @RequirePerm("me.security")
     async start2fa(@Req() req: Request) {
         const user = (req as any).user;
         if (!user?.id || !user?.email) throw new UnauthorizedException();
@@ -129,19 +117,19 @@ export class SecurityController {
     }
 
     @Post("2fa/confirm")
+    @RequirePerm("me.security")
     async confirm2fa(@Req() req: Request, @Body() body: any) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
         const dto = assertDto(TotpConfirmDto, body);
         const clean = (dto.code || "").replace(/\D/g, "").slice(-6);
-        if (clean.length !== 6) {
-            throw new HttpException("Invalid TOTP code format.", HttpStatus.BAD_REQUEST);
-        }
+        if (clean.length !== 6) throw new HttpException("Invalid TOTP code format.", HttpStatus.BAD_REQUEST);
         const recoveryCodes = await this.security.confirm2fa(user.id, clean);
         return { recoveryCodes };
     }
 
     @Post("2fa/disable")
+    @RequirePerm("me.security")
     async disable2fa(@Req() req: Request, @Body() body: any) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -152,6 +140,7 @@ export class SecurityController {
     }
 
     @Post("2fa/recovery/regen")
+    @RequirePerm("me.security")
     async regenCodes(@Req() req: Request) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -159,10 +148,8 @@ export class SecurityController {
         return { recoveryCodes: codes };
     }
 
-    // -------- Sessions --------
-
-    // Support both with & without trailing slash (FE sometimes hits /)
     @Get("sessions")
+    @RequirePerm("me.security")
     async listSessionsNoSlash(@Req() req: Request) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -170,14 +157,15 @@ export class SecurityController {
     }
 
     @Get("sessions/")
+    @RequirePerm("me.security")
     async listSessionsSlash(@Req() req: Request) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
         return this.security.listSessions(user.id, (req as any).jti);
     }
 
-    // Trust / Untrust a session
     @Post("sessions/:id/trust")
+    @RequirePerm("me.security")
     async trust(@Req() req: Request, @Param("id") id: string, @Body() body: any) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -185,8 +173,8 @@ export class SecurityController {
         return this.security.setSessionTrust(user.id, id, dto.trusted);
     }
 
-    // DELETE /api/users/me/sessions/:id  (blocks current inside the service)
     @Delete("sessions/:id")
+    @RequirePerm("me.security")
     @HttpCode(204)
     async revokeOne(@Req() req: Request, @Param("id") id: string) {
         const user = (req as any).user;
@@ -195,8 +183,8 @@ export class SecurityController {
         return;
     }
 
-    // Optional back-compat: POST body { sessionId }
     @Post("sessions/revoke")
+    @RequirePerm("me.security")
     async revokeSession(@Req() req: Request, @Body() body: any) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -205,8 +193,8 @@ export class SecurityController {
         return { ok: true };
     }
 
-    // POST /api/users/me/sessions/revoke-all
     @Post("sessions/revoke-all")
+    @RequirePerm("me.security")
     @HttpCode(204)
     async revokeAllOther(@Req() req: Request) {
         const user = (req as any).user;
@@ -216,8 +204,8 @@ export class SecurityController {
         return;
     }
 
-    // -------- Personal Tokens --------
     @Get("tokens")
+    @RequirePerm("me.security")
     async listTokens(@Req() req: Request) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -225,6 +213,7 @@ export class SecurityController {
     }
 
     @Post("tokens")
+    @RequirePerm("me.security")
     async createToken(@Req() req: Request, @Body() body: any) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -233,6 +222,7 @@ export class SecurityController {
     }
 
     @Post("tokens/revoke")
+    @RequirePerm("me.security")
     async revokeToken(@Req() req: Request, @Body() body: any) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -241,8 +231,8 @@ export class SecurityController {
         return { ok: true };
     }
 
-    // -------- WebAuthn (stubs) --------
     @Get("webauthn/create-options")
+    @RequirePerm("me.security")
     async webauthnCreate(@Req() req: Request) {
         const user = (req as any).user;
         if (!user?.id || !user?.email) throw new UnauthorizedException();
@@ -250,6 +240,7 @@ export class SecurityController {
     }
 
     @Post("webauthn/finish")
+    @RequirePerm("me.security")
     async webauthnFinish(@Req() req: Request, @Body() body: any) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();
@@ -257,6 +248,7 @@ export class SecurityController {
     }
 
     @Delete("webauthn/:id")
+    @RequirePerm("me.security")
     async deleteWebAuthn(@Req() req: Request, @Param("id") id: string) {
         const user = (req as any).user;
         if (!user?.id) throw new UnauthorizedException();

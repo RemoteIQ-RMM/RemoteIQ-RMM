@@ -19,6 +19,12 @@ import { Textarea } from "@/components/ui/textarea";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "";
 
+function normalizeTicketsPayload(payload: any): Ticket[] {
+  if (Array.isArray(payload)) return payload as Ticket[];
+  if (payload && Array.isArray(payload.items)) return payload.items as Ticket[];
+  return [];
+}
+
 export default function TicketsPage() {
   const router = useRouter();
   const [all, setAll] = React.useState<Ticket[]>([]);
@@ -41,7 +47,8 @@ export default function TicketsPage() {
       try {
         setLoading(true);
         const res = await fetch(`${API}/api/tickets`, { credentials: "include" });
-        const data: Ticket[] = res.ok ? await res.json() : [];
+        const raw = res.ok ? await res.json() : [];
+        const data = normalizeTicketsPayload(raw);
         if (!cancel) setAll(data);
       } finally {
         if (!cancel) setLoading(false);
@@ -55,10 +62,22 @@ export default function TicketsPage() {
   const filtered = React.useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return all;
-    // Search by Ticket ID/number (your request)
-    return all.filter((t) =>
-      (t.number ?? t.id.slice(0, 8)).toLowerCase().includes(needle)
-    );
+
+    return all.filter((t: any) => {
+      const idPrefix = String(t?.id ?? "").slice(0, 8).toLowerCase();
+      const num = String(t?.number ?? t?.ticketNumber ?? "").toLowerCase();
+      const title = String(t?.title ?? "").toLowerCase();
+      const status = String(t?.status ?? "").toLowerCase();
+      const priority = String(t?.priority ?? "").toLowerCase();
+
+      return (
+        idPrefix.includes(needle) ||
+        num.includes(needle) ||
+        title.includes(needle) ||
+        status.includes(needle) ||
+        priority.includes(needle)
+      );
+    });
   }, [all, q]);
 
   const btnBase =
@@ -94,10 +113,9 @@ export default function TicketsPage() {
 
   async function handleExport() {
     setExportOpen(false);
-    // Implement your real export here; placeholder triggers CSV download of current list
-    const rows = filtered.map((t) => ({
+    const rows = filtered.map((t: any) => ({
       id: t.id,
-      number: t.number ?? t.id.slice(0, 8),
+      number: t.number ?? t.ticketNumber ?? t.id?.slice?.(0, 8),
       title: t.title,
       status: t.status,
       priority: t.priority ?? "",
@@ -126,41 +144,39 @@ export default function TicketsPage() {
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold">Tickets</h1>
         <div className="flex items-center gap-2">
-          <button className={cn(btnBase, btnSecondary, "px-4 py-1.5 text-sm")} onClick={() => setExportOpen(true)}>
+          <button
+            className={cn(btnBase, btnSecondary, "px-4 py-1.5 text-sm")}
+            onClick={() => setExportOpen(true)}
+          >
             Export
           </button>
-          <button className={cn(btnBase, btnPrimary, "px-4 py-1.5 text-sm")} onClick={() => setNewOpen(true)}>
+          <button
+            className={cn(btnBase, btnPrimary, "px-4 py-1.5 text-sm")}
+            onClick={() => setNewOpen(true)}
+          >
             + New Ticket
           </button>
         </div>
       </div>
 
-      {/* Filters */}
       <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-4">
         <Input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search Ticket By ID..."
+          placeholder="Search by UUID prefix, ticket #, title, status..."
           className="md:col-span-2"
         />
-        {/* keep your other filters here */}
       </div>
 
       <TicketsTable items={filtered} loading={loading} />
 
-      {/* New Ticket modal */}
       <Dialog open={newOpen} onOpenChange={setNewOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Create ticket</DialogTitle>
             <DialogDescription>Enter a title and optional description.</DialogDescription>
           </DialogHeader>
-          <Input
-            value={ntTitle}
-            onChange={(e) => setNtTitle(e.target.value)}
-            placeholder="Ticket title"
-            autoFocus
-          />
+          <Input value={ntTitle} onChange={(e) => setNtTitle(e.target.value)} placeholder="Ticket title" autoFocus />
           <Textarea
             value={ntDesc}
             onChange={(e) => setNtDesc(e.target.value)}
@@ -168,7 +184,9 @@ export default function TicketsPage() {
             className="min-h-[120px]"
           />
           <DialogFooter>
-            <Button variant="outline" onClick={() => setNewOpen(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setNewOpen(false)}>
+              Cancel
+            </Button>
             <Button className={cn(btnPrimary)} disabled={ntBusy} onClick={handleCreateTicket}>
               Create
             </Button>
@@ -176,7 +194,6 @@ export default function TicketsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Export confirm modal */}
       <Dialog open={exportOpen} onOpenChange={setExportOpen}>
         <DialogContent>
           <DialogHeader>
@@ -184,8 +201,12 @@ export default function TicketsPage() {
             <DialogDescription>Export the current list to CSV?</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setExportOpen(false)}>Cancel</Button>
-            <Button className={cn(btnPrimary)} onClick={handleExport}>Export</Button>
+            <Button variant="outline" onClick={() => setExportOpen(false)}>
+              Cancel
+            </Button>
+            <Button className={cn(btnPrimary)} onClick={handleExport}>
+              Export
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

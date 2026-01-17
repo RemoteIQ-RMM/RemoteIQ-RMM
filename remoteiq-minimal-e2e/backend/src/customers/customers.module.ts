@@ -1,12 +1,13 @@
 // backend/src/customers/customers.module.ts
-
 import { Module } from "@nestjs/common";
 import { CustomersController } from "./customers.controller";
 import { CustomersService } from "./customers.service";
-import { PgPoolService } from "../storage/pg-pool.service";
+import { StorageModule } from "../storage/storage.module";
 
 @Module({
+    imports: [StorageModule],
     controllers: [CustomersController],
-    providers: [CustomersService, PgPoolService],
+    providers: [CustomersService],
+    exports: [CustomersService],
 })
 export class CustomersModule { }

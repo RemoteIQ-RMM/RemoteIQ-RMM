@@ -10,7 +10,9 @@ import {
 } from "@nestjs/common";
 import { JobsService } from "./jobs.service";
 import { PgPoolService } from "../storage/pg-pool.service";
+import { Public } from "../auth/public.decorator";
 
+@Public() // ✅ secured by x-admin-api-key; avoid AuthCookieGuard blocking automation/break-glass usage
 @Controller("/api/admin")
 export class JobsController {
   private readonly logger = new Logger("JobsController");
@@ -56,8 +58,8 @@ export class JobsController {
     @Headers("x-admin-api-key") key: string | undefined,
     @Body()
     body: {
-      agentId?: string;             // numeric id as string (back-compat)
-      agentUuid?: string;           // new: prefer uuid
+      agentId?: string; // numeric id as string (back-compat)
+      agentUuid?: string; // new: prefer uuid
       language: "powershell" | "bash";
       scriptText: string;
       args?: string[];

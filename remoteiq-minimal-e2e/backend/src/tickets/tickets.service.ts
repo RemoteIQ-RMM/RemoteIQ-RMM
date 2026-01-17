@@ -1,14 +1,14 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PgPoolService } from "../storage/pg-pool.service";
 import { ListTicketsQuery } from "./dto/list-tickets.dto";
 import { CreateTicketDto } from "./dto/create-ticket.dto";
 import { UpdateTicketDto } from "./dto/update-ticket.dto";
+import { randomUUID } from "crypto";
 
 export type Ticket = {
   id: string;
 
   // Backward compatible API naming:
-  // customerId == organizationId in DB
   customerId: string | null;
 
   title: string;
@@ -19,29 +19,49 @@ export type Ticket = {
 
   assigneeUserId: string | null;
 
-  // Not in DB schema right now (DB uses requester_contact_id)
   requesterEmail: string | null;
 
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
 
+  dueAt: string | null;
+
   ticketNumber: number | null;
   requesterContactId: string | null;
   deviceId: string | null;
 };
 
-const STATUS_ALLOW = new Set<Ticket["status"]>(["open", "in_progress", "resolved", "closed"]);
-const PRIORITY_ALLOW = new Set<Ticket["priority"]>(["low", "medium", "high", "urgent"]);
+export type LinkedTicket = { id: string; number?: string | null; title: string; status: string };
 
-/**
- * DB enum mismatch fix:
- * - API uses: low | medium | high | urgent
- * - DB uses:  low | normal | high | urgent   (no "medium")
- */
+export type ActivityItem =
+  | {
+    id: string;
+    kind: "message" | "note";
+    author: string;
+    body: string;
+    createdAt: string;
+    isInternal?: boolean;
+    attachments?: { id: string; name: string; size?: number; url: string }[];
+  }
+  | {
+    id: string;
+    kind: "change";
+    createdAt: string;
+    actor: string;
+    field: "status" | "priority" | "assignee" | "title" | "dueAt" | "collaborators";
+    from?: string | null;
+    to?: string | null;
+  };
+
+const STATUS_ALLOW = new Set<Ticket["status"]>(["open", "in_progress", "resolved", "closed"]);
+const PRIORITY_ALLOW = new Set<string>(["low", "normal", "medium", "high", "urgent"]);
+
 function priorityApiToDb(p: string): string {
   const v = String(p ?? "").toLowerCase();
-  return v === "medium" ? "normal" : v;
+  if (v === "medium") return "normal";
+  if (v === "normal") return "normal";
+  return v;
 }
 function priorityDbToApi(p: string): Ticket["priority"] {
   const v = String(p ?? "").toLowerCase();
@@ -51,6 +71,31 @@ function priorityDbToApi(p: string): Ticket["priority"] {
 function getOrgIdFromReq(req: any): string | null {
   const u = req?.user ?? req?.auth ?? null;
   return u?.organizationId ?? u?.organization_id ?? u?.orgId ?? u?.org_id ?? null;
+}
+
+function getActorFromReq(req: any): string {
+  const u = req?.user ?? req?.auth ?? null;
+  const name = (u?.name ?? u?.fullName ?? "").toString().trim();
+  const email = (u?.email ?? u?.username ?? "").toString().trim();
+  return name || email || "System";
+}
+
+function isUuid(s: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
+}
+
+function isIntLike(s: string): boolean {
+  return /^[0-9]+$/.test(String(s ?? "").trim());
+}
+
+function isMissingRelationError(err: any): boolean {
+  // Postgres: 42P01 = undefined_table
+  return err?.code === "42P01";
+}
+
+function isUndefinedColumnError(err: any): boolean {
+  // Postgres: 42703 = undefined_column
+  return err?.code === "42703";
 }
 
 @Injectable()
@@ -65,14 +110,12 @@ export class TicketsService {
     const pageSize = Math.min(Math.max(1, q.pageSize ?? 25), 200);
     const offset = (page - 1) * pageSize;
 
-    // customerId is legacy; organizationId is preferred
     const orgId = q.organizationId ?? q.customerId ?? getOrgIdFromReq(req);
 
     const where: string[] = [];
     const params: any[] = [];
     let p = 1;
 
-    // If we can infer org, scope by default (secure multi-tenant default)
     if (orgId) {
       where.push(`t.organization_id::text = $${p++}`);
       params.push(orgId);
@@ -83,13 +126,19 @@ export class TicketsService {
       params.push(q.status);
     }
 
-    if (q.priority && PRIORITY_ALLOW.has(q.priority)) {
+    if (q.priority && PRIORITY_ALLOW.has(String(q.priority).toLowerCase())) {
       where.push(`t.priority = $${p++}`);
-      params.push(priorityApiToDb(q.priority));
+      params.push(priorityApiToDb(String(q.priority)));
     }
 
+    // allow searching by UUID prefix, ticket number, subject/description
     if (q.search) {
-      where.push(`(t.subject ILIKE $${p} OR t.description ILIKE $${p})`);
+      where.push(`(
+        t.subject ILIKE $${p}
+        OR t.description ILIKE $${p}
+        OR t.id::text ILIKE $${p}
+        OR t.ticket_number::text ILIKE $${p}
+      )`);
       params.push(`%${q.search.trim()}%`);
       p++;
     }
@@ -116,6 +165,7 @@ export class TicketsService {
         t.status                      AS status,
         t.priority                    AS priority,
         t.assignee_user_id::text      AS "assigneeUserId",
+        t.due_at                      AS "dueAt",
         t.created_at                  AS "createdAt",
         t.updated_at                  AS "updatedAt",
         t.closed_at                   AS "closedAt"
@@ -145,6 +195,7 @@ export class TicketsService {
       createdAt: new Date(r.createdAt).toISOString(),
       updatedAt: new Date(r.updatedAt).toISOString(),
       closedAt: r.closedAt ? new Date(r.closedAt).toISOString() : null,
+      dueAt: r.dueAt ? new Date(r.dueAt).toISOString() : null,
     })) as Ticket[];
 
     return { items, page, pageSize, total };
@@ -173,6 +224,7 @@ export class TicketsService {
         t.status                      AS status,
         t.priority                    AS priority,
         t.assignee_user_id::text      AS "assigneeUserId",
+        t.due_at                      AS "dueAt",
         t.created_at                  AS "createdAt",
         t.updated_at                  AS "updatedAt",
         t.closed_at                   AS "closedAt"
@@ -203,6 +255,7 @@ export class TicketsService {
       createdAt: new Date(r.createdAt).toISOString(),
       updatedAt: new Date(r.updatedAt).toISOString(),
       closedAt: r.closedAt ? new Date(r.closedAt).toISOString() : null,
+      dueAt: r.dueAt ? new Date(r.dueAt).toISOString() : null,
     };
   }
 
@@ -216,18 +269,13 @@ export class TicketsService {
     if (!title) throw new BadRequestException("subject/title is required");
 
     const status = String(dto.status ?? "open").toLowerCase() as Ticket["status"];
-    const priorityApi = String(dto.priority ?? "medium").toLowerCase() as Ticket["priority"];
+    const priorityApi = String(dto.priority ?? "medium").toLowerCase();
 
     if (!STATUS_ALLOW.has(status)) throw new BadRequestException("Invalid status");
     if (!PRIORITY_ALLOW.has(priorityApi)) throw new BadRequestException("Invalid priority");
 
     const priorityDb = priorityApiToDb(priorityApi);
 
-    // IMPORTANT:
-    // ticket_number is NOT NULL in your DB, so we must generate it.
-    //
-    // This computes next number per-organization using MAX()+1 in one statement.
-    // Recommended hardening: add UNIQUE (organization_id, ticket_number) and keep retry loop.
     const sql = `
       WITH next_num AS (
         SELECT COALESCE(MAX(t.ticket_number), 0) + 1 AS n
@@ -253,25 +301,66 @@ export class TicketsService {
       dto.deviceId ?? null,
     ];
 
-    // Retry helps if you add a UNIQUE constraint on (organization_id, ticket_number)
-    // and two creates happen at the same time.
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         const { rows } = await this.db.query<{ id: string }>(sql, params);
         return rows[0].id;
       } catch (err: any) {
-        // 23505 = unique_violation (only helpful if you add the unique constraint)
         if (err?.code === "23505" && attempt < 4) continue;
         throw err;
       }
     }
 
-    // Should never hit
     throw new Error("Failed to create ticket");
   }
 
-  async update(id: string, dto: UpdateTicketDto, req: any): Promise<boolean> {
+  private async requireTicket(id: string, req: any): Promise<{ id: string; orgId: string | null; row: any }> {
     const orgId = getOrgIdFromReq(req);
+    const where: string[] = [`t.id::text = $1`];
+    const params: any[] = [id];
+    if (orgId) {
+      where.push(`t.organization_id::text = $2`);
+      params.push(orgId);
+    }
+
+    const sql = `
+      SELECT
+        t.id::text as id,
+        t.organization_id::text as "customerId",
+        t.subject as title,
+        t.status as status,
+        t.priority as priority,
+        t.assignee_user_id::text as "assigneeUserId",
+        t.due_at as "dueAt"
+      FROM tickets t
+      WHERE ${where.join(" AND ")}
+      LIMIT 1;
+    `;
+    const { rows } = await this.db.query(sql, params);
+    const row = rows[0];
+    if (!row) throw new NotFoundException("Ticket not found");
+    return { id: row.id, orgId: row.customerId ?? null, row };
+  }
+
+  private async addChange(
+    ticketId: string,
+    actor: string,
+    field: "status" | "priority" | "assignee" | "title" | "dueAt" | "collaborators",
+    from: string | null,
+    to: string | null
+  ) {
+    const sql = `
+      INSERT INTO ticket_activity
+        (id, ticket_id, kind, author, body, is_internal, attachments, field, from_value, to_value)
+      VALUES
+        ($1::uuid, $2::uuid, 'change', $3, NULL, true, '[]'::jsonb, $4, $5, $6);
+    `;
+    await this.db.query(sql, [randomUUID(), ticketId, actor, field, from, to]);
+  }
+
+  async update(id: string, dto: UpdateTicketDto, req: any): Promise<boolean> {
+    const actor = getActorFromReq(req);
+    const before = await this.requireTicket(id, req);
 
     const sets: string[] = [];
     const params: any[] = [];
@@ -303,10 +392,10 @@ export class TicketsService {
     }
 
     if (dto.priority !== undefined) {
-      const prApi = String(dto.priority).toLowerCase() as Ticket["priority"];
-      if (!PRIORITY_ALLOW.has(prApi)) throw new BadRequestException("Invalid priority");
+      const pr = String(dto.priority).toLowerCase();
+      if (!PRIORITY_ALLOW.has(pr)) throw new BadRequestException("Invalid priority");
       sets.push(`priority = $${p++}`);
-      params.push(priorityApiToDb(prApi));
+      params.push(priorityApiToDb(pr));
     }
 
     if (dto.assigneeUserId !== undefined) {
@@ -324,12 +413,23 @@ export class TicketsService {
       params.push(dto.deviceId);
     }
 
-    if (dto.closedAt !== undefined) {
-      if (dto.closedAt === null) {
+    if ((dto as any).dueAt !== undefined) {
+      const dueAt = (dto as any).dueAt as string | null;
+      if (dueAt === null) {
+        sets.push(`due_at = NULL`);
+      } else {
+        sets.push(`due_at = $${p++}`);
+        params.push(dueAt);
+      }
+    }
+
+    if ((dto as any).closedAt !== undefined) {
+      const closedAt = (dto as any).closedAt as string | null;
+      if (closedAt === null) {
         sets.push(`closed_at = NULL`);
       } else {
         sets.push(`closed_at = $${p++}`);
-        params.push(dto.closedAt);
+        params.push(closedAt);
       }
     }
 
@@ -337,12 +437,8 @@ export class TicketsService {
 
     sets.push(`updated_at = now()`);
 
-    let where = `id::text = $${p}`;
+    const where = `id::text = $${p}`;
     params.push(id);
-    if (orgId) {
-      where += ` AND organization_id::text = $${p + 1}`;
-      params.push(orgId);
-    }
 
     const sql = `
       UPDATE tickets
@@ -351,7 +447,277 @@ export class TicketsService {
     `;
     await this.db.query(sql, params);
 
-    const exists = await this.getOne(id, req);
-    return !!exists;
+    try {
+      const after = await this.requireTicket(id, req);
+
+      const beforeTitle = String(before.row.title ?? "");
+      const afterTitle = String(after.row.title ?? "");
+      if (beforeTitle !== afterTitle) await this.addChange(id, actor, "title", beforeTitle || null, afterTitle || null);
+
+      const beforeStatus = String(before.row.status ?? "");
+      const afterStatus = String(after.row.status ?? "");
+      if (beforeStatus !== afterStatus) await this.addChange(id, actor, "status", beforeStatus || null, afterStatus || null);
+
+      const beforePr = priorityDbToApi(String(before.row.priority ?? ""));
+      const afterPr = priorityDbToApi(String(after.row.priority ?? ""));
+      if (beforePr !== afterPr) await this.addChange(id, actor, "priority", beforePr || null, afterPr || null);
+
+      const beforeAssignee = String(before.row.assigneeUserId ?? "");
+      const afterAssignee = String(after.row.assigneeUserId ?? "");
+      if (beforeAssignee !== afterAssignee) {
+        await this.addChange(id, actor, "assignee", beforeAssignee || null, afterAssignee || null);
+      }
+
+      const beforeDue = before.row.dueAt ? new Date(before.row.dueAt).toISOString() : null;
+      const afterDue = after.row.dueAt ? new Date(after.row.dueAt).toISOString() : null;
+      if ((beforeDue ?? null) !== (afterDue ?? null)) await this.addChange(id, actor, "dueAt", beforeDue, afterDue);
+    } catch (err: any) {
+      if (!isMissingRelationError(err)) {
+        // keep PATCH successful even if activity logging fails
+      }
+    }
+
+    return true;
+  }
+
+  async addMessageOrNote(
+    ticketId: string,
+    req: any,
+    kind: "message" | "note",
+    payload: {
+      body?: string;
+      attachments?: { id?: string; name: string; size?: number; url: string }[];
+      notifyCustomer?: boolean;
+    }
+  ) {
+    await this.requireTicket(ticketId, req);
+    const actor = getActorFromReq(req);
+    const body = String(payload?.body ?? "").trim();
+    const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
+
+    try {
+      const sql = `
+        INSERT INTO ticket_activity
+          (id, ticket_id, kind, author, body, is_internal, attachments)
+        VALUES
+          ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb);
+      `;
+      await this.db.query(sql, [
+        randomUUID(),
+        ticketId,
+        kind,
+        actor,
+        body,
+        kind === "note",
+        JSON.stringify(attachments),
+      ]);
+    } catch (err: any) {
+      if (isMissingRelationError(err)) return { ok: true };
+      throw err;
+    }
+
+    return { ok: true };
+  }
+
+  async getActivity(ticketId: string, req: any): Promise<ActivityItem[]> {
+    await this.requireTicket(ticketId, req);
+
+    try {
+      const sql = `
+        SELECT
+          id::text as id,
+          kind,
+          author,
+          COALESCE(body,'') as body,
+          created_at as "createdAt",
+          is_internal as "isInternal",
+          attachments,
+          field,
+          from_value as "fromValue",
+          to_value as "toValue"
+        FROM ticket_activity
+        WHERE ticket_id::text = $1
+        ORDER BY created_at ASC;
+      `;
+      const { rows } = await this.db.query(sql, [ticketId]);
+
+      return rows.map((r: any) => {
+        if (r.kind === "change") {
+          return {
+            id: r.id,
+            kind: "change",
+            createdAt: new Date(r.createdAt).toISOString(),
+            actor: String(r.author ?? "System"),
+            field: String(r.field ?? "title") as any,
+            from: r.fromValue ?? null,
+            to: r.toValue ?? null,
+          } as ActivityItem;
+        }
+
+        const atts = Array.isArray(r.attachments) ? r.attachments : [];
+        return {
+          id: r.id,
+          kind: r.kind,
+          author: String(r.author ?? "System"),
+          body: String(r.body ?? ""),
+          createdAt: new Date(r.createdAt).toISOString(),
+          isInternal: !!r.isInternal,
+          attachments: atts,
+        } as ActivityItem;
+      });
+    } catch (err: any) {
+      if (isMissingRelationError(err)) return [];
+      throw err;
+    }
+  }
+
+  async getHistory(ticketId: string, req: any): Promise<{ at: string; who: string; what: string }[]> {
+    await this.requireTicket(ticketId, req);
+
+    try {
+      const sql = `
+        SELECT
+          created_at as at,
+          author as who,
+          field,
+          from_value as "fromValue",
+          to_value as "toValue"
+        FROM ticket_activity
+        WHERE ticket_id::text = $1 AND kind = 'change'
+        ORDER BY created_at DESC
+        LIMIT 100;
+      `;
+      const { rows } = await this.db.query(sql, [ticketId]);
+
+      return rows.map((r: any) => {
+        const f = String(r.field ?? "");
+        const fromV = r.fromValue ?? null;
+        const toV = r.toValue ?? null;
+        return {
+          at: new Date(r.at).toISOString(),
+          who: String(r.who ?? "System"),
+          what: `${f}: ${fromV ?? "-"} -> ${toV ?? "-"}`,
+        };
+      });
+    } catch (err: any) {
+      if (isMissingRelationError(err)) return [];
+      throw err;
+    }
+  }
+
+  async getLinked(ticketId: string, req: any): Promise<LinkedTicket[]> {
+    await this.requireTicket(ticketId, req);
+
+    const orgId = getOrgIdFromReq(req);
+
+    try {
+      const params: any[] = [ticketId];
+      let orgFilter = "";
+      if (orgId) {
+        params.push(orgId);
+        orgFilter = `AND t.organization_id::text = $2 AND lt.organization_id::text = $2`;
+      }
+
+      const sql = `
+        SELECT
+          lt.id::text as id,
+          lt.ticket_number::bigint as "ticketNumber",
+          lt.subject as title,
+          lt.status as status
+        FROM ticket_links l
+        JOIN tickets t ON t.id = l.ticket_id
+        JOIN tickets lt ON lt.id = l.linked_ticket_id
+        WHERE t.id::text = $1
+        ${orgFilter}
+        ORDER BY lt.created_at DESC;
+      `;
+      const { rows } = await this.db.query(sql, params);
+
+      return rows.map((r: any) => ({
+        id: r.id,
+        number: r.ticketNumber !== null && r.ticketNumber !== undefined ? String(Number(r.ticketNumber)) : null,
+        title: r.title,
+        status: r.status,
+      }));
+    } catch (err: any) {
+      if (isMissingRelationError(err)) return [];
+      throw err;
+    }
+  }
+
+  private async resolveLinkedTicketId(linkedRefRaw: string, req: any): Promise<string> {
+    const linkedRef = String(linkedRefRaw ?? "").trim();
+
+    if (isUuid(linkedRef)) return linkedRef;
+
+    const orgId = getOrgIdFromReq(req);
+    if (!orgId) {
+      throw new BadRequestException("Linking by ticket number requires organization context; provide a UUID instead.");
+    }
+
+    if (!isIntLike(linkedRef)) {
+      throw new BadRequestException("linkedId must be a UUID or a numeric ticket number");
+    }
+
+    const num = Number(linkedRef);
+    if (!Number.isFinite(num) || num <= 0) {
+      throw new BadRequestException("Invalid ticket number");
+    }
+
+    const sql = `
+      SELECT id::text AS id
+      FROM tickets
+      WHERE organization_id::text = $1 AND ticket_number = $2
+      LIMIT 1;
+    `;
+    const { rows } = await this.db.query<{ id: string }>(sql, [orgId, num]);
+    const r = rows[0];
+    if (!r?.id) throw new NotFoundException("Linked ticket not found");
+    return r.id;
+  }
+
+  async addLink(ticketId: string, linkedIdOrNumber: string, req: any) {
+    const resolvedLinkedId = await this.resolveLinkedTicketId(linkedIdOrNumber, req);
+
+    if (ticketId === resolvedLinkedId) throw new BadRequestException("Cannot link a ticket to itself");
+
+    const a = await this.requireTicket(ticketId, req);
+    const b = await this.requireTicket(resolvedLinkedId, req);
+
+    if (a.orgId && b.orgId && a.orgId !== b.orgId) {
+      throw new BadRequestException("Cannot link tickets across organizations");
+    }
+
+    try {
+      const sqlWithId = `
+        INSERT INTO ticket_links (id, ticket_id, linked_ticket_id)
+        VALUES ($1::uuid, $2::uuid, $3::uuid)
+        ON CONFLICT DO NOTHING;
+      `;
+
+      const sqlNoId = `
+        INSERT INTO ticket_links (ticket_id, linked_ticket_id)
+        VALUES ($1::uuid, $2::uuid)
+        ON CONFLICT DO NOTHING;
+      `;
+
+      // Try schema with id column first; fallback if your table doesn't have it.
+      try {
+        await this.db.query(sqlWithId, [randomUUID(), ticketId, resolvedLinkedId]);
+        await this.db.query(sqlWithId, [randomUUID(), resolvedLinkedId, ticketId]);
+      } catch (err: any) {
+        if (isUndefinedColumnError(err)) {
+          await this.db.query(sqlNoId, [ticketId, resolvedLinkedId]);
+          await this.db.query(sqlNoId, [resolvedLinkedId, ticketId]);
+        } else {
+          throw err;
+        }
+      }
+
+      return { ok: true };
+    } catch (err: any) {
+      if (isMissingRelationError(err)) return { ok: true };
+      throw err;
+    }
   }
 }

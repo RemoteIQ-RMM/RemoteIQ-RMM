@@ -17,6 +17,7 @@ import { DevicesService, type Device } from "./devices.service";
 import { UninstallSoftwareDto } from "./dto/uninstall-software.dto";
 import { JobsService } from "../jobs/jobs.service";
 import { PgPoolService } from "../storage/pg-pool.service";
+import { RequirePerm } from "../auth/require-perm.decorator";
 
 @Controller("/api/devices")
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
@@ -24,18 +25,18 @@ export class DevicesController {
   constructor(
     private readonly devices: DevicesService,
     private readonly jobs: JobsService,
-    private readonly pg: PgPoolService,
+    private readonly pg: PgPoolService
   ) { }
 
   @Get()
-  async list(
-    @Query() query: ListDevicesQuery
-  ): Promise<{ items: Device[]; nextCursor: string | null }> {
+  @RequirePerm("devices.read")
+  async list(@Query() query: ListDevicesQuery): Promise<{ items: Device[]; nextCursor: string | null }> {
     const { pageSize, cursor, q, status, os } = query;
     return this.devices.list({ pageSize, cursor, q, status, os });
   }
 
   @Get(":id")
+  @RequirePerm("devices.read")
   async getOne(@Param("id") id: string): Promise<Device> {
     const dev = await this.devices.getOne(id);
     if (!dev) throw new NotFoundException("Device not found");
@@ -43,32 +44,21 @@ export class DevicesController {
   }
 
   @Get(":id/software")
+  @RequirePerm("devices.read")
   async software(
     @Param("id") id: string
-  ): Promise<{
-    items: Array<{
-      id: string;
-      name: string;
-      version: string;
-      publisher?: string | null;
-      installDate?: string | null;
-    }>;
-  }> {
+  ): Promise<{ items: Array<{ id: string; name: string; version: string; publisher?: string | null; installDate?: string | null }> }> {
     const items = await this.devices.listSoftware(id);
     return { items };
   }
 
-  /**
-   * Queue an uninstall job for the device’s agent.
-   * Returns 202 + { jobId } so the UI can poll/subscribe for status.
-   */
   @Post(":id/actions/uninstall")
+  @RequirePerm("devices.actions")
   @HttpCode(202)
   async uninstall(
     @Param("id") id: string,
     @Body() body: UninstallSoftwareDto
   ): Promise<{ accepted: true; jobId: string }> {
-    // Validate device exists (and grab some identifying fields)
     const device = await this.devices.getOne(id);
     if (!device) throw new NotFoundException("Device not found");
 
@@ -76,27 +66,12 @@ export class DevicesController {
     const version = body?.version?.trim();
     if (!name) throw new BadRequestException("name is required");
 
-    // -------------------------------
-    // Find agent even if agents.device_id is a string/hostname
-    // Strategies (in order):
-    //   1) a.device_id equals the numeric path param (as text)
-    //   2) a.device_id equals device.external id/hostname (if present)
-    //   3) a.hostname equals device hostname (if present)
-    // -------------------------------
     const numericIdText = String(id);
 
     const deviceExternalId =
-      (device as any).device_id ||
-      (device as any).externalId ||
-      (device as any).external_id ||
-      (device as any).hostname ||
-      null;
+      (device as any).device_id || (device as any).externalId || (device as any).external_id || (device as any).hostname || null;
 
-    const deviceHostname =
-      (device as any).hostname ||
-      (device as any).host ||
-      (device as any).name ||
-      null;
+    const deviceHostname = (device as any).hostname || (device as any).host || (device as any).name || null;
 
     const { rows } = await this.pg.query<{ id: string }>(
       `
@@ -111,26 +86,21 @@ export class DevicesController {
     );
 
     const agent = rows[0];
-    if (!agent) {
-      throw new NotFoundException("Agent not connected for this device");
-    }
+    if (!agent) throw new NotFoundException("Agent not connected for this device");
 
-    // Pick script per OS (default to bash for non-Windows)
     const { shell, script } = buildUninstallScript((device as any).os, name, version);
 
-    // Create a DB-backed job; dispatcher will push over WS to the agent when connected
     const job = await this.jobs.createRunScriptJob({
       agentId: agent.id,
       language: shell === "powershell" ? "powershell" : "bash",
       scriptText: script,
-      timeoutSec: 900, // 15 minutes
+      timeoutSec: 900,
     });
 
     return { accepted: true, jobId: job.id };
   }
 }
 
-/** Build a best-effort uninstall command per OS */
 function buildUninstallScript(
   osRaw: string | undefined,
   name: string,
@@ -138,9 +108,7 @@ function buildUninstallScript(
 ): { shell: "powershell" | "bash"; script: string } {
   const os = (osRaw || "").toLowerCase();
 
-  // -------------------------- Windows (PowerShell) --------------------------
   if (os.includes("win")) {
-    // NOTE: No stray PowerShell backticks. Use proper quoting for -like and -match.
     const ps = `
 $ErrorActionPreference = "Stop"
 
@@ -174,7 +142,6 @@ function Try-MSI {
     if ($a.UninstallString) {
       $cmd = $a.UninstallString
       if ($cmd -match "msiexec\\.exe" -or $cmd -match "MsiExec\\.exe") {
-        # Normalize to silent MSI removal using ProductCode (PSChildName)
         $cmd = "msiexec.exe /x " + ($a.PSChildName) + " /qn /norestart"
       }
       Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -Wait
@@ -198,7 +165,6 @@ exit 1
     return { shell: "powershell", script: ps };
   }
 
-  // ------------------------------ macOS (bash) ------------------------------
   if (os.includes("mac") || os.includes("darwin")) {
     const bash = `
 set -euo pipefail
@@ -229,7 +195,6 @@ exit 0
     return { shell: "bash", script: bash };
   }
 
-  // ------------------------------ Linux (bash) ------------------------------
   const bash = `
 set -euo pipefail
 NAME="${escapeBash(name)}"
@@ -262,7 +227,6 @@ exit 1
   return { shell: "bash", script: bash };
 }
 
-/** tiny helpers */
 function escapeBash(s: string) {
   return s.replace(/(["`$\\])/g, "\\$1");
 }

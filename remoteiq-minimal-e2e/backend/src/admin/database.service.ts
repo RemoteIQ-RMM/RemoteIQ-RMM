@@ -7,8 +7,34 @@ import * as path from "node:path";
 const CONFIG_DIR = path.resolve(process.cwd(), "config");
 const CONFIG_PATH = path.join(CONFIG_DIR, "database.json");
 
-// Redact helpers
-const redact = (s?: string | null) => (s ? "****" : s);
+// Our mask token for UI round-trips
+const MASK = "****";
+
+function stripCredsFromUrl(url: string): string {
+    // Try URL parser first (supports custom schemes)
+    try {
+        const u = new URL(url);
+        if (u.password) u.password = ""; // removes secret
+        // keep username; remove ":"
+        // URL will serialize userinfo as "user:@host" if password empty; we want "user@host"
+        // Quick normalize:
+        const s = u.toString();
+        return s.replace(/:\/\/([^:@\/?#]+):@/i, "://$1@");
+    } catch {
+        // Fallback: replace password between ":" and "@"
+        // e.g. postgres://user:pass@host -> postgres://user:****@host
+        return url.replace(/:\/\/([^:@\/?#]+):([^@\/?#]+)@/i, (_m, user) => `://${user}:${MASK}@`);
+    }
+}
+
+function looksMaskedUrl(url: string): boolean {
+    // If UI sends back a masked URL, preserve the existing secret URL.
+    return (
+        url.includes(`:${MASK}@`) ||
+        url.includes(`=${MASK}`) ||
+        url.includes(MASK)
+    );
+}
 
 @Injectable()
 export class DatabaseService {
@@ -17,21 +43,78 @@ export class DatabaseService {
     async loadConfig(): Promise<DatabaseConfigDto | null> {
         try {
             const raw = await fs.readFile(CONFIG_PATH, "utf-8");
-            this.current = JSON.parse(typeof raw === "string" ? raw : ((raw as any).toString("utf8")));
+            this.current = JSON.parse(
+                typeof raw === "string" ? raw : (raw as any).toString("utf8")
+            );
             return this.current;
         } catch {
             return null;
         }
     }
 
-    async saveConfig(cfg: DatabaseConfigDto): Promise<void> {
+    /**
+     * Save config while preserving existing secrets unless explicitly changed.
+     *
+     * Rules:
+     * - If authMode=url and url is missing/empty OR looks masked -> keep existing url
+     * - If fields-mode and password is undefined/null -> keep existing password
+     * - If password is "" (empty string) -> allow clearing (explicit)
+     */
+    async saveConfig(incoming: DatabaseConfigDto): Promise<void> {
+        const existing = this.current ?? (await this.loadConfig());
+        const merged: DatabaseConfigDto = { ...(existing as any), ...(incoming as any) };
+
+        if (merged.authMode === "url") {
+            const nextUrl = (incoming as any)?.url;
+            const prevUrl = (existing as any)?.url;
+
+            if (!nextUrl || String(nextUrl).trim() === "") {
+                merged.url = prevUrl ?? merged.url ?? "";
+            } else if (looksMaskedUrl(String(nextUrl)) && prevUrl) {
+                merged.url = prevUrl;
+            } else {
+                merged.url = String(nextUrl);
+            }
+
+            // In url mode, field passwords are irrelevant; keep but don't rely on them.
+            // (no-op)
+        } else {
+            // fields mode
+            const nextPass = (incoming as any)?.password;
+            const prevPass = (existing as any)?.password;
+
+            // Only preserve if undefined/null; empty string means "clear it"
+            if ((nextPass === undefined || nextPass === null) && prevPass !== undefined) {
+                merged.password = prevPass;
+            }
+        }
+
         await fs.mkdir(CONFIG_DIR, { recursive: true });
-        await fs.writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf-8");
-        this.current = cfg;
+        await fs.writeFile(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf-8");
+        this.current = merged;
     }
 
     getConfig(): DatabaseConfigDto | null {
         return this.current;
+    }
+
+    /**
+     * IMPORTANT: sanitize secrets out of the config before returning to clients.
+     */
+    sanitizeForClient(cfg: DatabaseConfigDto): DatabaseConfigDto {
+        const out: DatabaseConfigDto = JSON.parse(JSON.stringify(cfg));
+
+        // Never return raw password
+        if ((out as any).password !== undefined) {
+            (out as any).password = undefined;
+        }
+
+        // Never return credentialed URL
+        if (out.authMode === "url" && out.url) {
+            out.url = stripCredsFromUrl(out.url);
+        }
+
+        return out;
     }
 
     // Build a connection URL from "fields" mode if needed
@@ -69,20 +152,24 @@ export class DatabaseService {
 
     defaultPort(engine: DbEngine): number {
         switch (engine) {
-            case "postgresql": return 5432;
-            case "mysql": return 3306;
-            case "mssql": return 1433;
-            case "mongodb": return 27017;
-            case "sqlite": return 0;
+            case "postgresql":
+                return 5432;
+            case "mysql":
+                return 3306;
+            case "mssql":
+                return 1433;
+            case "mongodb":
+                return 27017;
+            case "sqlite":
+                return 0;
         }
-        // satisfy TS: all paths return
         return 0;
     }
 
     parseReplicas(csv?: string): string[] {
         return (csv || "")
             .split(",")
-            .map(s => s.trim())
+            .map((s) => s.trim())
             .filter(Boolean);
     }
 
@@ -112,7 +199,7 @@ export class DatabaseService {
 
         result.ok =
             result.primary.ok &&
-            (result.replicas ? result.replicas.every(r => r.ok) : true);
+            (result.replicas ? result.replicas.every((r) => r.ok) : true);
 
         return result;
     }
@@ -125,9 +212,11 @@ export class DatabaseService {
         try {
             switch (engine) {
                 case "postgresql": {
-                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                     const { Client } = (await import("pg")) as any;
-                    const client = new Client({ connectionString: url || undefined, ssl: cfg.ssl ? { rejectUnauthorized: false } : undefined });
+                    const client = new Client({
+                        connectionString: url || undefined,
+                        ssl: cfg.ssl ? { rejectUnauthorized: false } : undefined,
+                    });
                     await client.connect();
                     await client.query("SELECT 1");
                     await client.end();
@@ -151,7 +240,9 @@ export class DatabaseService {
                     // Prefer better-sqlite3
                     try {
                         const bsql = (await import("better-sqlite3")) as any;
-                        const db = new bsql.default((cfg.dbName || "remoteiq.sqlite"), { fileMustExist: false });
+                        const db = new bsql.default(cfg.dbName || "remoteiq.sqlite", {
+                            fileMustExist: false,
+                        });
                         db.prepare("CREATE TABLE IF NOT EXISTS _ping (id INTEGER)").run();
                         db.prepare("SELECT 1").get();
                         db.close();
@@ -161,12 +252,18 @@ export class DatabaseService {
                         try {
                             const sqlite3 = (await import("sqlite3")) as any;
                             const { open } = (await import("sqlite")) as any;
-                            const db = await open({ filename: (cfg.dbName || "remoteiq.sqlite"), driver: sqlite3.Database });
+                            const db = await open({
+                                filename: cfg.dbName || "remoteiq.sqlite",
+                                driver: sqlite3.Database,
+                            });
                             await db.exec("CREATE TABLE IF NOT EXISTS _ping (id INTEGER)");
                             await db.close();
                             return { ok: true };
                         } catch (e2: any) {
-                            return { ok: false, message: `Install 'better-sqlite3' OR 'sqlite3' + 'sqlite': ${e2?.message || e2}` };
+                            return {
+                                ok: false,
+                                message: `Install 'better-sqlite3' OR 'sqlite3' + 'sqlite': ${e2?.message || e2}`,
+                            };
                         }
                     }
                 }

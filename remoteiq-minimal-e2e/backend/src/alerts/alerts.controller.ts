@@ -1,18 +1,22 @@
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from "@nestjs/common";
 import {
-    Body,
-    Controller,
-    Get,
-    Param,
-    ParseUUIDPipe,
-    Post,
-    Query,
-} from '@nestjs/common';
-import { IsArray, IsBoolean, IsEnum, IsISO8601, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, Min, ValidateIf } from 'class-validator';
-import { AlertsService, AlertState } from './alerts.service';
+    IsArray,
+    IsEnum,
+    IsISO8601,
+    IsIn,
+    IsInt,
+    IsOptional,
+    IsString,
+    IsUUID,
+    Max,
+    Min,
+} from "class-validator";
+import { AlertsService, AlertState } from "./alerts.service";
+import { RequirePerm } from "../auth/require-perm.decorator";
 
 class ListAlertsQuery {
     @IsOptional() @IsArray() @IsEnum(AlertState, { each: true }) state?: AlertState[];
-    @IsOptional() @IsArray() @IsString({ each: true }) severity?: ('WARN' | 'CRIT')[];
+    @IsOptional() @IsArray() @IsString({ each: true }) severity?: ("WARN" | "CRIT")[];
     @IsOptional() @IsUUID() clientId?: string;
     @IsOptional() @IsUUID() siteId?: string;
     @IsOptional() @IsUUID() deviceId?: string;
@@ -33,48 +37,53 @@ class SilenceDto extends ReasonDto {
 }
 
 class BulkDto extends SilenceDto {
-    @IsOptional() @IsArray() @IsUUID('4', { each: true }) ids?: string[];
+    @IsOptional() @IsArray() @IsUUID("4", { each: true }) ids?: string[];
     @IsOptional() filter?: Record<string, any>;
-    @IsIn(['ack', 'silence', 'resolve'] as const) action!: 'ack' | 'silence' | 'resolve';
+    @IsIn(["ack", "silence", "resolve"] as const) action!: "ack" | "silence" | "resolve";
 }
 
-@Controller('api/alerts')
+@Controller("api/alerts")
 export class AlertsController {
     constructor(private readonly alerts: AlertsService) { }
 
-    // TODO: add @UseGuards(AuthGuard) once available
-
     @Get()
+    @RequirePerm("alerts.read")
     async list(@Query() query: ListAlertsQuery) {
         return this.alerts.list(query);
     }
 
-    @Get(':id/timeline')
-    async timeline(@Param('id', new ParseUUIDPipe()) id: string) {
+    @Get(":id/timeline")
+    @RequirePerm("alerts.read")
+    async timeline(@Param("id", new ParseUUIDPipe()) id: string) {
         return this.alerts.getTimeline(id);
     }
 
-    @Post(':id/ack')
-    async ack(@Param('id', new ParseUUIDPipe()) id: string, @Body() body: ReasonDto) {
+    @Post(":id/ack")
+    @RequirePerm("alerts.manage")
+    async ack(@Param("id", new ParseUUIDPipe()) id: string, @Body() body: ReasonDto) {
         return this.alerts.ack(id, body?.reason);
     }
 
-    @Post(':id/silence')
-    async silence(@Param('id', new ParseUUIDPipe()) id: string, @Body() body: SilenceDto) {
+    @Post(":id/silence")
+    @RequirePerm("alerts.manage")
+    async silence(@Param("id", new ParseUUIDPipe()) id: string, @Body() body: SilenceDto) {
         return this.alerts.silence(id, body?.reason, body?.until ?? null);
     }
 
-    @Post(':id/unsilence')
-    async unsilence(@Param('id', new ParseUUIDPipe()) id: string) {
+    @Post(":id/unsilence")
+    @RequirePerm("alerts.manage")
+    async unsilence(@Param("id", new ParseUUIDPipe()) id: string) {
         return this.alerts.unsilence(id);
     }
 
-    @Post(':id/resolve')
-    async resolve(@Param('id', new ParseUUIDPipe()) id: string, @Body() body: ReasonDto) {
+    @Post(":id/resolve")
+    @RequirePerm("alerts.manage")
+    async resolve(@Param("id", new ParseUUIDPipe()) id: string, @Body() body: ReasonDto) {
         return this.alerts.resolve(id, body?.reason);
     }
 
-    @Post('bulk')
+    @Post("bulk")
+    @RequirePerm("alerts.manage")
     async bulk(@Body() body: BulkDto) {
         return this.alerts.bulk(body.action, body);
     }

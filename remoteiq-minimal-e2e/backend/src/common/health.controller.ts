@@ -1,7 +1,17 @@
 // src/common/health.controller.ts
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get } from "@nestjs/common";
+import { Public } from "../auth/public.decorator";
 
-@Controller('/healthz')
+/**
+ * NOTE:
+ * /healthz is already served by src/health/health.controller.ts.
+ * This controller is moved to /healthz/ping to avoid duplicate route mapping.
+ */
+@Public()
+@Controller("/healthz")
 export class HealthController {
-    @Get() get() { return { ok: true, ts: Date.now() }; }
+    @Get("ping")
+    get() {
+        return { ok: true, ts: Date.now() };
+    }
 }

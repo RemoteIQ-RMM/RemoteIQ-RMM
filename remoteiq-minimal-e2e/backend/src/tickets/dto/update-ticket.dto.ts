@@ -48,5 +48,10 @@ export class UpdateTicketDto {
   // ISO string or null to clear
   @IsOptional()
   @IsString()
+  dueAt?: string | null;
+
+  // ISO string or null to clear
+  @IsOptional()
+  @IsString()
   closedAt?: string | null;
 }

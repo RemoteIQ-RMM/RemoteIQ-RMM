@@ -1,7 +1,14 @@
 // src/automation/automation.controller.ts
-import { Body, Controller, Get, NotFoundException, Param, Post } from "@nestjs/common";
+import { Body, Controller, NotFoundException, Param, Post, Get } from "@nestjs/common";
 import { randomUUID } from "crypto";
 import { AgentGateway } from "../ws/agent.gateway";
+import { RequirePerm } from "../auth/require-perm.decorator";
+
+/**
+ * NOTE:
+ * This controller originally collided with RunsController routes under /api/automation.
+ * It is now moved under /api/automation/legacy to avoid route conflicts.
+ */
 
 type RunScriptDto = {
     deviceId: string;
@@ -20,11 +27,12 @@ type Job = {
 
 const JOBS = new Map<string, Job>();
 
-@Controller("/api/automation")
-export class AutomationController {
+@Controller("/api/automation/legacy")
+export class AutomationLegacyController {
     constructor(private readonly ws: AgentGateway) { }
 
     @Post("runs")
+    @RequirePerm("automation.run")
     async start(@Body() body: RunScriptDto) {
         if (!body?.deviceId || !body?.script) {
             throw new NotFoundException("Missing deviceId or script");
@@ -40,7 +48,13 @@ export class AutomationController {
         // Simulate work
         setTimeout(() => {
             job.status = "running";
-            this.ws.broadcast({ type: "job.run.updated", jobId, status: "running", progress: 5, chunk: `$ ${body.shell ?? "ps"} -c ...\n` });
+            this.ws.broadcast({
+                type: "job.run.updated",
+                jobId,
+                status: "running",
+                progress: 5,
+                chunk: `$ ${body.shell ?? "ps"} -c ...\n`,
+            });
         }, 300);
 
         setTimeout(() => {
@@ -69,6 +83,7 @@ export class AutomationController {
     }
 
     @Get("runs/:jobId/log")
+    @RequirePerm("automation.read")
     async log(@Param("jobId") jobId: string) {
         const job = JOBS.get(jobId);
         if (!job) throw new NotFoundException("Job not found");

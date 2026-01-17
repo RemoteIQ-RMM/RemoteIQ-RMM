@@ -1,6 +1,8 @@
 import { Controller, Get, Query } from "@nestjs/common";
 import { SmtpService } from "../smtp/smtp.service";
+import { Public } from "../auth/public.decorator";
 
+@Public()
 @Controller("healthz")
 export class EmailHealthController {
     constructor(private svc: SmtpService) { }

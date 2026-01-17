@@ -1,3 +1,5 @@
+// remoteiq-minimal-e2e/backend/src/auth/require-perm.decorator.ts
+
 import { SetMetadata } from "@nestjs/common";
 import type { Permission } from "./policy";
 

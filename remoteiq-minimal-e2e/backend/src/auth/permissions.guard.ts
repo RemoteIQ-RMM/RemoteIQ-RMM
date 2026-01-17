@@ -10,10 +10,16 @@ import { PgPoolService } from "../storage/pg-pool.service";
 import { permsForRoles } from "./policy";
 import { IS_PUBLIC_KEY } from "./public.decorator";
 
-function isPublicRequest(req: any): boolean {
-  const path: string =
-    req?.path || req?.url || req?.originalUrl || "";
+function getReqPath(req: any): string {
+  const raw: string = req?.path || req?.url || req?.originalUrl || "";
+  // If originalUrl includes querystring, strip it
+  const q = raw.indexOf("?");
+  const path = q >= 0 ? raw.slice(0, q) : raw;
+  return path || "";
+}
 
+function isBootstrapPublicRequest(req: any): boolean {
+  const path = getReqPath(req);
   const method = String(req?.method || "GET").toUpperCase();
 
   // Swagger
@@ -32,10 +38,16 @@ function isPublicRequest(req: any): boolean {
   // Auth bootstrap routes
   if (method === "POST" && path === "/api/auth/login") return true;
   if (method === "POST" && path === "/api/auth/2fa/verify") return true;
+
+  // NOTE: logout can be public (it clears cookie), but you can also require auth if you want
   if (method === "POST" && path === "/api/auth/logout") return true;
 
   // Branding fetch for login page
   if (method === "GET" && path === "/api/branding") return true;
+
+  // Agent endpoints authenticate with AgentTokenGuard (not req.user)
+  // PermissionsGuard must not block these.
+  if (path.startsWith("/api/agent")) return true;
 
   return false;
 }
@@ -49,6 +61,18 @@ export class PermissionsGuard implements CanActivate {
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<any>();
+    const path = getReqPath(req);
+
+    // 0) Break-glass / automation admin API key (bypass everything)
+    const apiKey =
+      req.header?.("x-admin-api-key") ?? req.headers?.["x-admin-api-key"];
+    if (
+      apiKey &&
+      process.env.ADMIN_API_KEY &&
+      apiKey === process.env.ADMIN_API_KEY
+    ) {
+      return true;
+    }
 
     // 1) Explicit @Public() bypass
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
@@ -57,8 +81,19 @@ export class PermissionsGuard implements CanActivate {
     ]);
     if (isPublic) return true;
 
-    // 2) Path allowlist bypass (keeps system working before we annotate controllers)
-    if (isPublicRequest(req)) return true;
+    // 2) Small bootstrap allowlist (optionally enabled)
+    // Set PERMS_GUARD_ALLOWLIST=1 while you're still annotating controllers.
+    const allowlistEnabled = process.env.PERMS_GUARD_ALLOWLIST === "1";
+    if (allowlistEnabled && isBootstrapPublicRequest(req)) return true;
+
+    // Only guard API routes; if someone hits "/", let it 404 normally.
+    if (!path.startsWith("/api/")) return true;
+
+    // 3) Deny-by-default auth: require a user for all /api/* (except the bypasses above)
+    const user = req.user;
+    if (!user) {
+      throw new ForbiddenException("Not authenticated");
+    }
 
     const requiredFromMeta: RequirePermMetadata | undefined =
       this.reflector.getAllAndOverride<RequirePermMetadata>(REQUIRE_PERM_KEY, [
@@ -66,16 +101,7 @@ export class PermissionsGuard implements CanActivate {
         ctx.getClass(),
       ]);
 
-    // Allow fully privileged admin API key (break-glass / automation use)
-    const apiKey = req.header?.("x-admin-api-key") ?? req.headers?.["x-admin-api-key"];
-    if (apiKey && process.env.ADMIN_API_KEY && apiKey === process.env.ADMIN_API_KEY) {
-      return true;
-    }
-
-    const path: string =
-      req?.path || req?.url || req?.originalUrl || "";
-
-    const isAdminRoute = typeof path === "string" && path.startsWith("/api/admin");
+    const isAdminRoute = path.startsWith("/api/admin");
 
     // If no @RequirePerm is set AND the route is under /api/admin,
     // require admin.access by default.
@@ -86,17 +112,13 @@ export class PermissionsGuard implements CanActivate {
           ? ["admin.access"]
           : [];
 
-    // If nothing is required, PermissionsGuard should not block the request.
-    // AuthCookieGuard is responsible for authn (deny-by-default).
+    // If nothing is required, auth-only access is allowed.
     if (required.length === 0) return true;
-
-    const user = req.user;
-    if (!user) throw new ForbiddenException("Not authenticated");
 
     // ---- Build user permissions set ----
     let userPerms = this.normalizePerms(user.permissions);
 
-    // Always merge role-default perms (owner/admin/operator/viewer) with explicit perms.
+    // Always merge role-default perms with explicit perms.
     const roleHints = this.extractRoleNames(user);
     if (roleHints.length) {
       const defaults = permsForRoles(roleHints);
@@ -145,7 +167,7 @@ export class PermissionsGuard implements CanActivate {
           WHERE ur.user_id = $1`,
         [userId]
       );
-      return rows.map((r) => r.permission_key.toLowerCase());
+      return rows.map((r) => String(r.permission_key || "").toLowerCase()).filter(Boolean);
     } catch {
       return [];
     }
