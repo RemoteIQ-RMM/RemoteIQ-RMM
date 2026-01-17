@@ -813,11 +813,15 @@ export default function TicketDetailPage() {
                                 extras.refetch();
                                 refetch();
                             }}
+                            onStatusChange={(next) => {
+                                setTicket((t) => (t ? { ...t, status: next as any } : t));
+                            }}
                             btnBase={btnBase}
                             btnPrimary={btnPrimary}
                             btnSecondary={btnSecondary}
                             timeWorkedSeconds={timer.seconds}
                         />
+
 
                         <SectionCard>
                             <div className="mb-3 flex items-center justify-between">
@@ -1138,6 +1142,7 @@ function Composer({
     ticketStatus,
     canned,
     onSent,
+    onStatusChange,
     btnBase,
     btnPrimary,
     btnSecondary,
@@ -1147,6 +1152,7 @@ function Composer({
     ticketStatus: string;
     canned: CannedResponse[];
     onSent: () => void;
+    onStatusChange?: (nextStatus: "open" | "in_progress" | "resolved" | "closed" | string) => void;
     btnBase: string;
     btnPrimary: string;
     btnSecondary: string;
@@ -1160,10 +1166,32 @@ function Composer({
 
     const isClosed = ticketStatus === "closed";
 
-    function pickCanned(id: string) {
+    async function pickCanned(id: string) {
         const match = canned.find((c) => c.id === id);
         if (!match) return;
-        setBody((b) => (b ? `${b}\n\n${match.body}` : match.body));
+
+        // Render template server-side so {{ticket.number}}, {{now.datetime}}, {{custom.*}} etc are substituted.
+        try {
+            const res = await fetch(`${API}/api/tickets/${ticketId}/canned-render`, {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ template: match.body }),
+            });
+
+            if (!res.ok) {
+                const msg = await safeReadErrorMessage(res);
+                throw new Error(msg || `Render failed (${res.status})`);
+            }
+
+            const data = await res.json();
+            const rendered = typeof data?.rendered === "string" ? data.rendered : match.body;
+
+            setBody((b) => (b ? `${b}\n\n${rendered}` : rendered));
+        } catch {
+            // Fallback: insert raw template if render fails for any reason
+            setBody((b) => (b ? `${b}\n\n${match.body}` : match.body));
+        }
     }
 
     async function uploadFiles(): Promise<{ id: string; url: string; name: string }[]> {
@@ -1202,6 +1230,10 @@ function Composer({
                 }),
             });
             if (!res.ok) throw new Error(`Submit failed (${res.status})`);
+
+            // ✅ Immediately update UI status so timer stops right away on Submit & Resolve/Close
+            if (submitAs === "reply_and_resolve") onStatusChange?.("resolved");
+            if (submitAs === "reply_and_close") onStatusChange?.("closed");
 
             setBody("");
             setAttach([]);
@@ -1353,6 +1385,7 @@ function Composer({
         </SectionCard>
     );
 }
+
 
 function formatHHMMSS(totalSeconds: number) {
     const h = Math.floor(totalSeconds / 3600);

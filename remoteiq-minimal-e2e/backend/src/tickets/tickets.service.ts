@@ -1,3 +1,4 @@
+// remoteiq-minimal-e2e/backend/src/tickets/tickets.service.ts
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PgPoolService } from "../storage/pg-pool.service";
 import { ListTicketsQuery } from "./dto/list-tickets.dto";
@@ -100,7 +101,61 @@ function isUndefinedColumnError(err: any): boolean {
 
 @Injectable()
 export class TicketsService {
+  private activityEnsured = false;
+
   constructor(private readonly db: PgPoolService) { }
+
+  /**
+   * Ensures ticket_activity exists and has the columns required by:
+   * - addMessageOrNote()
+   * - addChange()
+   * - getActivity()
+   * - getHistory()
+   *
+   * This fixes the common “No history entries” symptom caused by schema drift
+   * (table exists but missing field/from_value/to_value/created_at).
+   */
+  private async ensureTicketActivitySchema(): Promise<void> {
+    if (this.activityEnsured) return;
+
+    try {
+      // Base table (safe if it doesn't exist yet)
+      await this.db.query(`
+        CREATE TABLE IF NOT EXISTS ticket_activity (
+          id uuid PRIMARY KEY,
+          ticket_id uuid NOT NULL,
+          kind text NOT NULL,
+          author text NOT NULL,
+          body text NULL,
+          is_internal boolean NOT NULL DEFAULT false,
+          attachments jsonb NOT NULL DEFAULT '[]'::jsonb,
+          field text NULL,
+          from_value text NULL,
+          to_value text NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+      `);
+
+      // Add missing columns to existing tables (safe no-ops when present)
+      await this.db.query(`ALTER TABLE ticket_activity ADD COLUMN IF NOT EXISTS body text NULL;`);
+      await this.db.query(`ALTER TABLE ticket_activity ADD COLUMN IF NOT EXISTS is_internal boolean NOT NULL DEFAULT false;`);
+      await this.db.query(`ALTER TABLE ticket_activity ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]'::jsonb;`);
+      await this.db.query(`ALTER TABLE ticket_activity ADD COLUMN IF NOT EXISTS field text NULL;`);
+      await this.db.query(`ALTER TABLE ticket_activity ADD COLUMN IF NOT EXISTS from_value text NULL;`);
+      await this.db.query(`ALTER TABLE ticket_activity ADD COLUMN IF NOT EXISTS to_value text NULL;`);
+      await this.db.query(`ALTER TABLE ticket_activity ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();`);
+
+      // Helpful indexes
+      await this.db.query(`CREATE INDEX IF NOT EXISTS ticket_activity_ticket_idx ON ticket_activity (ticket_id);`);
+      await this.db.query(`CREATE INDEX IF NOT EXISTS ticket_activity_ticket_created_idx ON ticket_activity (ticket_id, created_at);`);
+
+      this.activityEnsured = true;
+    } catch {
+      // If the DB user can't alter schema, we still don't want hard-fail everywhere.
+      // Reads will fall back to [] and writes won't block ticket updates.
+      this.activityEnsured = true;
+    }
+  }
 
   async list(
     q: ListTicketsQuery,
@@ -349,6 +404,8 @@ export class TicketsService {
     from: string | null,
     to: string | null
   ) {
+    await this.ensureTicketActivitySchema();
+
     const sql = `
       INSERT INTO ticket_activity
         (id, ticket_id, kind, author, body, is_internal, attachments, field, from_value, to_value)
@@ -447,6 +504,7 @@ export class TicketsService {
     `;
     await this.db.query(sql, params);
 
+    // Best-effort audit logging; do not fail the update if this breaks.
     try {
       const after = await this.requireTicket(id, req);
 
@@ -471,10 +529,8 @@ export class TicketsService {
       const beforeDue = before.row.dueAt ? new Date(before.row.dueAt).toISOString() : null;
       const afterDue = after.row.dueAt ? new Date(after.row.dueAt).toISOString() : null;
       if ((beforeDue ?? null) !== (afterDue ?? null)) await this.addChange(id, actor, "dueAt", beforeDue, afterDue);
-    } catch (err: any) {
-      if (!isMissingRelationError(err)) {
-        // keep PATCH successful even if activity logging fails
-      }
+    } catch {
+      // swallow
     }
 
     return true;
@@ -491,6 +547,8 @@ export class TicketsService {
     }
   ) {
     await this.requireTicket(ticketId, req);
+    await this.ensureTicketActivitySchema();
+
     const actor = getActorFromReq(req);
     const body = String(payload?.body ?? "").trim();
     const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
@@ -521,6 +579,7 @@ export class TicketsService {
 
   async getActivity(ticketId: string, req: any): Promise<ActivityItem[]> {
     await this.requireTicket(ticketId, req);
+    await this.ensureTicketActivitySchema();
 
     try {
       const sql = `
@@ -566,13 +625,14 @@ export class TicketsService {
         } as ActivityItem;
       });
     } catch (err: any) {
-      if (isMissingRelationError(err)) return [];
+      if (isMissingRelationError(err) || isUndefinedColumnError(err)) return [];
       throw err;
     }
   }
 
   async getHistory(ticketId: string, req: any): Promise<{ at: string; who: string; what: string }[]> {
     await this.requireTicket(ticketId, req);
+    await this.ensureTicketActivitySchema();
 
     try {
       const sql = `
@@ -600,7 +660,7 @@ export class TicketsService {
         };
       });
     } catch (err: any) {
-      if (isMissingRelationError(err)) return [];
+      if (isMissingRelationError(err) || isUndefinedColumnError(err)) return [];
       throw err;
     }
   }

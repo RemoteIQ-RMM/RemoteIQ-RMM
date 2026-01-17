@@ -1,4 +1,3 @@
-// app/administration/tabs/CompanyTab.tsx
 "use client";
 
 import * as React from "react";
@@ -25,11 +24,9 @@ function getApiBase(): string {
 const API_BASE = getApiBase();
 
 type BrandPayload = {
-    // These keys are best-effort; the branding API may return more fields.
     primaryColor?: string | null;
     secondaryColor?: string | null;
     logoUrl?: string | null;
-    // Some backends store header/footer HTML. We ignore them here.
     emailHeader?: string | null;
     emailFooter?: string | null;
 };
@@ -37,6 +34,8 @@ type BrandPayload = {
 function safeStr(v: unknown) {
     return typeof v === "string" ? v : "";
 }
+
+const preset = (k: string) => `{{${k}}}`;
 
 /* =============================== Component ================================== */
 export default function CompanyTab({ push }: { push: ToastFn }) {
@@ -73,7 +72,6 @@ export default function CompanyTab({ push }: { push: ToastFn }) {
             try {
                 const [company, branding] = await Promise.allSettled([
                     getCompanyProfile(),
-                    // Fetch branding directly; tolerate failures
                     fetch(`${API_BASE}/branding`, {
                         credentials: "include",
                         cache: "no-store",
@@ -102,7 +100,7 @@ export default function CompanyTab({ push }: { push: ToastFn }) {
                         });
                     }
                 }
-            } catch (e: any) {
+            } catch {
                 // Branding is optional; only warn on company error above
             } finally {
                 if (alive) setLoading(false);
@@ -119,7 +117,6 @@ export default function CompanyTab({ push }: { push: ToastFn }) {
     async function onSave() {
         setSaving(true);
         try {
-            // avoid sending any accidental id
             const { id, ...payload } = form as any;
             await saveCompanyProfile(payload);
             push({ title: "Company profile saved", kind: "success" });
@@ -130,6 +127,15 @@ export default function CompanyTab({ push }: { push: ToastFn }) {
         }
     }
 
+    async function copy(text: string) {
+        try {
+            await navigator.clipboard.writeText(text);
+            push({ title: "Copied", desc: text, kind: "success" });
+        } catch {
+            push({ title: "Copy failed", desc: "Clipboard permission denied.", kind: "destructive" });
+        }
+    }
+
     if (loading) return null;
 
     const brandPrimary = brand.primaryColor || undefined;
@@ -137,7 +143,6 @@ export default function CompanyTab({ push }: { push: ToastFn }) {
     return (
         <section id="company" className="space-y-4">
             <Card>
-                {/* Branded header (no icon) */}
                 <CardHeader className="gap-2">
                     <div className="flex items-center justify-between">
                         <div>
@@ -145,20 +150,24 @@ export default function CompanyTab({ push }: { push: ToastFn }) {
                             <CardDescription>
                                 Basic organization identity & contact details used across billing, emails, and the client portal.
                             </CardDescription>
+
+                            <div className="mt-2 text-xs text-muted-foreground">
+                                Preset variables from this tab use <span className="font-mono">{preset("company.*")}</span> (example:{" "}
+                                <span className="font-mono">{preset("company.name")}</span>).
+                            </div>
                         </div>
 
-                        {/* Logo (from branding), using next/image with unoptimized for immediate compatibility */}
                         {brand.logoUrl ? (
                             <div
                                 className="flex items-center justify-center rounded-md border bg-card p-2"
                                 style={brandPrimary ? { borderColor: brandPrimary } : undefined}
+                                title={`Preset variable: ${preset("branding.logoUrl")}`}
                             >
                                 <Image
                                     src={brand.logoUrl}
                                     alt="Organization Logo"
                                     width={120}
                                     height={40}
-                                    // Important: avoid next.config changes right now
                                     unoptimized
                                     priority
                                     style={{ objectFit: "contain" }}
@@ -176,38 +185,52 @@ export default function CompanyTab({ push }: { push: ToastFn }) {
                             value={form.name}
                             onChange={(v) => set("name", v)}
                             required
+                            presetVar={preset("company.name")}
+                            onCopy={copy}
                         />
                         <Field
                             label="Legal Name"
                             value={form.legalName ?? ""}
                             onChange={(v) => set("legalName", v)}
+                            presetVar={preset("company.legalName")}
+                            onCopy={copy}
                         />
                         <Field
                             label="Email"
                             type="email"
                             value={form.email ?? ""}
                             onChange={(v) => set("email", v)}
+                            presetVar={preset("company.email")}
+                            onCopy={copy}
                         />
                         <Field
                             label="Phone"
                             value={form.phone ?? ""}
                             onChange={(v) => set("phone", v)}
+                            presetVar={preset("company.phone")}
+                            onCopy={copy}
                         />
                         <Field
                             label="Fax"
                             value={form.fax ?? ""}
                             onChange={(v) => set("fax", v)}
+                            presetVar={preset("company.fax")}
+                            onCopy={copy}
                         />
                         <Field
                             label="Website (https://...)"
                             value={form.website ?? ""}
                             onChange={(v) => set("website", v)}
                             placeholder="https://example.com"
+                            presetVar={preset("company.website")}
+                            onCopy={copy}
                         />
                         <Field
                             label="VAT / TIN"
                             value={form.vatTin ?? ""}
                             onChange={(v) => set("vatTin", v)}
+                            presetVar={preset("company.vatTin")}
+                            onCopy={copy}
                         />
                         <div className="hidden md:block" />
                     </div>
@@ -218,45 +241,80 @@ export default function CompanyTab({ push }: { push: ToastFn }) {
                             label="Address Line 1"
                             value={form.address1 ?? ""}
                             onChange={(v) => set("address1", v)}
+                            presetVar={preset("company.address1")}
+                            onCopy={copy}
                         />
                         <Field
                             label="Address Line 2"
                             value={form.address2 ?? ""}
                             onChange={(v) => set("address2", v)}
+                            presetVar={preset("company.address2")}
+                            onCopy={copy}
                         />
                         <Field
                             label="City"
                             value={form.city ?? ""}
                             onChange={(v) => set("city", v)}
+                            presetVar={preset("company.city")}
+                            onCopy={copy}
                         />
                         <Field
                             label="State / Province"
                             value={form.state ?? ""}
                             onChange={(v) => set("state", v)}
+                            presetVar={preset("company.state")}
+                            onCopy={copy}
                         />
                         <Field
                             label="Postal Code"
                             value={form.postal ?? ""}
                             onChange={(v) => set("postal", v)}
+                            presetVar={preset("company.postal")}
+                            onCopy={copy}
                         />
                         <Field
                             label="Country"
                             value={form.country ?? ""}
                             onChange={(v) => set("country", v)}
+                            presetVar={preset("company.country")}
+                            onCopy={copy}
                         />
                     </div>
 
-                    <div className="pt-2">
+                    <div className="pt-2 flex items-center justify-between gap-3 flex-wrap">
+                        <div className="text-xs text-muted-foreground space-y-1">
+                            <div>
+                                Branding preset variables (best-effort):{" "}
+                                <span className="font-mono">{preset("branding.primaryColor")}</span>,{" "}
+                                <span className="font-mono">{preset("branding.secondaryColor")}</span>,{" "}
+                                <span className="font-mono">{preset("branding.logoUrl")}</span>
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="h-7 px-2 text-xs"
+                                    onClick={() => copy(preset("branding.logoUrl"))}
+                                >
+                                    Copy logo var
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="h-7 px-2 text-xs"
+                                    onClick={() => copy(preset("branding.primaryColor"))}
+                                >
+                                    Copy primary color var
+                                </Button>
+                            </div>
+                        </div>
+
                         <Button
                             onClick={onSave}
                             disabled={saving || !form.name}
-                            // subtle brand accent on primary button border/hover (non-destructive)
                             style={
                                 brandPrimary
                                     ? ({
-                                        // You can tune these if you have a design token system:
-                                        // Using inline style so it reacts dynamically to branding without a rebuild.
-                                        // Tailwind won't purge inline values.
                                         ["--brand-primary" as any]: brandPrimary,
                                     } as React.CSSProperties)
                                     : undefined
@@ -281,6 +339,8 @@ function Field({
     type = "text",
     placeholder,
     required,
+    presetVar,
+    onCopy,
 }: {
     label: string;
     value: string;
@@ -288,6 +348,8 @@ function Field({
     type?: React.ComponentProps<typeof Input>["type"];
     placeholder?: string;
     required?: boolean;
+    presetVar: string;
+    onCopy: (t: string) => void;
 }) {
     return (
         <div className="grid gap-1">
@@ -300,6 +362,21 @@ function Field({
                 placeholder={placeholder}
                 onChange={(e) => onChange(e.target.value)}
             />
+
+            <div className="mt-1 flex items-center justify-between gap-2">
+                <div className="text-xs text-muted-foreground">
+                    Preset variable: <span className="font-mono">{presetVar}</span>
+                </div>
+                <Button
+                    type="button"
+                    variant="outline"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => onCopy(presetVar)}
+                    title="Copy preset variable"
+                >
+                    Copy
+                </Button>
+            </div>
         </div>
     );
 }

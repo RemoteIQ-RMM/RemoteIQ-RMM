@@ -18,6 +18,8 @@ import { CannedResponsesService } from "./canned-responses.service";
 export class AdminTicketingController {
     constructor(private readonly canned: CannedResponsesService) { }
 
+    // ---------------- Canned Responses ----------------
+
     @Get("canned-responses")
     @RequirePerm("tickets.canned.read")
     async list(@Req() req: any) {
@@ -47,5 +49,38 @@ export class AdminTicketingController {
     @RequirePerm("tickets.canned.write")
     async remove(@Req() req: any, @Param("id") id: string) {
         return await this.canned.adminDelete(req, id);
+    }
+
+    // ---------------- Custom Variables ----------------
+
+    @Get("canned-variables")
+    @RequirePerm("tickets.canned.read")
+    async listVars(@Req() req: any) {
+        return { items: await this.canned.adminListVariables(req) };
+    }
+
+    @Post("canned-variables")
+    @RequirePerm("tickets.canned.write")
+    async createVar(
+        @Req() req: any,
+        @Body() body: { key: string; value: string; isActive?: boolean }
+    ) {
+        return await this.canned.adminCreateVariable(req, body);
+    }
+
+    @Patch("canned-variables/:id")
+    @RequirePerm("tickets.canned.write")
+    async updateVar(
+        @Req() req: any,
+        @Param("id") id: string,
+        @Body() body: { key?: string; value?: string; isActive?: boolean }
+    ) {
+        return await this.canned.adminUpdateVariable(req, id, body);
+    }
+
+    @Delete("canned-variables/:id")
+    @RequirePerm("tickets.canned.write")
+    async deleteVar(@Req() req: any, @Param("id") id: string) {
+        return await this.canned.adminDeleteVariable(req, id);
     }
 }

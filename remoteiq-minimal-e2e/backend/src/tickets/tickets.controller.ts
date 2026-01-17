@@ -38,16 +38,42 @@ export class TicketsController {
   @Get()
   @RequirePerm("tickets.read")
   async list(@Query() q: ListTicketsQuery, @Req() req: any) {
-    // Backward compatible: return array (frontend expects array)
     const result = await this.svc.list(q, req);
     return result.items;
   }
 
+  // ✅ fixed: use CannedResponsesService (not TicketsService)
   @Get("canned-responses")
   @RequirePerm("tickets.read")
   async cannedResponses(@Req() req: any) {
-    // Returns ACTIVE canned responses for the current org (used by ticket composer)
-    return await this.canned.listForTicketUse(req);
+    return await this.canned.listForTicketUse(req); // returns [{id,title,body}]
+  }
+
+  // Optional: definitions (preset + custom keys)
+  @Get("canned-variables")
+  @RequirePerm("tickets.read")
+  async cannedVariables(@Req() req: any) {
+    return await this.canned.listVariableDefinitionsForTicketUse(req); // returns [{key,label,description,source}]
+  }
+
+  // Optional: values for a specific ticket
+  @Get(":id/canned-variables")
+  @RequirePerm("tickets.read")
+  async cannedVariableValues(@Param("id") id: string, @Req() req: any) {
+    return await this.canned.listVariableValuesForTicket(id, req); // returns [{key,value}]
+  }
+
+  // ✅ Used by the UI to insert rendered canned text
+  @Post(":id/canned-render")
+  @RequirePerm("tickets.read")
+  async renderCanned(
+    @Param("id") id: string,
+    @Body() body: { template?: string },
+    @Req() req: any
+  ) {
+    const template = String(body?.template ?? "");
+    const rendered = await this.canned.renderForTicket(id, template, req);
+    return { rendered };
   }
 
   @Get(":id/activity")
