@@ -135,6 +135,16 @@ export const PERMISSION_GROUPS = [
         items: [
             { key: "tickets.read", label: "View tickets" },
             { key: "tickets.write", label: "Create/update tickets" },
+            {
+                key: "tickets.canned.read",
+                label: "View canned responses (admin)",
+                description: "View canned responses configuration in Administration.",
+            },
+            {
+                key: "tickets.canned.write",
+                label: "Manage canned responses (admin)",
+                description: "Create/edit/delete canned responses in Administration.",
+            },
         ] as const,
     },
 

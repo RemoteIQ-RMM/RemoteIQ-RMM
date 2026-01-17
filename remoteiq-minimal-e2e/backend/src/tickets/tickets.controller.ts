@@ -25,11 +25,15 @@ import { diskStorage } from "multer";
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
+import { CannedResponsesService } from "./canned-responses.service";
 
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true, forbidUnknownValues: true }))
 @Controller("/api/tickets")
 export class TicketsController {
-  constructor(private readonly svc: TicketsService) { }
+  constructor(
+    private readonly svc: TicketsService,
+    private readonly canned: CannedResponsesService
+  ) { }
 
   @Get()
   @RequirePerm("tickets.read")
@@ -41,8 +45,9 @@ export class TicketsController {
 
   @Get("canned-responses")
   @RequirePerm("tickets.read")
-  async cannedResponses() {
-    return [];
+  async cannedResponses(@Req() req: any) {
+    // Returns ACTIVE canned responses for the current org (used by ticket composer)
+    return await this.canned.listForTicketUse(req);
   }
 
   @Get(":id/activity")
