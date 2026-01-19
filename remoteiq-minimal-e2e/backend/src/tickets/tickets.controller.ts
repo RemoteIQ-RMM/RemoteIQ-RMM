@@ -42,28 +42,24 @@ export class TicketsController {
     return result.items;
   }
 
-  // ✅ fixed: use CannedResponsesService (not TicketsService)
   @Get("canned-responses")
   @RequirePerm("tickets.read")
   async cannedResponses(@Req() req: any) {
     return await this.canned.listForTicketUse(req); // returns [{id,title,body}]
   }
 
-  // Optional: definitions (preset + custom keys)
   @Get("canned-variables")
   @RequirePerm("tickets.read")
   async cannedVariables(@Req() req: any) {
     return await this.canned.listVariableDefinitionsForTicketUse(req); // returns [{key,label,description,source}]
   }
 
-  // Optional: values for a specific ticket
   @Get(":id/canned-variables")
   @RequirePerm("tickets.read")
   async cannedVariableValues(@Param("id") id: string, @Req() req: any) {
     return await this.canned.listVariableValuesForTicket(id, req); // returns [{key,value}]
   }
 
-  // ✅ Used by the UI to insert rendered canned text
   @Post(":id/canned-render")
   @RequirePerm("tickets.read")
   async renderCanned(
@@ -76,10 +72,34 @@ export class TicketsController {
     return { rendered };
   }
 
+  /**
+   * BACKCOMPAT:
+   * Older UI called this "Activity".
+   * New behavior: "Replies" only (messages). No changes, no internal notes.
+   */
   @Get(":id/activity")
   @RequirePerm("tickets.read")
   async activity(@Param("id") id: string, @Req() req: any) {
-    return this.svc.getActivity(id, req);
+    return this.svc.getReplies(id, req);
+  }
+
+  /**
+   * Replies (customer-facing messages)
+   */
+  @Get(":id/replies")
+  @RequirePerm("tickets.read")
+  async replies(@Param("id") id: string, @Req() req: any) {
+    return this.svc.getReplies(id, req);
+  }
+
+  /**
+   * Internal Notes (technician-only)
+   * Gate with tickets.write so client users can't see notes.
+   */
+  @Get(":id/notes")
+  @RequirePerm("tickets.write")
+  async notes(@Param("id") id: string, @Req() req: any) {
+    return this.svc.getInternalNotes(id, req);
   }
 
   @Get(":id/history")

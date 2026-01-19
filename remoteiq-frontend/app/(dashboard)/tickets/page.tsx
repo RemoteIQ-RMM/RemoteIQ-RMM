@@ -1,4 +1,3 @@
-// app/(dashboard)/tickets/page.tsx
 "use client";
 
 import * as React from "react";
@@ -140,10 +139,10 @@ export default function TicketsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-white text-zinc-900 dark:bg-zinc-950 dark:text-gray-200 p-6">
-      <div className="mb-4 flex items-center justify-between">
+    <div className="min-h-screen bg-white text-zinc-900 dark:bg-zinc-950 dark:text-gray-200 p-4 sm:p-6">
+      <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-xl font-semibold">Tickets</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 self-end sm:self-auto">
           <button
             className={cn(btnBase, btnSecondary, "px-4 py-1.5 text-sm")}
             onClick={() => setExportOpen(true)}
@@ -168,7 +167,9 @@ export default function TicketsPage() {
         />
       </div>
 
-      <TicketsTable items={filtered} loading={loading} />
+      <div className="overflow-x-auto">
+        <TicketsTable items={filtered} loading={loading} />
+      </div>
 
       <Dialog open={newOpen} onOpenChange={setNewOpen}>
         <DialogContent>

@@ -1,4 +1,3 @@
-// app/administration/page.tsx
 "use client";
 
 import * as React from "react";
@@ -60,6 +59,7 @@ import {
     Lock,
     UserCheck,
     ChevronDown,
+    Menu,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -239,6 +239,7 @@ export default function AdministrationPage() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const [tab, setTab] = React.useState("company");
+    const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
 
     // ===== SHARED DATA =====
     const [users, setUsers] = React.useState<UiUser[]>([]);
@@ -521,6 +522,45 @@ export default function AdministrationPage() {
     const requiredForTab = ADMIN_TAB_PERMS[tab] ?? "admin.access";
     const canViewTab = hasPerm(permissions, requiredForTab);
 
+    // Nav Item Renderer to reuse for Desktop & Mobile
+    const renderNavItems = (isMobile: boolean) =>
+        navItemGroups.map((group, groupIndex) => (
+            <div
+                key={group.title}
+                className={cn("w-full", groupIndex > 0 && "border-t mt-2 pt-2")}
+            >
+                <button
+                    onClick={() => toggleGroup(group.title)}
+                    className="w-full flex items-center justify-start gap-2 rounded-md px-2 py-2 text-sm font-semibold text-foreground hover:bg-muted/50"
+                >
+                    <ChevronDown
+                        className={cn(
+                            "h-4 w-4 transition-transform text-muted-foreground",
+                            openGroups.includes(group.title) ? "rotate-0" : "-rotate-90"
+                        )}
+                    />
+                    {group.title}
+                </button>
+
+                {group.items.map(({ v, label, Icon }) => {
+                    const isOpen = openGroups.includes(group.title);
+                    const isActive = tab === v;
+                    if (!isOpen && !isActive) return null;
+                    return (
+                        <TabsTrigger
+                            key={v}
+                            value={v}
+                            onClick={() => isMobile && setMobileNavOpen(false)}
+                            className="w-full justify-start rounded-md border-l-2 border-transparent px-3 py-2 pl-8 text-sm text-muted-foreground hover:bg-muted/50 data-[state=active]:border-l-primary data-[state=active]:bg-primary/10 data-[state=active]:font-semibold data-[state=active]:text-primary"
+                        >
+                            <Icon className="mr-2 h-4 w-4" />
+                            {label}
+                        </TabsTrigger>
+                    );
+                })}
+            </div>
+        ));
+
     return (
         <main className="p-4 sm:p-6">
             <div className="mx-auto max-w-7xl">
@@ -533,46 +573,34 @@ export default function AdministrationPage() {
                     </p>
                 </div>
 
-                <Tabs value={tab} onValueChange={setTab} className="grid grid-cols-[240px_1fr] items-start gap-6">
-                    {/* Left rail */}
-                    <aside className="w-[240px] shrink-0 self-start sticky top-[70px] sm:top-[70px]">
+                <Tabs value={tab} onValueChange={setTab} className="lg:grid lg:grid-cols-[240px_1fr] items-start gap-6">
+                    {/* Mobile Header / Hamburger */}
+                    <div className="lg:hidden mb-4">
+                        <Button variant="outline" className="w-full justify-start" onClick={() => setMobileNavOpen(true)}>
+                            <Menu className="mr-2 h-4 w-4" />
+                            Menu
+                        </Button>
+                    </div>
+
+                    {/* Mobile Nav Dialog */}
+                    <Dialog open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+                        <DialogContent className="h-[80vh] flex flex-col p-0 gap-0">
+                            <DialogHeader className="p-4 pb-0 shrink-0">
+                                <DialogTitle>Administration Menu</DialogTitle>
+                            </DialogHeader>
+                            <div className="flex-1 overflow-y-auto p-4">
+                                <TabsList className="flex h-auto w-full flex-col items-start justify-start gap-1 bg-transparent p-0">
+                                    {renderNavItems(true)}
+                                </TabsList>
+                            </div>
+                        </DialogContent>
+                    </Dialog>
+
+                    {/* Left rail (Desktop) */}
+                    <aside className="hidden lg:block w-[240px] shrink-0 self-start lg:sticky lg:top-[70px]">
                         <Card>
                             <TabsList className="flex h-auto w-full flex-col items-start justify-start gap-1 bg-transparent p-2">
-                                {navItemGroups.map((group, groupIndex) => (
-                                    <div
-                                        key={group.title}
-                                        className={cn("w-full", groupIndex > 0 && "border-t mt-2 pt-2")}
-                                    >
-                                        <button
-                                            onClick={() => toggleGroup(group.title)}
-                                            className="w-full flex items-center justify-start gap-2 rounded-md px-2 py-2 text-sm font-semibold text-foreground hover:bg-muted/50"
-                                        >
-                                            <ChevronDown
-                                                className={cn(
-                                                    "h-4 w-4 transition-transform text-muted-foreground",
-                                                    openGroups.includes(group.title) ? "rotate-0" : "-rotate-90"
-                                                )}
-                                            />
-                                            {group.title}
-                                        </button>
-
-                                        {group.items.map(({ v, label, Icon }) => {
-                                            const isOpen = openGroups.includes(group.title);
-                                            const isActive = tab === v;
-                                            if (!isOpen && !isActive) return null;
-                                            return (
-                                                <TabsTrigger
-                                                    key={v}
-                                                    value={v}
-                                                    className="w-full justify-start rounded-md border-l-2 border-transparent px-3 py-2 pl-8 text-sm text-muted-foreground hover:bg-muted/50 data-[state=active]:border-l-primary data-[state=active]:bg-primary/10 data-[state=active]:font-semibold data-[state=active]:text-primary"
-                                                >
-                                                    <Icon className="mr-2 h-4 w-4" />
-                                                    {label}
-                                                </TabsTrigger>
-                                            );
-                                        })}
-                                    </div>
-                                ))}
+                                {renderNavItems(false)}
                             </TabsList>
                         </Card>
                     </aside>
