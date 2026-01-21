@@ -7,13 +7,14 @@ import { LoginDto } from "./dto/login.dto";
 import { Verify2FADto } from "./dto/verify-2fa.dto";
 import { UserAuthService } from "./user-auth.service";
 import { PgPoolService } from "../storage/pg-pool.service";
+import { Public } from "./public.decorator";
 
 @ApiTags("auth")
 @Controller("api/auth")
 export class AuthController {
     constructor(
         private readonly users: UserAuthService,
-        private readonly db: PgPoolService,          // ⬅️ added: DB access for permissions
+        private readonly db: PgPoolService,          // ⬅️ DB access for permissions
     ) { }
 
     /**
@@ -21,7 +22,6 @@ export class AuthController {
      * Tries role_permissions first; if that table doesn't exist, falls back to roles_permissions.
      */
     private async getUserPermissions(userId: string): Promise<string[]> {
-        // Detect which linking table exists
         const exists = async (table: string) => {
             const q = `
         SELECT 1
@@ -36,17 +36,10 @@ export class AuthController {
         const hasRolePerm = await exists("role_permissions");
         const hasRolesPerm = !hasRolePerm ? await exists("roles_permissions") : false;
 
-        // Decide join table name
         const joinTable = hasRolePerm ? "role_permissions" : hasRolesPerm ? "roles_permissions" : null;
 
-        if (!joinTable) {
-            // No link table—return empty safely
-            return [];
-        }
+        if (!joinTable) return [];
 
-        // We assume a user_roles (user_id, role_id) table.
-        // role_permissions / roles_permissions assumed to have (role_id, permission_key).
-        // permissions table uses (permission_key, ...).
         const sql = `
       SELECT DISTINCT rp.permission_key
         FROM user_roles ur
@@ -57,6 +50,7 @@ export class AuthController {
         return res.rows.map((r: any) => r.permission_key).filter(Boolean);
     }
 
+    @Public()
     @Post("login")
     @ApiOkResponse({ description: "Sets auth cookie on success or returns 2FA challenge when required" })
     async login(
@@ -103,10 +97,10 @@ export class AuthController {
         return { user: { ...user, permissions } };
     }
 
+    @Public()
     @Post("2fa/verify")
     @ApiOkResponse({ description: "Verifies TOTP or recovery code and sets auth cookie" })
     async verify2FA(@Body() dto: Verify2FADto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
-        // Normalize incoming values
         if (dto.code) dto.code = dto.code.trim();
         if (dto.recoveryCode) dto.recoveryCode = dto.recoveryCode.trim();
 
@@ -114,17 +108,14 @@ export class AuthController {
             throw new BadRequestException("Provide either 'code' or 'recoveryCode'.");
         }
 
-        // 1) Validate challenge and extract userId + jti
         const { userId, jti } = await this.users.verifyChallengeToken(dto.challengeToken);
 
-        // 2) Verify TOTP or recovery
         let ok = false;
         if (dto.code) ok = await this.users.verifyTOTP(userId, dto.code);
         else if (dto.recoveryCode) ok = await this.users.consumeRecoveryCode(userId, dto.recoveryCode);
 
         if (!ok) throw new BadRequestException("Invalid code");
 
-        // 3) Sign normal auth token with JTI and set cookie
         const user = await this.users.findUserById(userId);
         const { token, jti: newJti } = await this.users.signWithJti(user);
 
@@ -145,7 +136,6 @@ export class AuthController {
             maxAge: maxAgeMs,
         });
 
-        // 4) Trust device if requested
         if (dto.rememberDevice) {
             const fp = dto.deviceFingerprint ?? jti;
             await this.users.trustCurrentDevice(userId, fp);
@@ -154,6 +144,7 @@ export class AuthController {
         return { ok: true };
     }
 
+    @Public()
     @Post("logout")
     @ApiOkResponse({ description: "Clears auth cookie" })
     async logout(@Res({ passthrough: true }) res: Response) {
@@ -162,6 +153,7 @@ export class AuthController {
         return { ok: true };
     }
 
+    @Public()
     @Get("me")
     @ApiOkResponse({ description: "Current user (if authenticated)" })
     async me(@Req() req: Request) {
@@ -172,7 +164,6 @@ export class AuthController {
         const user = await this.users.verify(token);
         if (!user?.id) return { user: null };
 
-        // Attach permissions for FE gating (/administration and top-bar shield)
         const permissions = await this.getUserPermissions(user.id);
 
         return { user: { ...user, permissions } };

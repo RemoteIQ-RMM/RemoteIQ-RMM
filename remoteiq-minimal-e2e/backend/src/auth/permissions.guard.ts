@@ -12,13 +12,20 @@ import { IS_PUBLIC_KEY } from "./public.decorator";
 
 function getReqPath(req: any): string {
   const raw: string = req?.path || req?.url || req?.originalUrl || "";
-  // If originalUrl includes querystring, strip it
   const q = raw.indexOf("?");
   const path = q >= 0 ? raw.slice(0, q) : raw;
   return path || "";
 }
 
-function isBootstrapPublicRequest(req: any): boolean {
+/**
+ * Minimal endpoints that MUST remain reachable without req.user.
+ * These are intentionally tiny and safe:
+ * - docs/health/static
+ * - branding fetch (login theming)
+ * - login + 2FA verify + logout
+ * - agent endpoints (use their own auth model)
+ */
+function isAlwaysPublicRequest(req: any): boolean {
   const path = getReqPath(req);
   const method = String(req?.method || "GET").toUpperCase();
 
@@ -35,18 +42,23 @@ function isBootstrapPublicRequest(req: any): boolean {
   if (method === "GET" && path === "/healthz") return true;
   if (method === "GET" && path === "/healthz/email") return true;
 
-  // Auth bootstrap routes
-  if (method === "POST" && path === "/api/auth/login") return true;
-  if (method === "POST" && path === "/api/auth/2fa/verify") return true;
-
-  // NOTE: logout can be public (it clears cookie), but you can also require auth if you want
-  if (method === "POST" && path === "/api/auth/logout") return true;
-
   // Branding fetch for login page
   if (method === "GET" && path === "/api/branding") return true;
 
-  // Agent endpoints authenticate with AgentTokenGuard (not req.user)
-  // PermissionsGuard must not block these.
+  // Auth bootstrap routes
+  if (method === "POST" && path === "/api/auth/login") return true;
+  if (method === "POST" && path === "/api/auth/2fa/verify") return true;
+  if (method === "POST" && path === "/api/auth/logout") return true;
+
+  // Auth "me" is intentionally safe to expose unauthenticated (it returns {user:null} without a token)
+  if (method === "GET" && path === "/api/auth/me") return true;
+
+  // Optional legacy auth routes (if you keep /api/auth-legacy enabled)
+  if (method === "POST" && path === "/api/auth-legacy/login") return true;
+  if (method === "POST" && path === "/api/auth-legacy/2fa/verify") return true;
+  if (method === "POST" && path === "/api/auth-legacy/logout") return true;
+
+  // Agent endpoints authenticate with agent tokens (not req.user)
   if (path.startsWith("/api/agent")) return true;
 
   return false;
@@ -81,10 +93,8 @@ export class PermissionsGuard implements CanActivate {
     ]);
     if (isPublic) return true;
 
-    // 2) Small bootstrap allowlist (optionally enabled)
-    // Set PERMS_GUARD_ALLOWLIST=1 while you're still annotating controllers.
-    const allowlistEnabled = process.env.PERMS_GUARD_ALLOWLIST === "1";
-    if (allowlistEnabled && isBootstrapPublicRequest(req)) return true;
+    // 2) Always-on allowlist for minimal bootstrap/public endpoints
+    if (isAlwaysPublicRequest(req)) return true;
 
     // Only guard API routes; if someone hits "/", let it 404 normally.
     if (!path.startsWith("/api/")) return true;
