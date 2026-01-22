@@ -42,7 +42,11 @@ function rawToString(data: RawData): string {
   return "";
 }
 
-@WebSocketGateway({ path: "/ws" })
+/**
+ * Agent WebSocket endpoint.
+ * NOTE: Must NOT share the same `path` as DashboardGateway, otherwise one of them will never receive connections.
+ */
+@WebSocketGateway({ path: "/ws/agent" })
 @Injectable()
 export class AgentGateway implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger("AgentGateway");
