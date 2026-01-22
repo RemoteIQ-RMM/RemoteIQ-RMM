@@ -1,5 +1,4 @@
 // remoteiq-minimal-e2e/backend/src/auth/policy.ts
-
 export type PermissionGroup = {
     key: string;
     label: string;
@@ -89,7 +88,14 @@ export const PERMISSION_GROUPS = [
     {
         key: "customers",
         label: "Customers",
-        items: [{ key: "customers.read", label: "View customers/sites" }] as const,
+        items: [
+            { key: "customers.read", label: "View customers/sites" },
+            {
+                key: "customers.write",
+                label: "Create/edit customers/sites",
+                description: "Create and manage customers (clients) and their sites.",
+            },
+        ] as const,
     },
 
     // ── Devices
@@ -98,6 +104,11 @@ export const PERMISSION_GROUPS = [
         label: "Devices",
         items: [
             { key: "devices.read", label: "View devices" },
+            {
+                key: "devices.write",
+                label: "Manage devices",
+                description: "Update device properties (e.g., move device between sites within same client).",
+            },
             {
                 key: "devices.actions",
                 label: "Run device actions",
@@ -211,15 +222,13 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = PERMISSION_GROUPS.
         ...item,
         groupKey: group.key,
         groupLabel: group.label,
-    })),
+    }))
 );
 
 export const ALL_PERMISSIONS: Permission[] = PERMISSION_DEFINITIONS.map((d) => d.key);
 
-// Optional role names if you still use a role -> default-permissions map somewhere
 export type Role = "owner" | "admin" | "operator" | "viewer";
 
-// Advisory defaults for built-in roles (guards still check req.user permissions).
 export const rolePermissions: Record<Role, Permission[]> = {
     owner: [...ALL_PERMISSIONS],
     admin: [...ALL_PERMISSIONS],
@@ -228,14 +237,17 @@ export const rolePermissions: Record<Role, Permission[]> = {
         "users.read",
         "roles.read",
 
-        // billing (operator can view, not manage)
         "billing.read",
         "subscription.read",
         "invoices.read",
 
         "customers.read",
+        "customers.write",
+
         "devices.read",
+        "devices.write",
         "devices.actions",
+
         "checks.read",
         "checks.run",
         "alerts.read",
@@ -254,13 +266,14 @@ export const rolePermissions: Record<Role, Permission[]> = {
         "users.read",
         "roles.read",
 
-        // billing (viewer can view)
         "billing.read",
         "subscription.read",
         "invoices.read",
 
         "customers.read",
+
         "devices.read",
+
         "checks.read",
         "alerts.read",
         "tickets.read",
@@ -269,7 +282,6 @@ export const rolePermissions: Record<Role, Permission[]> = {
     ],
 };
 
-// ---- Helpers (optional, used by some older code paths) ----
 export function permsForRoles(roles: string[] | undefined | null): Set<Permission> {
     const out = new Set<Permission>();
     if (!roles) return out;

@@ -1,3 +1,4 @@
+// remoteiq-frontend/lib/api.ts
 // Centralized typed API client used by the frontend (Next.js / React).
 // It reads NEXT_PUBLIC_API_BASE for the backend base URL.
 
@@ -11,12 +12,48 @@ function url(path: string) {
   return `${API_BASE.replace(/\/+$/, "")}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type JsonInit = Omit<RequestInit, "body" | "method"> & {
   body?: any;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 };
+
+async function readErrorMessage(res: Response): Promise<string> {
+  let msg = "";
+  try {
+    const data = await res.clone().json();
+    msg =
+      typeof (data as any)?.message === "string"
+        ? (data as any).message
+        : JSON.stringify(data);
+  } catch {
+    try {
+      msg = await res.text();
+    } catch {
+      // ignore
+    }
+  }
+  return msg;
+}
+
+function asArray<T>(res: any): T[] {
+  if (Array.isArray(res)) return res as T[];
+  if (res && Array.isArray(res.items)) return res.items as T[];
+  if (res && Array.isArray(res.data)) return res.data as T[];
+  return [];
+}
+
+async function tryJfetch<T>(path: string, init?: JsonInit): Promise<T | undefined> {
+  try {
+    return await jfetch<T>(path, init ?? {});
+  } catch (e: any) {
+    const status = e?.status ?? e?.code;
+    if (status === 404 || status === 405) return undefined;
+    throw e;
+  }
+}
 
 // unified fetch wrapper w/ JSON
 export async function jfetch<T>(path: string, init: JsonInit = {}): Promise<T> {
@@ -33,18 +70,7 @@ export async function jfetch<T>(path: string, init: JsonInit = {}): Promise<T> {
   });
 
   if (!res.ok) {
-    // try to surface JSON message; fall back to text
-    let msg = "";
-    try {
-      const data = await res.json();
-      msg = typeof (data as any)?.message === "string" ? (data as any).message : JSON.stringify(data);
-    } catch {
-      try {
-        msg = await res.text();
-      } catch {
-        // ignore
-      }
-    }
+    const msg = await readErrorMessage(res);
     const err = new Error(msg || `Request failed: ${res.status}`);
     (err as any).status = res.status; // preserve status for caller fallbacks
     throw err;
@@ -62,7 +88,6 @@ export async function jfetch<T>(path: string, init: JsonInit = {}): Promise<T> {
 // ---------------------------------------------------------------------------
 // Devices (grid + details)
 // ---------------------------------------------------------------------------
-// lib/api.ts  (only showing the Device type block; keep the rest as-is)
 export type Device = {
   id: string;
   hostname: string;
@@ -73,10 +98,10 @@ export type Device = {
   client?: string | null;
   site?: string | null;
   user?: string | string[] | null;
-  version?: string | null;      // <-- add
-  primaryIp?: string | null;    // <-- add
+  version?: string | null;
+  primaryIp?: string | null;
   /** Optional UUID for the underlying agent (if backend provides it). */
-  agentUuid?: string | null;    // <-- NEW (harmless if absent)
+  agentUuid?: string | null;
 };
 
 export type DevicesResponse = {
@@ -119,21 +144,13 @@ export type DeviceCheck = {
   output: string;
 
   // ----- Optional advanced fields (rendered when present) -----
-  /** e.g., "PING","CPU","MEMORY","DISK","SERVICE","PROCESS","PORT","WINEVENT","SOFTWARE","SECURITY","SCRIPT","PATCH","CERT","SMART","RDP","SMB","FIREWALL" */
   type?: string;
-  /** severity classification applied to alerting paths */
   severity?: "WARN" | "CRIT";
-  /** optional grouping like "Performance", "Security", "Compliance" */
   category?: string;
-  /** arbitrary labels */
   tags?: string[];
-  /** thresholds used to evaluate this check (key/value) */
   thresholds?: Record<string, any>;
-  /** metrics captured by the last run (key/value) */
   metrics?: Record<string, number | string | boolean>;
-  /** true if within an active maintenance window */
   maintenance?: boolean;
-  /** deduplication key for alert correlation */
   dedupeKey?: string;
 };
 
@@ -143,7 +160,8 @@ export async function fetchDeviceChecks(
   limit?: number
 ): Promise<{ items: DeviceCheck[] }> {
   const base = `/api/devices/${encodeURIComponent(deviceId)}/checks`;
-  const path = typeof limit === "number" ? `${base}?limit=${encodeURIComponent(String(limit))}` : base;
+  const path =
+    typeof limit === "number" ? `${base}?limit=${encodeURIComponent(String(limit))}` : base;
   return await jfetch(path);
 }
 
@@ -167,6 +185,43 @@ export async function rebootDevice(id: string): Promise<{ accepted: true; jobId:
 }
 export async function patchDevice(id: string): Promise<{ accepted: true; jobId: string }> {
   return await jfetch(`/api/devices/${encodeURIComponent(id)}/actions/patch`, { method: "POST" });
+}
+
+/**
+ * Move a device to a new site via API.
+ * Backend: PATCH /api/devices/:id/site  { siteId }
+ */
+export async function moveDeviceToSite(deviceId: string, siteId: string): Promise<Device> {
+  const did = encodeURIComponent(String(deviceId ?? "").trim());
+  const sid = String(siteId ?? "").trim();
+  if (!did) throw new Error("deviceId is required");
+  if (!sid) throw new Error("siteId is required");
+
+  // Prefer PATCH /api/devices/:id/site, but try fallbacks if needed.
+  const candidates: Array<{ path: string; method: "PATCH" | "POST"; body: any }> = [
+    { path: `/api/devices/${did}/site`, method: "PATCH", body: { siteId: sid } },
+    { path: `/api/devices/${did}/site`, method: "POST", body: { siteId: sid } },
+    { path: `/api/devices/${did}/move-site`, method: "PATCH", body: { siteId: sid } },
+    { path: `/api/devices/${did}/site/move`, method: "PATCH", body: { siteId: sid } },
+  ];
+
+  let lastErr: any = null;
+
+  for (const c of candidates) {
+    try {
+      const res = await tryJfetch<Device>(c.path, { method: c.method, body: c.body });
+      if (res === undefined) continue;
+      return res;
+    } catch (e: any) {
+      const status = e?.status ?? e?.code;
+      if (status === 404 || status === 405) continue;
+      lastErr = e;
+      break;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+  throw new Error("No supported endpoint found to move device to site.");
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +261,13 @@ export async function fetchJobLog(jobId: string): Promise<{ jobId: string; log: 
 export type DbEngine = "postgresql" | "mysql" | "mssql" | "sqlite" | "mongodb";
 export type DbAuthMode = "fields" | "url";
 export type StorageDomain =
-  | "users" | "roles" | "sessions" | "audit_logs" | "devices" | "policies" | "email_queue";
+  | "users"
+  | "roles"
+  | "sessions"
+  | "audit_logs"
+  | "devices"
+  | "policies"
+  | "email_queue";
 
 export type DatabaseMappings = Record<StorageDomain, string>;
 
@@ -247,7 +308,11 @@ export async function saveDatabaseConfig(cfg: DatabaseConfig): Promise<void> {
   await jfetch<void>(`/api/admin/database/save`, { method: "POST", body: cfg });
 }
 
-export async function dryRunDatabaseMigration(): Promise<{ ok: true; destructive: false; steps: string[] }> {
+export async function dryRunDatabaseMigration(): Promise<{
+  ok: true;
+  destructive: false;
+  steps: string[];
+}> {
   return await jfetch(`/api/admin/database/migrate/dry-run`, { method: "POST" });
 }
 
@@ -278,13 +343,13 @@ export async function saveCompanyProfile(p: CompanyProfile): Promise<void> {
 
 // --- Localization (admin) ---
 export type LocalizationSettings = {
-  language: string;                // "en-US"
-  dateFormat: string;              // "MM/DD/YYYY"
-  timeFormat: "12h" | "24h";       // strictly 12h/24h for UI consistency
-  numberFormat: string;            // "1,234.56"
-  timeZone: string;                // "America/New_York"
+  language: string;
+  dateFormat: string;
+  timeFormat: "12h" | "24h";
+  numberFormat: string;
+  timeZone: string;
   firstDayOfWeek: "sunday" | "monday";
-  currency?: string;               // "USD"
+  currency?: string;
 };
 
 export async function getLocalizationSettings(): Promise<LocalizationSettings> {
@@ -300,7 +365,6 @@ export async function getLocalizationSettings(): Promise<LocalizationSettings> {
       currency: "USD",
     };
   }
-  // Back-compat: normalize any legacy strings to the union
   const tfRaw = (res as any).timeFormat as string | undefined;
   const timeFormat: "12h" | "24h" = tfRaw === "24h" || tfRaw === "HH:mm" ? "24h" : "12h";
   return { ...(res as LocalizationSettings), timeFormat };
@@ -312,7 +376,7 @@ export async function saveLocalizationSettings(p: LocalizationSettings): Promise
 
 // --- Support & Legal (admin) ---
 export type SupportLegalSettings = {
-  id?: number;                 // present on GET only
+  id?: number;
   supportEmail?: string;
   supportPhone?: string;
   knowledgeBaseUrl?: string;
@@ -330,9 +394,7 @@ export async function getSupportLegalSettings(): Promise<SupportLegalSettings> {
   return await jfetch(`/api/admin/support-legal`);
 }
 
-export async function saveSupportLegalSettings(
-  p: Omit<SupportLegalSettings, "id">
-): Promise<void> {
+export async function saveSupportLegalSettings(p: Omit<SupportLegalSettings, "id">): Promise<void> {
   await jfetch(`/api/admin/support-legal/save`, { method: "POST", body: p });
 }
 
@@ -352,7 +414,6 @@ export type UserDTO = {
   createdAt?: string;
   updatedAt?: string;
 
-  // Optional profile fields (present if your DB exposes them)
   phone?: string | null;
   address1?: string | null;
   address2?: string | null;
@@ -363,19 +424,16 @@ export type UserDTO = {
 };
 
 export async function getAdminRoles(): Promise<{ items: RoleDTO[] }> {
-  // Wrap server response (array) into {items} for consistency
   const arr = await jfetch<RoleDTO[]>(`/api/admin/users/roles`);
   return { items: arr };
 }
 
 export async function getAdminUsers(): Promise<{ items: UserDTO[]; total?: number }> {
-  // backend returns {items, total}
   return await jfetch(`/api/admin/users`);
 }
 
 export type InvitePayload = { name?: string; email: string; role?: string; message?: string };
 
-/** Invite one-by-one under the hood to keep types simple */
 export async function inviteUsers(invites: InvitePayload[]): Promise<{ created: UserDTO[] }> {
   const created: UserDTO[] = [];
   for (const i of invites) {
@@ -400,7 +458,6 @@ export async function inviteUsers(invites: InvitePayload[]): Promise<{ created: 
   return { created };
 }
 
-/** Change a user's role */
 export async function updateUserRole(userId: string, role: string): Promise<void> {
   await jfetch<void>(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
     method: "PATCH",
@@ -408,21 +465,16 @@ export async function updateUserRole(userId: string, role: string): Promise<void
   });
 }
 
-/** Trigger a 2FA reset */
 export async function resetUser2FA(userId: string): Promise<void> {
   await jfetch<void>(`/api/admin/users/${encodeURIComponent(userId)}/reset-2fa`, {
     method: "POST",
   });
 }
 
-/** Remove (delete) a user */
 export async function removeUser(userId: string): Promise<void> {
-  await jfetch<void>(`/api/admin/users/${encodeURIComponent(userId)}`, {
-    method: "DELETE",
-  });
+  await jfetch(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
 }
 
-/** Suspend / Unsuspend user */
 export async function setUserSuspended(userId: string, suspended: boolean): Promise<void> {
   await jfetch<void>(`/api/admin/users/${encodeURIComponent(userId)}/suspend`, {
     method: "POST",
@@ -430,7 +482,6 @@ export async function setUserSuspended(userId: string, suspended: boolean): Prom
   });
 }
 
-/* -------- Admin create + reset password -------- */
 export type CreateUserPayload = {
   name: string;
   email: string;
@@ -450,7 +501,6 @@ export async function setUserPassword(userId: string, password: string): Promise
   });
 }
 
-/* -------- NEW: Update user details (partial) -------- */
 export type UpdateUserPayload = Partial<{
   name: string;
   email: string;
@@ -488,7 +538,7 @@ export type MeProfile = {
   country?: string | null;
   timezone?: string | null;
   locale?: string | null;
-  avatarUrl?: string | null; // backend may store as avatar_url; mapped server-side
+  avatarUrl?: string | null;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -509,12 +559,10 @@ export type UpdateMePayload = Partial<{
   avatarUrl: string | null;
 }>;
 
-/** Load the signed-in user's profile */
 export async function getMyProfile(): Promise<MeProfile> {
   return await jfetch<MeProfile>(`/api/users/me`);
 }
 
-/** Patch the signed-in user's profile (only sends provided keys) */
 export async function updateMyProfile(patch: UpdateMePayload): Promise<MeProfile> {
   const body = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
   return await jfetch<MeProfile>(`/api/users/me`, { method: "PATCH", body });
@@ -598,10 +646,14 @@ export async function saveIntegrationsSettings(p: Partial<IntegrationsSettings>)
   await jfetch(`/api/users/integrations`, { method: "PATCH", body: p });
 }
 
-export async function testSlackWebhook(urlStr: string): Promise<{ ok: boolean; status: number; ms?: number }> {
+export async function testSlackWebhook(
+  urlStr: string
+): Promise<{ ok: boolean; status: number; ms?: number }> {
   return await jfetch(`/api/users/integrations/test/slack`, { method: "POST", body: { url: urlStr } });
 }
-export async function testGenericWebhook(urlStr: string): Promise<{ ok: boolean; status: number; ms?: number }> {
+export async function testGenericWebhook(
+  urlStr: string
+): Promise<{ ok: boolean; status: number; ms?: number }> {
   return await jfetch(`/api/users/integrations/test/webhook`, { method: "POST", body: { url: urlStr } });
 }
 export async function rotateSigningSecret(): Promise<{ secret: string }> {
@@ -612,11 +664,11 @@ export async function rotateSigningSecret(): Promise<{ secret: string }> {
 // Account (current user) - API Keys
 // ---------------------------------------------------------------------------
 export type ApiKeyDTO = {
-  id: string;          // token id (e.g., "rk_live_xxx")
+  id: string;
   label: string;
   lastUsed?: string;
   scopes?: string[];
-  expiresAt?: string;  // iso or empty string if never
+  expiresAt?: string;
 };
 
 export async function listApiKeys(): Promise<{ items: ApiKeyDTO[] }> {
@@ -649,19 +701,22 @@ export async function uploadMyAvatar(file: File): Promise<{ url: string }> {
   const form = new FormData();
   form.append("file", file, file.name || "avatar.png");
 
-  const base = (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE) || "";
-  const res = await fetch(`${base.replace(/\/+$/, "")}/api/users/me/avatar`, {
+  const res = await fetch(url(`/api/users/me/avatar`), {
     method: "POST",
     credentials: "include",
     body: form,
   });
+
   if (!res.ok) {
-    let msg = "";
-    try { msg = (await res.json())?.message || ""; } catch { }
-    if (!msg) try { msg = await res.text(); } catch { }
+    const msg = await readErrorMessage(res);
     throw new Error(msg || `Upload failed (${res.status})`);
   }
-  return (await res.json()) as { url: string };
+
+  try {
+    return (await res.json()) as { url: string };
+  } catch {
+    return { url: "" };
+  }
 }
 
 export async function removeMyAvatar(): Promise<void> {
@@ -669,10 +724,9 @@ export async function removeMyAvatar(): Promise<void> {
 }
 
 /* ============================================================================
-   NEW: Security Overview + TOTP + Sessions (ME scope) + PAT + WebAuthn stubs
+   Security Overview + TOTP + Sessions (ME scope) + PAT + WebAuthn stubs
    ==========================================================================*/
 
-// ---- Types used by the Security tab ----
 export type SecurityEvent = {
   id: string;
   type:
@@ -696,7 +750,6 @@ export type WebAuthnCredential = {
 
 export type RecoveryCodes = string[];
 
-// ---- Sessions (ME) ----
 export type Session = {
   id: string;
   createdAt: string;
@@ -706,7 +759,7 @@ export type Session = {
   current: boolean;
   trusted?: boolean;
   label?: string | null;
-  revokedAt?: string | null; // <-- include so we can filter locally
+  revokedAt?: string | null;
 };
 
 export type SecurityOverview = {
@@ -718,17 +771,14 @@ export type SecurityOverview = {
 
 export type TOTPInit = { secret: string; otpauthUrl: string; qrPngDataUrl: string };
 
-// ---- Overview ----
 export async function getSecurityOverview(): Promise<SecurityOverview> {
   return await jfetch<SecurityOverview>(`/api/users/me/security`);
 }
 
-// ---- Change Password ----
 export async function changePasswordSelf(current: string, next: string): Promise<void> {
   await jfetch(`/api/users/me/password`, { method: "POST", body: { current, next } });
 }
 
-// ---- TOTP 2FA ----
 export async function start2FA(): Promise<TOTPInit> {
   return await jfetch<TOTPInit>(`/api/users/me/2fa/start`, { method: "POST" });
 }
@@ -744,15 +794,14 @@ export async function disable2FA(p?: { code?: string; recoveryCode?: string }): 
 export async function regenerateRecoveryCodes(): Promise<RecoveryCodes> {
   const res = await jfetch<{ recoveryCodes: string[] }>(`/api/users/me/2fa/recovery/regen`, {
     method: "POST",
+    body: {},
   });
   return res.recoveryCodes;
 }
 
-// ---- Sessions (ME) ----
-// NOTE: some servers include revoked sessions in the list; we filter them out.
 export async function listMySessions(): Promise<{ items: Session[]; currentJti?: string }> {
-  const res = await jfetch<{ items: Session[]; currentJti?: string }>(`/api/users/me/sessions/`);
-  const items = (res.items ?? []).filter((s) => !s.revokedAt); // <-- hide revoked
+  const res = await jfetch<{ items: Session[]; currentJti?: string }>(`/api/users/me/sessions`);
+  const items = (res.items ?? []).filter((s) => !s.revokedAt);
   return { items, currentJti: res.currentJti };
 }
 
@@ -760,15 +809,10 @@ export async function revokeAllOtherSessions(): Promise<void> {
   await jfetch(`/api/users/me/sessions/revoke-all`, { method: "POST" });
 }
 
-/**
- * Revoke a single session (ME).
- * Tries a sequence of plausible endpoints so we work with whatever the backend exposes.
- */
 export async function revokeMySession(sessionId: string): Promise<void> {
   const enc = encodeURIComponent(sessionId);
   const base = `/api/users/me/sessions/${enc}`;
 
-  // 1) Preferred: DELETE /me/sessions/:id
   try {
     await jfetch(base, { method: "DELETE" });
     return;
@@ -778,7 +822,6 @@ export async function revokeMySession(sessionId: string): Promise<void> {
     if (!(status === 404 || status === 405 || msg.includes("cannot delete"))) throw e;
   }
 
-  // 2) Alt: POST /me/sessions/:id/revoke
   try {
     await jfetch(`${base}/revoke`, { method: "POST" });
     return;
@@ -787,7 +830,6 @@ export async function revokeMySession(sessionId: string): Promise<void> {
     if (!(status === 404 || status === 405)) throw e;
   }
 
-  // 3) Alt: POST /me/sessions/revoke  { sessionId }
   try {
     await jfetch(`/api/users/me/sessions/revoke`, { method: "POST", body: { sessionId } });
     return;
@@ -796,7 +838,6 @@ export async function revokeMySession(sessionId: string): Promise<void> {
     if (!(status === 404 || status === 405)) throw e;
   }
 
-  // 4) Alt: POST /me/sessions/revoke/:id
   try {
     await jfetch(`/api/users/me/sessions/revoke/${enc}`, { method: "POST" });
     return;
@@ -805,19 +846,13 @@ export async function revokeMySession(sessionId: string): Promise<void> {
     if (!(status === 404 || status === 405)) throw e;
   }
 
-  // 5) Last-resort: PATCH /me/sessions/:id { action: "revoke" }
   await jfetch(base, { method: "PATCH", body: { action: "revoke" } });
 }
 
-/** Trust / untrust a session (ME) with fallbacks similar to revoke */
-export async function trustMySession(
-  sessionId: string,
-  trusted: boolean
-): Promise<{ trusted: boolean }> {
+export async function trustMySession(sessionId: string, trusted: boolean): Promise<{ trusted: boolean }> {
   const enc = encodeURIComponent(sessionId);
   const base = `/api/users/me/sessions/${enc}`;
 
-  // 1) Preferred: POST /me/sessions/:id/trust { trusted }
   try {
     return await jfetch(`${base}/trust`, { method: "POST", body: { trusted } });
   } catch (e: any) {
@@ -825,7 +860,6 @@ export async function trustMySession(
     if (!(status === 404 || status === 405)) throw e;
   }
 
-  // 2) Alt: POST /me/sessions/trust { sessionId, trusted }
   try {
     return await jfetch(`/api/users/me/sessions/trust`, {
       method: "POST",
@@ -836,11 +870,9 @@ export async function trustMySession(
     if (!(status === 404 || status === 405)) throw e;
   }
 
-  // 3) Last-resort: PATCH /me/sessions/:id { trusted }
   return await jfetch(base, { method: "PATCH", body: { trusted } });
 }
 
-/** Optional: label a session (ME) */
 export async function labelMySession(sessionId: string, label: string): Promise<void> {
   await jfetch(`/api/users/me/sessions/${encodeURIComponent(sessionId)}/label`, {
     method: "POST",
@@ -848,20 +880,18 @@ export async function labelMySession(sessionId: string, label: string): Promise<
   });
 }
 
-// lib/api.ts → mapMeSessionToDTO
 export function mapMeSessionToDTO(s: Session): SessionDTO {
   return {
     id: s.id,
     device: s.label || s.userAgent || "Unknown device",
-    ip: s.ip ?? "",                 // string (never undefined)
-    lastActive: s.lastSeenAt ?? "", // string (never undefined)
-    current: !!s.current,           // boolean
+    ip: s.ip ?? "",
+    lastActive: s.lastSeenAt ?? "",
+    current: !!s.current,
     city: undefined,
     isp: undefined,
     trusted: s.trusted ?? false,
   };
 }
-
 
 // ---- Personal Tokens (ME) ----
 export type PersonalToken = {
@@ -902,25 +932,18 @@ export async function requestUninstallSoftware(
   deviceId: string,
   body: { name: string; version?: string }
 ): Promise<{ accepted: true; jobId?: string }> {
-  const res = await fetch(
-    `${((typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE) || "").replace(/\/+$/, "")}/api/devices/${encodeURIComponent(deviceId)}/actions/uninstall`,
-    {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
+  const res = await fetch(url(`/api/devices/${encodeURIComponent(deviceId)}/actions/uninstall`), {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 
   if (!res.ok) {
-    // surface error text
-    let msg = "";
-    try { msg = (await res.clone().json())?.message || ""; } catch { }
-    if (!msg) try { msg = await res.text(); } catch { }
+    const msg = await readErrorMessage(res);
     throw new Error(msg || `Request failed: ${res.status}`);
   }
 
-  // Try JSON first
   let jobId: string | undefined;
   try {
     const json = await res.clone().json();
@@ -929,12 +952,381 @@ export async function requestUninstallSoftware(
     /* no json body */
   }
 
-  // Fallback: parse Location header (e.g. /api/automation/runs/<uuid>)
   if (!jobId) {
     const loc = res.headers.get("Location") || res.headers.get("location");
-    const m = loc?.match(/([0-9a-fA-F-]{8}-[0-9a-fA-F-]{4}-[1-5][0-9a-fA-F-]{3}-[89abAB][0-9a-fA-F-]{3}-[0-9a-fA-F-]{12})$/);
+    const m = loc?.match(
+      /([0-9a-fA-F-]{8}-[0-9a-fA-F-]{4}-[1-5][0-9a-fA-F-]{3}-[89abAB][0-9a-fA-F-]{3}-[0-9a-fA-F-]{12})$/
+    );
     if (m) jobId = m[1];
   }
 
   return { accepted: true, jobId };
+}
+
+/* ============================================================================
+   Customers (Clients + Sites) — matches backend /api/customers + /:client/sites
+   Fixes:
+     - backend list returns { key, name, counts } so we normalize key -> id
+     - sidebar needs customers even when 0 devices, so we expose fetchCustomers & fetchCustomerSites
+     - emit a browser event after creates so sidebar/dialogs can refresh
+   ==========================================================================*/
+
+export const CUSTOMERS_CHANGED_EVENT = "remoteiq:customers-changed";
+
+function emitCustomersChanged() {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent(CUSTOMERS_CHANGED_EVENT));
+  } catch {
+    // ignore
+  }
+}
+
+export type CustomerCounts = {
+  sites?: number;
+  devices?: number;
+  tickets?: number;
+};
+
+export type CustomerClient = {
+  id: string;
+  name: string;
+
+  // UI-friendly aliases (some components expect these)
+  key: string;
+  label: string;
+
+  counts?: CustomerCounts;
+
+  labels?: Record<string, any>;
+  createdAt?: string;
+  updatedAt?: string;
+
+  // Optional flattened counts for older UIs
+  sitesCount?: number;
+  devicesCount?: number;
+  ticketsCount?: number;
+};
+
+export type CustomerSite = {
+  id: string;
+  clientId: string;
+  name: string;
+
+  // UI-friendly alias
+  key: string;
+  label: string;
+
+  counts?: { devices?: number; tickets?: number };
+
+  labels?: Record<string, any>;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type CreateCustomerClientPayload = {
+  name: string;
+  labels?: Record<string, any>;
+};
+
+export type CreateCustomerSitePayload = {
+  name: string;
+  labels?: Record<string, any>;
+};
+
+function normalizeClient(raw: any): CustomerClient | null {
+  if (!raw) return null;
+
+  // ✅ backend list uses `key` (uuid string), not `id`
+  const id = String(raw.id ?? raw.key ?? raw.clientId ?? raw.client_id ?? "");
+  const name = String(raw.name ?? raw.title ?? raw.displayName ?? "");
+  if (!id || !name) return null;
+
+  const countsRaw = raw.counts ?? undefined;
+  const counts: CustomerCounts | undefined =
+    countsRaw && typeof countsRaw === "object"
+      ? {
+        sites: typeof countsRaw.sites === "number" ? countsRaw.sites : undefined,
+        devices: typeof countsRaw.devices === "number" ? countsRaw.devices : undefined,
+        tickets: typeof countsRaw.tickets === "number" ? countsRaw.tickets : undefined,
+      }
+      : undefined;
+
+  const sitesCount =
+    typeof raw.sitesCount === "number"
+      ? raw.sitesCount
+      : typeof raw.sites_count === "number"
+        ? raw.sites_count
+        : typeof counts?.sites === "number"
+          ? counts.sites
+          : undefined;
+
+  const devicesCount =
+    typeof raw.devicesCount === "number"
+      ? raw.devicesCount
+      : typeof raw.devices_count === "number"
+        ? raw.devices_count
+        : typeof counts?.devices === "number"
+          ? counts.devices
+          : undefined;
+
+  const ticketsCount =
+    typeof raw.ticketsCount === "number"
+      ? raw.ticketsCount
+      : typeof raw.tickets_count === "number"
+        ? raw.tickets_count
+        : typeof counts?.tickets === "number"
+          ? counts.tickets
+          : undefined;
+
+  return {
+    id,
+    name,
+    key: id,
+    label: name,
+    counts,
+    labels: raw.labels ?? raw.meta ?? undefined,
+    createdAt: raw.createdAt ?? raw.created_at ?? undefined,
+    updatedAt: raw.updatedAt ?? raw.updated_at ?? undefined,
+    sitesCount,
+    devicesCount,
+    ticketsCount,
+  };
+}
+
+function normalizeSite(raw: any, fallbackClientId: string): CustomerSite | null {
+  if (!raw) return null;
+
+  // backend listSites returns { key, name, counts }
+  const id = String(raw.id ?? raw.key ?? raw.siteId ?? raw.site_id ?? "");
+  const name = String(raw.name ?? raw.title ?? raw.displayName ?? "");
+  const clientId = String(raw.clientId ?? raw.client_id ?? fallbackClientId ?? "");
+  if (!id || !name || !clientId) return null;
+
+  const countsRaw = raw.counts ?? undefined;
+  const counts =
+    countsRaw && typeof countsRaw === "object"
+      ? {
+        devices: typeof countsRaw.devices === "number" ? countsRaw.devices : undefined,
+        tickets: typeof countsRaw.tickets === "number" ? countsRaw.tickets : undefined,
+      }
+      : undefined;
+
+  return {
+    id,
+    clientId,
+    name,
+    key: id,
+    label: name,
+    counts,
+    labels: raw.labels ?? raw.meta ?? undefined,
+    createdAt: raw.createdAt ?? raw.created_at ?? undefined,
+    updatedAt: raw.updatedAt ?? raw.updated_at ?? undefined,
+  };
+}
+
+/** fetchCustomers(): returns an ARRAY of CustomerClient */
+export async function fetchCustomers(): Promise<CustomerClient[]> {
+  const candidates = [
+    `/api/customers`,
+    `/api/clients`,
+    `/api/organizations`,
+    `/api/admin/customers`,
+    `/api/admin/clients`,
+    `/api/admin/organizations`,
+  ];
+
+  for (const p of candidates) {
+    const res = await tryJfetch<any>(p);
+    if (res === undefined) continue;
+
+    const arr = asArray<any>(res);
+    const normalized = arr.map(normalizeClient).filter(Boolean) as CustomerClient[];
+    return normalized;
+  }
+
+  return [];
+}
+
+/** fetchCustomerSites(): returns an ARRAY of CustomerSite for a given client id/name */
+export async function fetchCustomerSites(client: string): Promise<CustomerSite[]> {
+  const c = encodeURIComponent(String(client ?? "").trim());
+
+  const candidates = [
+    `/api/customers/${c}/sites`,
+    `/api/clients/${c}/sites`,
+    `/api/organizations/${c}/sites`,
+    `/api/admin/customers/${c}/sites`,
+    `/api/admin/clients/${c}/sites`,
+    `/api/admin/organizations/${c}/sites`,
+  ];
+
+  for (const p of candidates) {
+    const res = await tryJfetch<any>(p);
+    if (res === undefined) continue;
+
+    const arr = asArray<any>(res);
+    const normalized = arr
+      .map((x: any) => normalizeSite(x, String(client)))
+      .filter(Boolean) as CustomerSite[];
+    return normalized;
+  }
+
+  return [];
+}
+
+export async function createCustomerClient(payload: CreateCustomerClientPayload): Promise<CustomerClient> {
+  const candidates = [
+    `/api/customers`,
+    `/api/clients`,
+    `/api/organizations`,
+    `/api/admin/customers`,
+    `/api/admin/clients`,
+    `/api/admin/organizations`,
+  ];
+
+  for (const p of candidates) {
+    const res = await tryJfetch<any>(p, { method: "POST", body: payload });
+    if (res === undefined) continue;
+
+    const item = (res as any)?.item ?? res;
+    const normalized = normalizeClient(item);
+    if (normalized) {
+      emitCustomersChanged();
+      return normalized;
+    }
+
+    // If backend only returns {id}
+    const id = String((res as any)?.id ?? (item as any)?.id ?? "");
+    if (id) {
+      const out: CustomerClient = {
+        id,
+        name: payload.name,
+        key: id,
+        label: payload.name,
+        labels: payload.labels,
+      };
+      emitCustomersChanged();
+      return out;
+    }
+  }
+
+  throw new Error(`No supported endpoint found to create customer/client.`);
+}
+
+export async function createCustomerSite(
+  clientId: string,
+  payload: CreateCustomerSitePayload
+): Promise<CustomerSite> {
+  const cid = encodeURIComponent(clientId);
+
+  const candidates: Array<{ path: string; body: any }> = [
+    { path: `/api/customers/${cid}/sites`, body: payload },
+    { path: `/api/clients/${cid}/sites`, body: payload },
+    { path: `/api/organizations/${cid}/sites`, body: payload },
+    { path: `/api/sites`, body: { clientId, ...payload } },
+    { path: `/api/admin/customers/${cid}/sites`, body: payload },
+    { path: `/api/admin/clients/${cid}/sites`, body: payload },
+    { path: `/api/admin/organizations/${cid}/sites`, body: payload },
+    { path: `/api/admin/sites`, body: { clientId, ...payload } },
+  ];
+
+  for (const c of candidates) {
+    const res = await tryJfetch<any>(c.path, { method: "POST", body: c.body });
+    if (res === undefined) continue;
+
+    const item = (res as any)?.item ?? res;
+    const normalized = normalizeSite(item, clientId);
+    if (normalized) {
+      emitCustomersChanged();
+      return normalized;
+    }
+
+    const id = String((res as any)?.id ?? (item as any)?.id ?? "");
+    if (id) {
+      const out: CustomerSite = {
+        id,
+        clientId,
+        name: payload.name,
+        key: id,
+        label: payload.name,
+        labels: payload.labels,
+      };
+      emitCustomersChanged();
+      return out;
+    }
+  }
+
+  throw new Error(`No supported endpoint found to create a site for client ${clientId}.`);
+}
+
+// ------------------------- Deletes (Clients + Sites) -------------------------
+
+export async function deleteCustomerClient(clientIdOrName: string, opts?: { force?: boolean }): Promise<void> {
+  const cid = encodeURIComponent(String(clientIdOrName ?? "").trim());
+  const q = opts?.force ? `?force=true` : "";
+
+  const candidates = [
+    `/api/customers/${cid}${q}`,
+    `/api/clients/${cid}${q}`,
+    `/api/organizations/${cid}${q}`,
+    `/api/admin/customers/${cid}${q}`,
+    `/api/admin/clients/${cid}${q}`,
+    `/api/admin/organizations/${cid}${q}`,
+  ];
+
+  let lastErr: any = null;
+
+  for (const p of candidates) {
+    try {
+      // Use tryJfetch so 404/405 means “endpoint not supported”
+      const res = await tryJfetch<any>(p, { method: "DELETE" });
+      if (res === undefined) continue;
+
+      emitCustomersChanged();
+      return;
+    } catch (e: any) {
+      const status = e?.status ?? e?.code;
+      if (status === 404 || status === 405) continue; // unsupported endpoint, try next
+      lastErr = e;
+      break;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+  throw new Error("No supported endpoint found to delete client.");
+}
+
+export async function deleteCustomerSite(clientIdOrName: string, siteIdOrName: string): Promise<void> {
+  const cid = encodeURIComponent(String(clientIdOrName ?? "").trim());
+  const sid = encodeURIComponent(String(siteIdOrName ?? "").trim());
+
+  const candidates = [
+    `/api/customers/${cid}/sites/${sid}`,
+    `/api/clients/${cid}/sites/${sid}`,
+    `/api/organizations/${cid}/sites/${sid}`,
+    `/api/admin/customers/${cid}/sites/${sid}`,
+    `/api/admin/clients/${cid}/sites/${sid}`,
+    `/api/admin/organizations/${cid}/sites/${sid}`,
+  ];
+
+  let lastErr: any = null;
+
+  for (const p of candidates) {
+    try {
+      const res = await tryJfetch<any>(p, { method: "DELETE" });
+      if (res === undefined) continue;
+
+      emitCustomersChanged();
+      return;
+    } catch (e: any) {
+      const status = e?.status ?? e?.code;
+      if (status === 404 || status === 405) continue;
+      lastErr = e;
+      break;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+  throw new Error("No supported endpoint found to delete site.");
 }

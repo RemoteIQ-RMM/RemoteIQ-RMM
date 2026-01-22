@@ -7,6 +7,7 @@ import {
   HttpCode,
   NotFoundException,
   Param,
+  Patch,
   Post,
   Query,
   UsePipes,
@@ -18,6 +19,19 @@ import { UninstallSoftwareDto } from "./dto/uninstall-software.dto";
 import { JobsService } from "../jobs/jobs.service";
 import { PgPoolService } from "../storage/pg-pool.service";
 import { RequirePerm } from "../auth/require-perm.decorator";
+import { IsOptional, IsString } from "class-validator";
+
+class MoveDeviceSiteDto {
+  // preferred (camelCase)
+  @IsOptional()
+  @IsString()
+  siteId?: string;
+
+  // fallback (snake_case) — helps if some UI code sends site_id
+  @IsOptional()
+  @IsString()
+  site_id?: string;
+}
 
 @Controller("/api/devices")
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
@@ -47,9 +61,31 @@ export class DevicesController {
   @RequirePerm("devices.read")
   async software(
     @Param("id") id: string
-  ): Promise<{ items: Array<{ id: string; name: string; version: string; publisher?: string | null; installDate?: string | null }> }> {
+  ): Promise<{
+    items: Array<{
+      id: string;
+      name: string;
+      version: string;
+      publisher?: string | null;
+      installDate?: string | null;
+    }>;
+  }> {
     const items = await this.devices.listSoftware(id);
     return { items };
+  }
+
+  // ✅ Move device to a different site (must remain within same client)
+  @Patch(":id/site")
+  @RequirePerm("devices.write")
+  async moveToSite(@Param("id") id: string, @Body() body: MoveDeviceSiteDto): Promise<Device> {
+    const siteIdRaw = (body?.siteId ?? body?.site_id ?? "") as string;
+    const siteId = String(siteIdRaw).trim();
+
+    if (!siteId) {
+      throw new BadRequestException("siteId is required");
+    }
+
+    return await this.devices.moveToSite(id, siteId);
   }
 
   @Post(":id/actions/uninstall")
@@ -69,7 +105,11 @@ export class DevicesController {
     const numericIdText = String(id);
 
     const deviceExternalId =
-      (device as any).device_id || (device as any).externalId || (device as any).external_id || (device as any).hostname || null;
+      (device as any).device_id ||
+      (device as any).externalId ||
+      (device as any).external_id ||
+      (device as any).hostname ||
+      null;
 
     const deviceHostname = (device as any).hostname || (device as any).host || (device as any).name || null;
 

@@ -1,5 +1,5 @@
 // backend/src/devices/devices.service.ts
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PgPoolService } from "../storage/pg-pool.service";
 
 export type Device = {
@@ -78,14 +78,16 @@ export class DevicesService {
             THEN 'online'
             ELSE CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END
           END                                                  AS status,
-          NULL::text                                           AS client,
-          NULL::text                                           AS site,
+          c.name::text                                         AS client,
+          s.name::text                                         AS site,
           NULL::text                                           AS "user",
           NULLIF(a.version, '')                                AS version,
           NULLIF(a.facts->>'primary_ip', '')                   AS primary_ip,
           a.agent_uuid::text                                   AS agent_uuid
         FROM public.agents a
         LEFT JOIN public.devices d ON d.id = a.device_id
+        LEFT JOIN public.sites   s ON s.id = d.site_id
+        LEFT JOIN public.clients c ON c.id = s.client_id
       ),
       device_rows AS (
         SELECT
@@ -95,13 +97,15 @@ export class DevicesService {
           d.architecture        AS arch,
           d.last_seen_at        AS last_seen,
           CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END AS status,
-          NULL::text            AS client,
-          NULL::text            AS site,
+          c.name::text          AS client,
+          s.name::text          AS site,
           NULL::text            AS "user",
           NULL::text            AS version,
           NULL::text            AS primary_ip,
           NULL::text            AS agent_uuid
         FROM public.devices d
+        LEFT JOIN public.sites   s ON s.id = d.site_id
+        LEFT JOIN public.clients c ON c.id = s.client_id
         WHERE NOT EXISTS (
           SELECT 1 FROM public.agents a
           WHERE COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') = d.hostname
@@ -145,25 +149,27 @@ export class DevicesService {
       WITH rows AS (
         SELECT
           0                                                    AS pref,
-          a.id::text                                          AS id,
+          a.id::text                                           AS id,
           COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') AS hostname,
-          COALESCE(NULLIF(d.operating_system, ''), 'unknown')  AS os,
-          d.architecture                                      AS arch,
-          COALESCE(a.last_check_in_at, d.last_seen_at)        AS last_seen,
+          COALESCE(NULLIF(d.operating_system, ''), 'unknown')   AS os,
+          d.architecture                                       AS arch,
+          COALESCE(a.last_check_in_at, d.last_seen_at)          AS last_seen,
           CASE
             WHEN a.last_check_in_at IS NOT NULL
              AND a.last_check_in_at > NOW() - INTERVAL '5 minutes'
             THEN 'online'
             ELSE CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END
-          END                                                 AS status,
-          NULL::text                                          AS client,
-          NULL::text                                          AS site,
-          NULL::text                                          AS "user",
-          NULLIF(a.version, '')                               AS version,
-          NULLIF(a.facts->>'primary_ip', '')                  AS primary_ip,
-          a.agent_uuid::text                                  AS agent_uuid
+          END                                                  AS status,
+          c.name::text                                         AS client,
+          s.name::text                                         AS site,
+          NULL::text                                           AS "user",
+          NULLIF(a.version, '')                                AS version,
+          NULLIF(a.facts->>'primary_ip', '')                    AS primary_ip,
+          a.agent_uuid::text                                   AS agent_uuid
         FROM public.agents a
         LEFT JOIN public.devices d ON d.id = a.device_id
+        LEFT JOIN public.sites   s ON s.id = d.site_id
+        LEFT JOIN public.clients c ON c.id = s.client_id
         WHERE a.id::text = $1
 
         UNION ALL
@@ -176,13 +182,15 @@ export class DevicesService {
           d.architecture           AS arch,
           d.last_seen_at           AS last_seen,
           CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END AS status,
-          NULL::text               AS client,
-          NULL::text               AS site,
+          c.name::text             AS client,
+          s.name::text             AS site,
           NULL::text               AS "user",
           NULL::text               AS version,
           NULL::text               AS primary_ip,
           NULL::text               AS agent_uuid
         FROM public.devices d
+        LEFT JOIN public.sites   s ON s.id = d.site_id
+        LEFT JOIN public.clients c ON c.id = s.client_id
         WHERE d.id::text = $1
       )
       SELECT id, hostname, os, arch, last_seen, status, client, site, "user", version, primary_ip, agent_uuid
@@ -190,6 +198,7 @@ export class DevicesService {
       ORDER BY pref ASC
       LIMIT 1;
     `;
+
     const { rows } = await this.pg.query(sql, [id]);
     const r = rows[0];
     if (!r) return null;
@@ -246,16 +255,94 @@ export class DevicesService {
     }));
   }
 
-  // NEW: create uninstall job in a simple job queue
-  async requestUninstall(
-    id: string,
-    body: { name: string; version?: string | null }
-  ): Promise<string> {
-    // ensure agent exists
-    const { rows: arows } = await this.pg.query(
-      `SELECT id FROM public.agents WHERE id::text = $1`,
-      [id]
+  /**
+   * Move a device to another site, but ONLY within the same client.
+   * Accepts either:
+   * - a devices.id UUID
+   * - or an agents.id (because your UI/device pages often use the agent row id)
+   *
+   * It updates public.devices.site_id (if the device row exists).
+   */
+  async moveToSite(deviceOrAgentId: string, targetSiteId: string): Promise<Device> {
+    const rawId = String(deviceOrAgentId ?? "").trim();
+    const siteId = String(targetSiteId ?? "").trim();
+
+    if (!rawId) throw new BadRequestException("id is required");
+    if (!siteId) throw new BadRequestException("siteId is required");
+
+    // Resolve to the underlying public.devices.id
+    const deviceId = await this.resolveDeviceRowId(rawId);
+    if (!deviceId) throw new NotFoundException("Device not found");
+
+    // Look up current client via current site_id
+    const cur = await this.pg.query<{ client_id: string | null }>(
+      `
+      SELECT s.client_id::text AS client_id
+      FROM public.devices d
+      LEFT JOIN public.sites s ON s.id = d.site_id
+      WHERE d.id = $1::uuid
+      LIMIT 1
+      `,
+      [deviceId]
     );
+    const currentClientId = cur.rows[0]?.client_id ?? null;
+
+    // Look up target site's client
+    const tgt = await this.pg.query<{ client_id: string }>(
+      `
+      SELECT s.client_id::text AS client_id
+      FROM public.sites s
+      WHERE s.id = $1::uuid
+      LIMIT 1
+      `,
+      [siteId]
+    );
+    const targetClientId = tgt.rows[0]?.client_id ?? null;
+    if (!targetClientId) throw new NotFoundException("Target site not found");
+
+    // Enforce: cannot move across clients (if device has a client)
+    if (currentClientId && targetClientId && currentClientId !== targetClientId) {
+      throw new BadRequestException("Device cannot be moved to a site under a different client.");
+    }
+
+    // Update
+    await this.pg.query(
+      `
+      UPDATE public.devices
+      SET site_id = $2::uuid
+      WHERE id = $1::uuid
+      `,
+      [deviceId, siteId]
+    );
+
+    // Return updated (now includes client/site names due to joins)
+    const updated = (await this.getOne(rawId)) || (await this.getOne(deviceId));
+    if (!updated) throw new NotFoundException("Device not found after update");
+    return updated;
+  }
+
+  private async resolveDeviceRowId(deviceOrAgentId: string): Promise<string | null> {
+    // Try as a devices.id (uuid)
+    const asDevice = await this.pg.query<{ id: string }>(
+      `SELECT d.id::text AS id FROM public.devices d WHERE d.id::text = $1 LIMIT 1`,
+      [deviceOrAgentId]
+    );
+    if (asDevice.rows[0]?.id) return asDevice.rows[0].id;
+
+    // Try as an agents.id -> device_id
+    const asAgent = await this.pg.query<{ device_id: string }>(
+      `SELECT a.device_id::text AS device_id FROM public.agents a WHERE a.id::text = $1 LIMIT 1`,
+      [deviceOrAgentId]
+    );
+    if (asAgent.rows[0]?.device_id) return asAgent.rows[0].device_id;
+
+    return null;
+  }
+
+  // NEW: create uninstall job in a simple job queue
+  async requestUninstall(id: string, body: { name: string; version?: string | null }): Promise<string> {
+    // ensure agent exists
+    const { rows: arows } = await this.pg.query(`SELECT id FROM public.agents WHERE id::text = $1`, [id]);
     const agentId: number | undefined = arows[0]?.id;
     if (!agentId) throw new NotFoundException("Agent not found");
 
