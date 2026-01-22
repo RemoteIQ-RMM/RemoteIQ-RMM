@@ -1,9 +1,12 @@
 using System.Management;
+using Microsoft.Win32;
+using System.Globalization;
 
 namespace RemoteIQ.Agent.Services;
 
 public sealed class SystemInfoCollector
 {
+    // Kept for compatibility if anything calls Collect()
     public Dictionary<string, object> Collect()
     {
         var info = new Dictionary<string, object>
@@ -17,15 +20,81 @@ public sealed class SystemInfoCollector
 
         info["hardware"] = new Dictionary<string, object>
         {
-            ["cpu"] = WmiMulti("Win32_Processor","Name,NumberOfCores,NumberOfLogicalProcessors"),
-            ["memoryBytes"] = Try(() => Convert.ToUInt64(WmiSingle("Win32_ComputerSystem","TotalPhysicalMemory")), 0UL),
-            ["disks"] = WmiMulti("Win32_LogicalDisk","DeviceID,FileSystem,Size,FreeSpace")
+            ["cpu"] = WmiMulti("Win32_Processor", "Name,NumberOfCores,NumberOfLogicalProcessors"),
+            ["memoryBytes"] = Try(() => Convert.ToUInt64(WmiSingle("Win32_ComputerSystem", "TotalPhysicalMemory")), 0UL),
+            ["disks"] = WmiMulti("Win32_LogicalDisk", "DeviceID,FileSystem,Size,FreeSpace")
         };
 
-        info["nics"] = WmiMulti("Win32_NetworkAdapterConfiguration","Description,MACAddress,IPAddress");
-        info["software"] = QueryInstalledSoftware();
+        info["nics"] = WmiMulti("Win32_NetworkAdapterConfiguration", "Description,MACAddress,IPAddress");
+        info["software"] = CollectInstalledSoftwareItems();
 
         return info;
+    }
+
+    public List<object> CollectInstalledSoftwareItems()
+    {
+        var result = new List<object>();
+
+        string[] roots = {
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+        };
+
+        foreach (var root in roots)
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(root);
+            if (key is null) continue;
+
+            foreach (var sub in key.GetSubKeyNames())
+            {
+                using var sk = key.OpenSubKey(sub);
+                if (sk is null) continue;
+
+                var name = sk.GetValue("DisplayName")?.ToString();
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                var version = sk.GetValue("DisplayVersion")?.ToString();
+                var publisher = sk.GetValue("Publisher")?.ToString();
+
+                // Some installers use YYYYMMDD
+                var installDateRaw = sk.GetValue("InstallDate")?.ToString();
+                var installDate = NormalizeInstallDate(installDateRaw);
+
+                result.Add(new
+                {
+                    name = name!.Trim(),
+                    version = string.IsNullOrWhiteSpace(version) ? null : version.Trim(),
+                    publisher = string.IsNullOrWhiteSpace(publisher) ? null : publisher.Trim(),
+                    installDate = installDate, // YYYY-MM-DD or null
+                });
+            }
+        }
+
+        return result;
+    }
+
+    private static string? NormalizeInstallDate(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        var s = raw.Trim();
+
+        // Common: YYYYMMDD
+        if (s.Length == 8 && s.All(char.IsDigit))
+        {
+            var yyyy = s.Substring(0, 4);
+            var mm = s.Substring(4, 2);
+            var dd = s.Substring(6, 2);
+            return $"{yyyy}-{mm}-{dd}";
+        }
+
+        // Try parse anything else safely
+        if (DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var dt))
+        {
+            return dt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        }
+
+        return null;
     }
 
     private static object WmiSingle(string cls, string prop)
@@ -39,7 +108,7 @@ public sealed class SystemInfoCollector
         return "";
     }
 
-    private static List<Dictionary<string,object>> WmiMulti(string cls, string propsCsv)
+    private static List<Dictionary<string, object>> WmiMulti(string cls, string propsCsv)
     {
         var props = propsCsv.Split(',').Select(s => s.Trim()).ToArray();
         var list = new List<Dictionary<string, object>>();
@@ -60,32 +129,4 @@ public sealed class SystemInfoCollector
     }
 
     private static T Try<T>(Func<T> f, T fallback) { try { return f(); } catch { return fallback; } }
-
-    private static List<Dictionary<string, string>> QueryInstalledSoftware()
-    {
-        var result = new List<Dictionary<string, string>>();
-        string[] roots = {
-            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-            @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
-        };
-        foreach (var root in roots)
-        {
-            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(root);
-            if (key is null) continue;
-            foreach (var sub in key.GetSubKeyNames())
-            {
-                using var sk = key.OpenSubKey(sub);
-                if (sk is null) continue;
-                var name = sk.GetValue("DisplayName")?.ToString();
-                if (string.IsNullOrWhiteSpace(name)) continue;
-                result.Add(new Dictionary<string, string>
-                {
-                    ["name"] = name!,
-                    ["version"] = sk.GetValue("DisplayVersion")?.ToString() ?? "",
-                    ["publisher"] = sk.GetValue("Publisher")?.ToString() ?? ""
-                });
-            }
-        }
-        return result;
-    }
 }

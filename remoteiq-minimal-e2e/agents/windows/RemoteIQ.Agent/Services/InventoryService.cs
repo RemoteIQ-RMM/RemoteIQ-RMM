@@ -28,19 +28,28 @@ public sealed class InventoryService : BackgroundService
                     continue;
                 }
 
+                var items = _sys.CollectInstalledSoftwareItems();
+                if (items.Count == 0)
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(_cfg.Current.PollIntervals.InventoryMinutes), stoppingToken);
+                    continue;
+                }
+
                 var http = _httpFactory.Create();
-                var url = $"{_cfg.Current.ApiBaseUrl.TrimEnd('/')}/api/agents/{_cfg.Current.AgentId}/inventory";
+                var url = $"{_cfg.Current.ApiBaseUrl.TrimEnd('/')}/api/agent/software";
                 using var req = new HttpRequestMessage(HttpMethod.Post, url);
                 req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _cfg.Current.AgentKey);
-                var inv = _sys.Collect();
-                req.Content = JsonContent.Create(inv);
+
+                req.Content = JsonContent.Create(new { items });
+
                 var resp = await http.SendAsync(req, stoppingToken);
                 resp.EnsureSuccessStatusCode();
-                _log.LogInformation("Inventory sent");
+
+                _log.LogInformation("Software inventory sent: {Count}", items.Count);
             }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "Inventory send failed");
+                _log.LogWarning(ex, "Software inventory send failed");
             }
 
             await Task.Delay(TimeSpan.FromMinutes(_cfg.Current.PollIntervals.InventoryMinutes), stoppingToken);

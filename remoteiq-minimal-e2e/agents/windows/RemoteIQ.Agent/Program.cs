@@ -33,10 +33,16 @@ builder.Services.AddSingleton<ConfigService>();
 builder.Services.AddSingleton<CryptoService>();
 builder.Services.AddSingleton<PinnedHttpClientFactory>();
 builder.Services.AddSingleton<SystemInfoCollector>();
+builder.Services.AddSingleton<ScriptExecutor>();
+
 builder.Services.AddHostedService<EnrollmentService>();
 builder.Services.AddHostedService<HeartbeatService>();
 builder.Services.AddHostedService<InventoryService>();
+
+// WS-based job execution (dispatcher.service.ts -> /ws/agent -> job_run_script)
 builder.Services.AddHostedService<TaskWorker>();
+
+// Keep UpdateService optional (it will effectively no-op if endpoint doesn’t exist)
 builder.Services.AddHostedService<UpdateService>();
 
 var host = builder.Build();

@@ -32,14 +32,20 @@ Service account: **LocalService** (least privilege).
 - **Optional TLS certificate pinning**: enable and set `PinnedSpkiSha256` for SPKI pins.
 - **Least privilege**: runs under LocalService by default.
 
-## Backend Endpoints (expected)
+## Backend Endpoints (actual)
 
-- `POST /api/agents/enroll` → `{ agentId, agentKey }`
-- `POST /api/agents/{agentId}/heartbeat`
-- `POST /api/agents/{agentId}/inventory`
-- `POST /api/agents/{agentId}/tasks/next` → `TaskEnvelope`
-- `POST /api/agents/{agentId}/tasks/{taskId}/complete` → `TaskResult`
-- `GET  /api/agents/{agentId}/updates/check` → `UpdateManifest`
+REST (authenticated with `Authorization: Bearer {agentToken}`):
+
+- `POST /api/agent/enroll` → `{ agentId, agentToken, deviceId, agentUuid }`
+- `POST /api/agent/ping`
+- `POST /api/agent/software`
+
+WebSocket:
+
+- Agent connects to `/ws/agent`
+- Sends `{ t:"agent_hello", agentId, deviceId, ... }`
+- Receives `{ t:"job_run_script", jobId, language, scriptText, args, env, timeoutSec }`
+- Responds `{ t:"job_result", jobId, exitCode, stdout, stderr, durationMs, status }`
 
 > Adjust URLs in services if your NestJS controllers differ.
 
