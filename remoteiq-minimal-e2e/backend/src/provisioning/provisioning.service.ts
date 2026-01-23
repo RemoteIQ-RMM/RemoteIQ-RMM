@@ -234,23 +234,6 @@ export class ProvisioningService {
     return { clientId: row.client_id, siteId: row.site_id };
   }
 
-  private resolveServerBaseUrlOrThrow(): string {
-    const raw =
-      String(process.env.INSTALLER_BASE_URL ?? "").trim() ||
-      String(process.env.PUBLIC_BASE_URL ?? "").trim() ||
-      String(process.env.BASE_URL ?? "").trim();
-
-    if (!raw) {
-      // Security + UX: do not allow interactive prompts in installers.
-      throw new BadRequestException(
-        "Missing installer base URL. Set INSTALLER_BASE_URL (recommended) or PUBLIC_BASE_URL."
-      );
-    }
-
-    // Normalize: trim trailing slashes
-    return raw.replace(/\/+$/, "");
-  }
-
   private resolveAgentPackagePath(os: InstallerOs): {
     absPath: string;
     filename: string;
@@ -282,39 +265,33 @@ export class ProvisioningService {
   }
 
   /**
-   * Bootstrap installer templates:
-   * - Reusable
-   * - Reuse deviceId if enrollment.json already exists
-   * - Windows: downloads agent package, installs service, starts service
-   *
-   * IMPORTANT:
-   * - Unattended: no prompts. Base URL is baked from env at bundle creation time.
-   * - TEMP LOGGING enabled for testing.
+   * Bootstrap installer templates (Windows includes TEMP logging).
+   * If serverBaseUrl is provided, it is baked into the script (no prompt needed).
    */
   private buildBootstrapScript(params: {
     os: InstallerOs;
     enrollmentKey: string;
     bundleId: string;
     downloadToken: string;
-    serverBaseUrl: string;
+    serverBaseUrl?: string | null;
   }): { filename: string; contentType: string; content: string } {
     const safeKey = String(params.enrollmentKey ?? "").replace(/"/g, '\\"');
     const safeBundleId = String(params.bundleId ?? "").replace(/"/g, '\\"');
     const safeToken = String(params.downloadToken ?? "").replace(/"/g, '\\"');
-    const safeBaseUrl = String(params.serverBaseUrl ?? "").replace(/"/g, '\\"').replace(/\/+$/, "");
+    const safeBaseUrl = String(params.serverBaseUrl ?? "")
+      .replace(/"/g, '\\"')
+      .trim()
+      .replace(/\/+$/, "");
 
     if (params.os === "windows") {
       const filename = `RemoteIQ-Installer-Windows.ps1`;
 
-      // IMPORTANT: No PowerShell backticks (`) inside this TS template literal.
-      const content = `# RemoteIQ Bootstrap Installer (Windows) - Unattended (TEMP LOGGING ENABLED)
-# Writes enrollment config (reusable; preserves deviceId), downloads agent package, installs service, starts service.
+      const content = `# RemoteIQ Bootstrap Installer (Windows) - TEMP LOGGING ENABLED
 # Logs to: C:\\ProgramData\\RemoteIQ\\install.log
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ---- Logging (TEMP)
 $ProgramDataDir = Join-Path $env:ProgramData "RemoteIQ"
 New-Item -ItemType Directory -Force -Path $ProgramDataDir | Out-Null
 $Global:LogPath = Join-Path $ProgramDataDir "install.log"
@@ -349,17 +326,64 @@ function Retry {
   }
 }
 
-# Bundle auth (short-lived)
+function Stop-AgentProcesses {
+  $names = @("remoteiq-agent", "RemoteIQ.Agent", "agent")
+  foreach ($n in $names) {
+    try {
+      $ps = Get-Process -Name $n -ErrorAction SilentlyContinue
+      if ($ps) {
+        Write-Log "Killing process $n..."
+        $ps | Stop-Process -Force -ErrorAction SilentlyContinue
+      }
+    } catch {}
+  }
+}
+
+function Wait-ServiceGone {
+  param([string]$ServiceName, [int]$Seconds = 30)
+
+  $deadline = (Get-Date).AddSeconds($Seconds)
+  while ((Get-Date) -lt $deadline) {
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $svc) { return $true }
+    Start-Sleep -Milliseconds 500
+  }
+  return $false
+}
+
+function Ensure-ServiceCreated {
+  param([string]$ServiceName, [string]$BinPath, [string]$DisplayName, [string]$Description)
+
+  # sc.exe is picky: needs "binPath= <value>" with a space after '='
+  $createOut = (sc.exe create $ServiceName binPath= $BinPath start= auto DisplayName= "$DisplayName" 2>&1 | Out-String)
+  Write-Log "sc.exe create output: $($createOut.Trim())"
+  if ($LASTEXITCODE -ne 0) {
+    Fail "sc.exe create failed (exit=$LASTEXITCODE). Output: $($createOut.Trim())"
+  }
+
+  # Verify the service exists now (avoid silent failures)
+  $exists = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+  if (-not $exists) {
+    $qcOut = (sc.exe qc $ServiceName 2>&1 | Out-String)
+    Write-Log "sc.exe qc output: $($qcOut.Trim())"
+    Fail "Service was not created successfully (Get-Service cannot find '$ServiceName')."
+  }
+
+  $descOut = (sc.exe description $ServiceName "$Description" 2>&1 | Out-String)
+  Write-Log "sc.exe description output: $($descOut.Trim())"
+}
+
 $BundleId = "${safeBundleId}"
 $DownloadToken = "${safeToken}"
-
-# Enrollment key (site-scoped reusable)
 $EnrollmentKey = "${safeKey}"
 
-# Server base URL (baked; no prompts)
+# Server base URL (prefer baked baseUrl; if empty, prompt)
 $ServerBaseUrl = "${safeBaseUrl}"
+if ([string]::IsNullOrWhiteSpace($ServerBaseUrl)) {
+  $ServerBaseUrl = Read-Host "Enter RemoteIQ Server Base URL (example: http://localhost:3001)"
+}
+$ServerBaseUrl = $ServerBaseUrl.Trim().TrimEnd("/")
 
-# Paths
 $CfgPath = Join-Path $ProgramDataDir "enrollment.json"
 $InstallDir = Join-Path $env:ProgramFiles "RemoteIQ\\Agent"
 $TempDir = Join-Path $env:TEMP "RemoteIQ"
@@ -372,7 +396,6 @@ Write-Log "BundleId=$BundleId"
 Write-Log "InstallDir=$InstallDir"
 Write-Log "============================================================"
 
-# Must run as admin (service install)
 $IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $IsAdmin) { Fail "Please run this installer as Administrator." }
@@ -380,13 +403,13 @@ if (-not $IsAdmin) { Fail "Please run this installer as Administrator." }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
 
-# Reuse deviceId if config already exists; otherwise generate a new GUID.
+# Reuse deviceId if config already exists
 $DeviceId = $null
 if (Test-Path -LiteralPath $CfgPath) {
   try {
     $existing = Get-Content -LiteralPath $CfgPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
     if ($existing -and $existing.deviceId) { $DeviceId = [string]$existing.deviceId }
-    Write-Log "Found existing enrollment.json; reusing deviceId=$DeviceId"
+    if ($DeviceId) { Write-Log "Found existing enrollment.json; reusing deviceId=$DeviceId" }
   } catch {
     Write-Log "Failed to parse existing enrollment.json; will overwrite"
   }
@@ -396,7 +419,6 @@ if ([string]::IsNullOrWhiteSpace($DeviceId)) {
   Write-Log "Generated new deviceId=$DeviceId"
 }
 
-# Write enrollment.json (include baseUrl for agent convenience)
 $cfg = @{
   deviceId = $DeviceId
   enrollmentKey = $EnrollmentKey
@@ -406,11 +428,9 @@ $cfg = @{
 Set-Content -Path $CfgPath -Value $cfg -Encoding UTF8
 Write-Log "Wrote enrollment config to: $CfgPath"
 
-# TLS safety for older boxes
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 Write-Log "TLS protocol set (best-effort)"
 
-# Download agent package
 $AgentUrl = "$ServerBaseUrl/api/provisioning/installer-bundles/$BundleId/agent-package?token=$DownloadToken"
 Write-Log "Downloading agent package from: $AgentUrl"
 Write-Log "Saving to: $ZipPath"
@@ -424,23 +444,48 @@ Write-Log "Download complete."
 
 # Extract agent
 Write-Log "Extracting agent to: $InstallDir"
-try {
-  if (Test-Path $InstallDir) {
-    Get-ChildItem -Path $InstallDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
-      try { Remove-Item -Path $_.FullName -Force -Recurse -ErrorAction SilentlyContinue } catch {}
+
+# Stop service/process BEFORE overwriting files
+$ServiceName = "RemoteIQAgent"
+$svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($svc) {
+  try {
+    if ($svc.Status -eq "Running") {
+      Write-Log "Stopping existing service..."
+      Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 2
     }
+  } catch {
+    Write-Log "Warning: failed to stop service: $($_.Exception.Message)"
   }
+
+  Write-Log "Deleting existing service..."
+  $delOut = (sc.exe delete $ServiceName 2>&1 | Out-String)
+  Write-Log "sc.exe delete output: $($delOut.Trim())"
+  Start-Sleep -Seconds 1
+
+  # Wait until the service is actually gone (avoid 'marked for deletion')
+  if (-not (Wait-ServiceGone -ServiceName $ServiceName -Seconds 30)) {
+    Fail "Service '$ServiceName' still exists after delete (likely marked for deletion). Reboot or wait longer and retry."
+  }
+}
+
+Stop-AgentProcesses
+Start-Sleep -Milliseconds 500
+
+# Clean install dir best-effort
+try {
+  Get-ChildItem -Path $InstallDir -Force -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
 } catch {
-  Write-Log "Warning: failed cleaning install dir: $($_.Exception.Message)"
+  Write-Log "Warning: cleaning install dir failed: $($_.Exception.Message)"
 }
 
 Retry -Attempts 3 -DelaySeconds 2 -Script {
   Expand-Archive -Path $ZipPath -DestinationPath $InstallDir -Force
 } | Out-Null
-
 Write-Log "Extraction complete."
 
-# Find agent exe (zip should contain one of these at the root)
+# Find agent exe
 $ExeCandidates = @(
   (Join-Path $InstallDir "remoteiq-agent.exe"),
   (Join-Path $InstallDir "RemoteIQ.Agent.exe"),
@@ -453,35 +498,10 @@ if (-not $AgentExe) {
 }
 Write-Log "Agent executable: $AgentExe"
 
-# Install / update Windows service
-$ServiceName = "RemoteIQAgent"
+# Install service
 $ServiceDisplay = "RemoteIQ Agent"
 $ServiceDesc = "RemoteIQ endpoint agent"
 
-Write-Log "Installing Windows service: $ServiceName"
-
-# Remove existing service if present (clean upgrade)
-$existingSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($existingSvc) {
-  try {
-    if ($existingSvc.Status -eq "Running") {
-      Write-Log "Stopping existing service..."
-      Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-      Start-Sleep -Seconds 2
-    }
-  } catch {
-    Write-Log "Warning: failed stopping service: $($_.Exception.Message)"
-  }
-  try {
-    Write-Log "Deleting existing service..."
-    sc.exe delete $ServiceName | Out-Null
-  } catch {
-    Write-Log "Warning: failed deleting service: $($_.Exception.Message)"
-  }
-  Start-Sleep -Seconds 2
-}
-
-# Prefer NSSM if bundled, otherwise sc.exe (agent must be a real service binary)
 $NssmPath = Join-Path $InstallDir "nssm.exe"
 if (Test-Path $NssmPath) {
   Write-Log "nssm.exe found. Registering service via NSSM: $NssmPath"
@@ -489,37 +509,26 @@ if (Test-Path $NssmPath) {
   & $NssmPath set $ServiceName AppDirectory $InstallDir | Out-Null
   & $NssmPath set $ServiceName DisplayName $ServiceDisplay | Out-Null
   & $NssmPath set $ServiceName Start SERVICE_AUTO_START | Out-Null
-  & $NssmPath set $ServiceName AppStdout (Join-Path $ProgramDataDir "agent-stdout.log") | Out-Null
-  & $NssmPath set $ServiceName AppStderr (Join-Path $ProgramDataDir "agent-stderr.log") | Out-Null
-  & $NssmPath set $ServiceName AppRotateFiles 1 | Out-Null
-  & $NssmPath set $ServiceName AppRotateOnline 1 | Out-Null
-  & $NssmPath set $ServiceName AppRotateSeconds 86400 | Out-Null
-  & $NssmPath set $ServiceName AppRotateBytes 1048576 | Out-Null
 } else {
   Write-Log "nssm.exe not present. Registering service via sc.exe (agent must be service-capable)."
   $binPath = '"' + $AgentExe + '"'
-  sc.exe create $ServiceName binPath= $binPath start= auto DisplayName= "$ServiceDisplay" | Out-Null
-  sc.exe description $ServiceName "$ServiceDesc" | Out-Null
-  sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null
+  Ensure-ServiceCreated -ServiceName $ServiceName -BinPath $binPath -DisplayName $ServiceDisplay -Description $ServiceDesc
 }
 
+# Start + verify
 Write-Log "Starting service..."
-try { Start-Service -Name $ServiceName } catch { try { sc.exe start $ServiceName | Out-Null } catch {} }
+$startOut = (sc.exe start $ServiceName 2>&1 | Out-String)
+Write-Log "sc.exe start output: $($startOut.Trim())"
 
 Retry -Attempts 12 -DelaySeconds 2 -Script {
-  $svc = Get-Service -Name $ServiceName -ErrorAction Stop
-  if ($svc.Status -ne "Running") { throw "Service status is $($svc.Status)" }
+  $svc2 = Get-Service -Name $ServiceName -ErrorAction Stop
+  if ($svc2.Status -ne "Running") { throw "Service status is $($svc2.Status)" }
   return $true
 } | Out-Null
 
 Write-Log "Service is running."
-
-# Cleanup
 try { Remove-Item -Path $ZipPath -Force -ErrorAction SilentlyContinue } catch {}
-Write-Log "Cleaned up zip."
-
-Write-Log "✅ RemoteIQ bootstrap complete."
-Write-Log "Log file: $Global:LogPath"
+Write-Log "✅ RemoteIQ bootstrap complete. Log file: $Global:LogPath"
 `;
       return { filename, contentType: "text/plain; charset=utf-8", content };
     }
@@ -529,9 +538,6 @@ Write-Log "Log file: $Global:LogPath"
     const filename = isMac ? `RemoteIQ-Installer-macOS.sh` : `RemoteIQ-Installer-Linux.sh`;
     const content = `#!/usr/bin/env bash
 set -euo pipefail
-
-# RemoteIQ Bootstrap Installer (${isMac ? "macOS" : "Linux"})
-# Writes enrollment config. Reusable installer: re-runs keep the same deviceId if config already exists.
 
 ENROLLMENT_KEY="${safeKey}"
 BASE_URL="${safeBaseUrl}"
@@ -587,16 +593,17 @@ echo "DeviceId: $DEVICE_ID"
     return { filename, contentType: "text/plain; charset=utf-8", content };
   }
 
-  async createInstallerBundle(dto: CreateInstallerBundleDto): Promise<CreateInstallerBundleResult> {
+  // ✅ FIX: accept derivedBaseUrl as optional 2nd arg (matches your controller)
+  async createInstallerBundle(
+    dto: CreateInstallerBundleDto,
+    derivedBaseUrl?: string | null
+  ): Promise<CreateInstallerBundleResult> {
     await this.ensureInstallerBundlesTable();
 
     const enrollmentKey = String(dto.enrollmentKey ?? "").trim();
     const os = dto.os;
 
     const { clientId, siteId } = await this.validateReusableEnrollmentKey(enrollmentKey);
-
-    // Make installer non-interactive by baking the base URL now (fail closed if missing).
-    const serverBaseUrl = this.resolveServerBaseUrlOrThrow();
 
     // Short-lived download URL (default 10 minutes)
     const expiresMinutes = 10;
@@ -609,7 +616,7 @@ echo "DeviceId: $DEVICE_ID"
       enrollmentKey,
       bundleId,
       downloadToken,
-      serverBaseUrl,
+      serverBaseUrl: derivedBaseUrl ?? null,
     });
 
     const label = String(dto.label ?? "").trim();
@@ -671,7 +678,10 @@ echo "DeviceId: $DEVICE_ID"
     };
   }
 
-  async getInstallerBundleAgentPackageDownload(bundleId: string, token?: string): Promise<FileDownload> {
+  async getInstallerBundleAgentPackageDownload(
+    bundleId: string,
+    token?: string
+  ): Promise<FileDownload> {
     const id = String(bundleId ?? "").trim();
     if (!id) throw new BadRequestException("bundle id is required");
 
@@ -699,7 +709,6 @@ echo "DeviceId: $DEVICE_ID"
 
     const pkg = this.resolveAgentPackagePath(os);
 
-    // Let TS infer the stat type (avoids annoying typing edge cases)
     let st: any;
     try {
       st = await fs.promises.stat(pkg.absPath);
@@ -714,4 +723,3 @@ echo "DeviceId: $DEVICE_ID"
     return { filename: pkg.filename, contentType: pkg.contentType, absPath: pkg.absPath };
   }
 }
-

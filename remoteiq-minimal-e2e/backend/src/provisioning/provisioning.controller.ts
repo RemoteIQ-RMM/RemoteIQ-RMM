@@ -25,6 +25,31 @@ function safeAttachmentFilename(name: string): string {
     return cleaned.length ? cleaned : "download.txt";
 }
 
+function firstForwardedValue(v: unknown): string {
+    const s = String(v ?? "").trim();
+    if (!s) return "";
+    // forwarded headers can be "https,http"
+    return s.split(",")[0]?.trim() ?? "";
+}
+
+function deriveBaseUrlFromRequest(req: any): string | null {
+    const xfProto = firstForwardedValue(req?.headers?.["x-forwarded-proto"]);
+    const xfHost = firstForwardedValue(req?.headers?.["x-forwarded-host"]);
+
+    const protoRaw = (xfProto || String(req?.protocol ?? "").trim() || "https").toLowerCase();
+    const hostRaw = (xfHost || String(req?.headers?.host ?? "").trim()).toLowerCase();
+
+    if (protoRaw !== "http" && protoRaw !== "https") return null;
+    if (!hostRaw) return null;
+
+    // Basic hardening: allow only host-ish chars (domain, ipv4, ipv6-in-brackets, optional port)
+    // Examples allowed: example.com, example.com:3001, 10.0.0.5:3001, [2001:db8::1]:3001
+    const ok = /^[a-z0-9.\-:[\]]+$/.test(hostRaw);
+    if (!ok) return null;
+
+    return `${protoRaw}://${hostRaw}`.replace(/\/+$/, "");
+}
+
 @Controller("/api/provisioning")
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
 export class ProvisioningController {
@@ -48,8 +73,14 @@ export class ProvisioningController {
 
     @Post("installer-bundles")
     @RequirePerm("customers.write")
-    async createInstallerBundle(@Body() body: CreateInstallerBundleDto): Promise<CreateInstallerBundleResult> {
-        return await this.provisioning.createInstallerBundle(body);
+    async createInstallerBundle(
+        @Req() req: any,
+        @Body() body: CreateInstallerBundleDto
+    ): Promise<CreateInstallerBundleResult> {
+        // Prefer deriving from the request origin so the downloaded PS1 pulls from the same backend
+        // the dashboard is talking to (works even before a “public installer domain” exists).
+        const derivedBaseUrl = deriveBaseUrlFromRequest(req);
+        return await this.provisioning.createInstallerBundle(body, derivedBaseUrl);
     }
 
     @Public()
@@ -68,6 +99,7 @@ export class ProvisioningController {
         res.setHeader("Content-Type", out.contentType);
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         res.setHeader("Cache-Control", "no-store");
+        res.setHeader("X-Content-Type-Options", "nosniff");
         res.send(body);
     }
 
@@ -82,6 +114,7 @@ export class ProvisioningController {
         @Query("token") token: string | undefined,
         @Res({ passthrough: false }) res: Response
     ): Promise<void> {
+        // ✅ FIX: service expects (bundleId: string, token?: string)
         const out = await this.provisioning.getInstallerBundleAgentPackageDownload(id, token);
 
         const filename = safeAttachmentFilename(out.filename);
@@ -90,6 +123,7 @@ export class ProvisioningController {
         res.setHeader("Content-Type", out.contentType);
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         res.setHeader("Cache-Control", "no-store");
+        res.setHeader("X-Content-Type-Options", "nosniff");
 
         const stream = fs.createReadStream(out.absPath);
         stream.on("error", () => {
