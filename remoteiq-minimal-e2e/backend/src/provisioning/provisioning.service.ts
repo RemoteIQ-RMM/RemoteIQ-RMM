@@ -714,3 +714,4 @@ echo "DeviceId: $DEVICE_ID"
     return { filename: pkg.filename, contentType: pkg.contentType, absPath: pkg.absPath };
   }
 }
+
