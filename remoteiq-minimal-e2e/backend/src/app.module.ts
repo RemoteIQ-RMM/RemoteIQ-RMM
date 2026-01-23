@@ -1,4 +1,3 @@
-// backend/src/app.module.ts
 import { Module, MiddlewareConsumer, NestModule } from "@nestjs/common";
 import { ServeStaticModule } from "@nestjs/serve-static";
 import { join } from "path";
@@ -29,6 +28,10 @@ import { TicketsModule } from "./tickets/tickets.module";
 
 import { AuthCookieMiddleware } from "./auth/auth-cookie.middleware";
 import { CompatModule } from "./compat/compat.module";
+import { EndpointsModule } from "./endpoints/endpoints.module";
+
+// ✅ NEW
+import { ProvisioningModule } from "./provisioning/provisioning.module";
 
 @Module({
     imports: [
@@ -57,9 +60,13 @@ import { CompatModule } from "./compat/compat.module";
         CustomersModule,
         BackupsModule,
         TicketsModule,
+        EndpointsModule,
 
         // ✅ compatibility endpoints for ticketing UI
         CompatModule,
+
+        // ✅ NEW provisioning endpoints for dashboard-generated installers
+        ProvisioningModule,
 
         SmtpModule,
         ScheduleModule.forRoot(),
@@ -79,7 +86,7 @@ export class AppModule implements NestModule {
                 "api/docs/(.*)",
                 "static/(.*)",
                 "api/auth/login",
-                "api/auth/logout",
+                "api/auth/logout"
             )
             .forRoutes("*");
     }

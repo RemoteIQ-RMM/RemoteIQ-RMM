@@ -41,8 +41,9 @@ public sealed class EnrollmentService : BackgroundService
                     Hostname = Environment.MachineName,
                     Os = "windows",
                     Arch = Environment.Is64BitOperatingSystem ? "x64" : "x86",
-                    Version = typeof(EnrollmentService).Assembly.GetName().Version?.ToString() ?? "1.0.0",
+                    Version = "1.0.0"
                 };
+
 
                 var url = $"{_config.Current.ApiBaseUrl.TrimEnd('/')}/api/agent/enroll";
                 var resp = await http.PostAsJsonAsync(url, body, stoppingToken);

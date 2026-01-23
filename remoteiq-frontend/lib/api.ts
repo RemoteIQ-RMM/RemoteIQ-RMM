@@ -89,17 +89,34 @@ export async function jfetch<T>(path: string, init: JsonInit = {}): Promise<T> {
 // Devices (grid + details)
 // ---------------------------------------------------------------------------
 export type Device = {
+  /**
+   * Row id returned by backend:
+   * - agent-sourced rows: agents.id
+   * - device-only rows: public.devices.id
+   */
   id: string;
+
+  /** Always the underlying public.devices.id when known (agent rows include it). */
+  deviceId?: string | null;
+
   hostname: string;
   os: string;
   arch?: string | null;
   lastSeen?: string | null;
   status: "online" | "offline";
+
+  /** Human-readable names (existing UI uses these today). */
   client?: string | null;
   site?: string | null;
+
+  /** Stable UUIDs for customer/site (needed for correct move + sidebar scoping). */
+  clientId?: string | null;
+  siteId?: string | null;
+
   user?: string | string[] | null;
   version?: string | null;
   primaryIp?: string | null;
+
   /** Optional UUID for the underlying agent (if backend provides it). */
   agentUuid?: string | null;
 };
@@ -649,12 +666,18 @@ export async function saveIntegrationsSettings(p: Partial<IntegrationsSettings>)
 export async function testSlackWebhook(
   urlStr: string
 ): Promise<{ ok: boolean; status: number; ms?: number }> {
-  return await jfetch(`/api/users/integrations/test/slack`, { method: "POST", body: { url: urlStr } });
+  return await jfetch(`/api/users/integrations/test/slack`, {
+    method: "POST",
+    body: { url: urlStr },
+  });
 }
 export async function testGenericWebhook(
   urlStr: string
 ): Promise<{ ok: boolean; status: number; ms?: number }> {
-  return await jfetch(`/api/users/integrations/test/webhook`, { method: "POST", body: { url: urlStr } });
+  return await jfetch(`/api/users/integrations/test/webhook`, {
+    method: "POST",
+    body: { url: urlStr },
+  });
 }
 export async function rotateSigningSecret(): Promise<{ secret: string }> {
   return await jfetch(`/api/users/integrations/rotate-signing-secret`, { method: "POST" });
@@ -965,10 +988,6 @@ export async function requestUninstallSoftware(
 
 /* ============================================================================
    Customers (Clients + Sites) — matches backend /api/customers + /:client/sites
-   Fixes:
-     - backend list returns { key, name, counts } so we normalize key -> id
-     - sidebar needs customers even when 0 devices, so we expose fetchCustomers & fetchCustomerSites
-     - emit a browser event after creates so sidebar/dialogs can refresh
    ==========================================================================*/
 
 export const CUSTOMERS_CHANGED_EVENT = "remoteiq:customers-changed";
@@ -1037,7 +1056,7 @@ export type CreateCustomerSitePayload = {
 function normalizeClient(raw: any): CustomerClient | null {
   if (!raw) return null;
 
-  // ✅ backend list uses `key` (uuid string), not `id`
+  // backend list uses `key` (uuid string), not `id`
   const id = String(raw.id ?? raw.key ?? raw.clientId ?? raw.client_id ?? "");
   const name = String(raw.name ?? raw.title ?? raw.displayName ?? "");
   if (!id || !name) return null;
@@ -1329,4 +1348,275 @@ export async function deleteCustomerSite(clientIdOrName: string, siteIdOrName: s
 
   if (lastErr) throw lastErr;
   throw new Error("No supported endpoint found to delete site.");
+}
+
+// ---------------------------------------------------------------------------
+// Provisioning / Enrollment token (Dashboard creates one-time enrollment secret)
+// Backend routes:
+//   POST /api/provisioning/endpoints
+//   POST /endpoints
+// ---------------------------------------------------------------------------
+
+export type CreateEndpointRequest = {
+  clientId: string;
+  siteId: string;
+  os: "windows" | "linux" | "macos";
+  deviceId: string; // maps to public.devices.id (uuid)
+  alias: string; // technician-managed label
+  expiresMinutes: number; // 1..1440
+};
+
+export type CreateEndpointResponse = {
+  deviceId: string;
+  enrollmentSecret: string;
+  expiresAt: string; // ISO string
+  // optional extras if backend returns them later
+  endpointId?: string;
+  installUrl?: string;
+};
+
+function normalizeCreateEndpointResponse(raw: any): CreateEndpointResponse {
+  // support multiple backend shapes without breaking the UI
+  const deviceId = String(raw?.deviceId ?? raw?.device_id ?? raw?.id ?? "");
+  const enrollmentSecret = String(
+    raw?.enrollmentSecret ?? raw?.enrollment_secret ?? raw?.secret ?? raw?.token ?? ""
+  );
+  const expiresAt = String(raw?.expiresAt ?? raw?.expires_at ?? raw?.expires ?? "");
+
+  if (!deviceId) throw new Error("Create endpoint: missing deviceId in response.");
+  if (!enrollmentSecret) throw new Error("Create endpoint: missing enrollmentSecret in response.");
+  if (!expiresAt) throw new Error("Create endpoint: missing expiresAt in response.");
+
+  return {
+    deviceId,
+    enrollmentSecret,
+    expiresAt,
+    endpointId: raw?.endpointId ?? raw?.endpoint_id ?? raw?.endpoint?.id,
+    installUrl: raw?.installUrl ?? raw?.install_url ?? raw?.url,
+  };
+}
+
+export async function createEndpoint(req: CreateEndpointRequest): Promise<CreateEndpointResponse> {
+  const body = {
+    clientId: req.clientId,
+    siteId: req.siteId,
+    os: req.os,
+    deviceId: req.deviceId,
+    alias: req.alias,
+    expiresMinutes: req.expiresMinutes,
+  };
+
+  // Based on your ROUTES output:
+  const candidates: Array<{ path: string; method: "POST" }> = [
+    { path: `/api/provisioning/endpoints`, method: "POST" }, // ✅ exists
+    { path: `/endpoints`, method: "POST" }, // ✅ exists
+    // (Optional legacy guesses if you add them later)
+    { path: `/api/endpoints`, method: "POST" },
+  ];
+
+  let lastErr: any = null;
+
+  for (const c of candidates) {
+    try {
+      const res = await tryJfetch<any>(c.path, { method: c.method, body });
+      if (res === undefined) continue;
+      return normalizeCreateEndpointResponse(res);
+    } catch (e: any) {
+      const status = e?.status ?? e?.code;
+      if (status === 404 || status === 405) continue; // unsupported path, try next
+      lastErr = e;
+      break;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+  throw new Error("No supported endpoint found to create an enrollment token.");
+}
+
+// ---------------------------------------------------------------------------
+// Provisioning / Reusable Enrollment Keys (site-scoped, multi-use)
+// Backend route:
+//   POST /api/provisioning/enrollment-keys
+// ---------------------------------------------------------------------------
+
+export type CreateEnrollmentKeyRequest = {
+  clientId: string;
+  siteId: string;
+  name?: string;
+  expiresMinutes?: number; // 1..43200
+};
+
+export type CreateEnrollmentKeyResponse = {
+  enrollmentKey: string; // raw token returned ONCE
+  tokenId: string; // uuid
+  expiresAt: string; // ISO
+  clientId: string;
+  siteId: string;
+  name: string | null;
+};
+
+function normalizeCreateEnrollmentKeyResponse(raw: any): CreateEnrollmentKeyResponse {
+  const enrollmentKey = String(raw?.enrollmentKey ?? raw?.enrollment_key ?? raw?.token ?? "");
+  const tokenId = String(raw?.tokenId ?? raw?.token_id ?? raw?.id ?? "");
+  const expiresAt = String(raw?.expiresAt ?? raw?.expires_at ?? raw?.expires ?? "");
+  const clientId = String(raw?.clientId ?? raw?.client_id ?? "");
+  const siteId = String(raw?.siteId ?? raw?.site_id ?? "");
+  const name = raw?.name == null ? null : String(raw?.name);
+
+  if (!enrollmentKey) throw new Error("Create enrollment key: missing enrollmentKey in response.");
+  if (!tokenId) throw new Error("Create enrollment key: missing tokenId in response.");
+  if (!expiresAt) throw new Error("Create enrollment key: missing expiresAt in response.");
+  if (!clientId) throw new Error("Create enrollment key: missing clientId in response.");
+  if (!siteId) throw new Error("Create enrollment key: missing siteId in response.");
+
+  return { enrollmentKey, tokenId, expiresAt, clientId, siteId, name };
+}
+
+export async function createEnrollmentKey(
+  req: CreateEnrollmentKeyRequest
+): Promise<CreateEnrollmentKeyResponse> {
+  const body = {
+    clientId: String(req.clientId ?? "").trim(),
+    siteId: String(req.siteId ?? "").trim(),
+    name: req.name != null ? String(req.name).trim() : undefined,
+    expiresMinutes: req.expiresMinutes,
+  };
+
+  if (!body.clientId) throw new Error("Create enrollment key: clientId is required.");
+  if (!body.siteId) throw new Error("Create enrollment key: siteId is required.");
+
+  const candidates: Array<{ path: string; method: "POST" }> = [
+    { path: `/api/provisioning/enrollment-keys`, method: "POST" }, // ✅ your backend
+    // optional alternates if you ever move it
+    { path: `/api/provisioning/enrollmentKeys`, method: "POST" },
+  ];
+
+  let lastErr: any = null;
+
+  for (const c of candidates) {
+    try {
+      const res = await tryJfetch<any>(c.path, { method: c.method, body });
+      if (res === undefined) continue;
+      return normalizeCreateEnrollmentKeyResponse(res);
+    } catch (e: any) {
+      const status = e?.status ?? e?.code;
+      if (status === 404 || status === 405) continue;
+      lastErr = e;
+      break;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+  throw new Error("No supported endpoint found to create a reusable enrollment key.");
+}
+
+// ---------------------------------------------------------------------------
+// Provisioning / Reusable Installer Bundle Download (Option A)
+// Backend route (per your new backend):
+//   POST /api/provisioning/installer-bundles  -> { url, filename, expiresAt, ... }
+//   GET  /api/provisioning/installer-bundles/:id/download?token=...
+// ---------------------------------------------------------------------------
+
+export type InstallerOs = "windows" | "linux" | "macos";
+
+export type InstallerBundleRequest = {
+  os: InstallerOs;
+  enrollmentKey: string; // ✅ reusable site enrollment key
+  label?: string; // optional filename hint
+};
+
+export type InstallerBundleResponse = {
+  url: string; // signed/temporary URL or direct download route
+  fileName?: string; // optional
+  expiresAt?: string; // optional
+  bundleId?: string; // optional
+};
+
+function normalizeInstallerBundleResponse(raw: any): InstallerBundleResponse {
+  const urlStr = String(
+    raw?.url ??
+    raw?.downloadUrl ??
+    raw?.download_url ??
+    raw?.installUrl ??
+    raw?.install_url ??
+    ""
+  );
+  if (!urlStr) throw new Error("Installer bundle: missing url in response.");
+
+  const fileName = raw?.fileName ?? raw?.file_name ?? raw?.filename ?? raw?.name;
+  const bundleId = raw?.bundleId ?? raw?.bundle_id ?? raw?.id;
+
+  return {
+    url: urlStr,
+    fileName: typeof fileName === "string" ? fileName : undefined,
+    expiresAt: raw?.expiresAt ?? raw?.expires_at,
+    bundleId: typeof bundleId === "string" ? bundleId : undefined,
+  };
+}
+
+/**
+ * Option A: Ask backend for a reusable installer bundle for an OS.
+ * This uses the site-scoped enrollmentKey (multi-use), NOT the one-time enrollmentSecret.
+ */
+export async function getInstallerBundle(req: InstallerBundleRequest): Promise<InstallerBundleResponse> {
+  const body = {
+    os: req.os,
+    enrollmentKey: String(req.enrollmentKey ?? "").trim(),
+    label: req.label != null ? String(req.label).trim() : undefined,
+  };
+
+  if (!body.os) throw new Error("Installer bundle: os is required.");
+  if (!body.enrollmentKey) throw new Error("Installer bundle: enrollmentKey is required.");
+
+  const candidates: Array<{ path: string; method: "POST" }> = [
+    { path: `/api/provisioning/installer-bundles`, method: "POST" }, // ✅ your backend (Option A)
+    // optional alternates if you ever rename
+    { path: `/api/provisioning/installerBundles`, method: "POST" },
+  ];
+
+  let lastErr: any = null;
+
+  for (const c of candidates) {
+    try {
+      const res = await tryJfetch<any>(c.path, { method: c.method, body });
+      if (res === undefined) continue;
+      return normalizeInstallerBundleResponse(res);
+    } catch (e: any) {
+      const status = e?.status ?? e?.code;
+      if (status === 404 || status === 405) continue;
+      lastErr = e;
+      break;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+  throw new Error("No supported endpoint found to request an installer bundle.");
+}
+
+/**
+ * Browser helper: trigger download.
+ * Uses an <a download> click so it behaves like a file download without leaving SPA state.
+ * If filename is omitted, browser/server headers decide.
+ */
+export function startBrowserDownload(urlStr: string, filename?: string) {
+  if (typeof window === "undefined") return;
+  const u = String(urlStr || "").trim();
+  if (!u) return;
+
+  // If API_BASE is set and backend returned a relative URL, keep it consistent.
+  const full = u.startsWith("http://") || u.startsWith("https://") ? u : url(u);
+
+  try {
+    const a = document.createElement("a");
+    a.href = full;
+    if (filename) a.download = filename;
+    a.rel = "noopener";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch {
+    // fallback
+    window.location.assign(full);
+  }
 }

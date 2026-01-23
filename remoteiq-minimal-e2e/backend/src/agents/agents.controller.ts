@@ -97,8 +97,8 @@ export class SubmitCheckRunItemDto {
 
 export class SubmitCheckRunsDto {
   @IsOptional()
-  @IsString() // <— accepts "win-..." style ids
-  deviceId?: string;
+  @IsString()
+  deviceId?: string; // uuid string
 
   @IsArray()
   @ArrayMinSize(1)
@@ -137,31 +137,31 @@ export class AgentsController {
   async enroll(
     @Body() body: EnrollAgentDto
   ): Promise<{ agentId: string; agentUuid: string | null; deviceId: string; agentToken: string }> {
-    const res: any = await this.auth.enrollAgent(body);
+    const res = await this.auth.enrollAgent(body as any);
 
-    const agentId = String(res?.agentId ?? res?.agent?.id ?? "");
-    const deviceId = String(res?.deviceId ?? res?.device?.id ?? body?.deviceId ?? "");
-    const agentToken = String(res?.agentToken ?? res?.token ?? res?.accessToken ?? "");
+    const agentId = String(res?.agentId ?? "");
+    const deviceId = String(res?.deviceId ?? body?.deviceId ?? "");
+    const agentToken = String(res?.agentToken ?? "");
+    const agentUuid = (res?.agentUuid ?? null) as string | null;
 
     if (!agentToken || !agentId) {
       throw new Error("Enrollment succeeded but missing token or agentId in response.");
     }
 
-    let agentUuid: string | null = null;
-    try {
-      agentUuid = await this.agents.getAgentUuidById(Number(agentId));
-    } catch {
-      agentUuid = null;
+    // Ensure we can return agentUuid even if caller didn't set it
+    let finalAgentUuid: string | null = agentUuid;
+    if (!finalAgentUuid) {
+      finalAgentUuid = await this.agents.getAgentUuidById(agentId);
     }
 
-    return { agentId, agentUuid, deviceId, agentToken };
+    return { agentId, agentUuid: finalAgentUuid, deviceId, agentToken };
   }
 
   @Post("/ping")
   @UseGuards(AgentTokenGuard)
   async ping(@Req() req: any, @Body() body: UpdateAgentFactsDto) {
-    const agent = getAgentFromRequest(req);
-    await this.agents.updateFacts(Number((agent as any).id), body ?? {});
+    const agent = getAgentFromRequest(req); // { id: uuid string, deviceId?, token? }
+    await this.agents.updateFacts(String((agent as any).id), body ?? {});
     return { ok: true };
   }
 
@@ -169,7 +169,7 @@ export class AgentsController {
   @UseGuards(AgentTokenGuard)
   async submitSoftware(@Req() req: any, @Body() body: SubmitSoftwareDto) {
     const agent = getAgentFromRequest(req);
-    await this.agents.upsertSoftware(Number((agent as any).id), body?.items ?? []);
+    await this.agents.replaceSoftwareInventory(String((agent as any).id), body?.items ?? []);
     return { ok: true, count: body?.items?.length ?? 0 };
   }
 
@@ -200,7 +200,7 @@ export class AgentsController {
 
     const result = await this.checks.ingestAgentRuns({
       agentId: String((agent as any).id),
-      deviceId, // TEXT id
+      deviceId, // uuid string
       runs: body.runs.map((r) => ({
         assignmentId: r.assignmentId,
         dedupeKey: r.dedupeKey,

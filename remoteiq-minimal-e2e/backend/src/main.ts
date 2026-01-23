@@ -10,6 +10,7 @@ import { WsAdapter } from "@nestjs/platform-ws";
 import { ValidationPipe, INestApplication } from "@nestjs/common";
 import * as fs from "fs";
 import * as path from "path";
+import { Logger } from "@nestjs/common";
 
 import { NestExpressApplication } from "@nestjs/platform-express";
 
@@ -159,7 +160,26 @@ async function bootstrap() {
   }
 
   const port = Number(process.env.PORT || 3001);
-  await app.listen(port);
+  // await app.listen(port);
+  const server = await app.listen(port);
+
+  const httpServer: any = app.getHttpAdapter().getInstance();
+  const router = httpServer?._router;
+
+  if (router?.stack) {
+    const routes = router.stack
+      .filter((l: any) => l.route)
+      .map((l: any) => {
+        const path = l.route.path;
+        const methods = Object.keys(l.route.methods)
+          .filter((m) => l.route.methods[m])
+          .map((m) => m.toUpperCase())
+          .join(",");
+        return `${methods.padEnd(10)} ${path}`;
+      })
+      .sort();
+    Logger.log(`\nROUTES:\n${routes.join("\n")}\n`);
+  }
   console.log(`API up on http://localhost:${port}`);
 }
 

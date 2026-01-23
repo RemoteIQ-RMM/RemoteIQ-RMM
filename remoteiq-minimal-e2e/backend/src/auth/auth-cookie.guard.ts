@@ -47,6 +47,10 @@ function isPublicRequest(req: Request): boolean {
   const path = (req as any).path || req.url || "";
   const method = (req.method || "GET").toUpperCase();
 
+  // AuthCookieGuard
+  if (method === "GET" && path.startsWith("/api/provisioning/installer-bundles/") && path.includes("/download")) return true;
+
+
   // Swagger (we mounted both /docs and /api/docs)
   if (path === "/docs" || path.startsWith("/docs/")) return true;
   if (path === "/docs-json") return true;
@@ -81,7 +85,7 @@ export class AuthCookieGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly jwt: JwtService,
     private readonly pg: PgPoolService
-  ) {}
+  ) { }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<Request>();
@@ -123,8 +127,8 @@ export class AuthCookieGuard implements CanActivate {
 
     const roles: string[] = Array.isArray(userRow.roles)
       ? userRow.roles
-          .map((r: any) => String(r.name ?? r).trim())
-          .filter(Boolean)
+        .map((r: any) => String(r.name ?? r).trim())
+        .filter(Boolean)
       : [];
     const permissions = Array.isArray(userRow.permissions)
       ? userRow.permissions.map((p) => String(p).toLowerCase())
@@ -190,7 +194,7 @@ export class AuthCookieGuard implements CanActivate {
            WHERE id = $1 AND revoked_at IS NULL`,
           [jti, ip, ua]
         )
-        .catch(() => {});
+        .catch(() => { });
     }
 
     return true;

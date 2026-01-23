@@ -3,18 +3,25 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { PgPoolService } from "../storage/pg-pool.service";
 
 export type Device = {
-  id: string;
+  id: string;                 // agent id when present, else devices.id
+  deviceId?: string | null;   // ALWAYS the underlying public.devices.id (uuid)
   hostname: string;
   os: string;
   arch?: string | null;
   lastSeen: string | null;
   status: "online" | "offline";
+
+  clientId?: string | null;
+  siteId?: string | null;
+
   client?: string | null;
   site?: string | null;
+
   user?: string | null;
   version?: string | null;
   primaryIp?: string | null;
-  agentUuid?: string | null; // <-- present when sourced from agents
+
+  agentUuid?: string | null;  // present when sourced from agents
 };
 
 function decodeCursor(cur?: string | null) {
@@ -67,23 +74,42 @@ export class DevicesService {
     const sql = `
       WITH agent_rows AS (
         SELECT
-          a.id::text                                           AS id,
+          a.id::text AS id,
+          a.device_id::text AS device_id,
+
           COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') AS hostname,
-          COALESCE(NULLIF(d.operating_system, ''), 'unknown')  AS os,
-          d.architecture                                       AS arch,
-          COALESCE(a.last_check_in_at, d.last_seen_at)         AS last_seen,
+
+          -- agent-reported OS (facts.os) fallback to device row
+          COALESCE(NULLIF(a.facts->>'os', ''), NULLIF(d.operating_system, ''), 'unknown') AS os,
+
+          -- agent-reported arch (facts.arch) fallback to device row
+          COALESCE(NULLIF(a.facts->>'arch', ''), d.architecture, NULL) AS arch,
+
+          COALESCE(a.last_check_in_at, d.last_seen_at) AS last_seen,
+
           CASE
             WHEN a.last_check_in_at IS NOT NULL
              AND a.last_check_in_at > NOW() - INTERVAL '5 minutes'
             THEN 'online'
             ELSE CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END
-          END                                                  AS status,
-          c.name::text                                         AS client,
-          s.name::text                                         AS site,
-          NULL::text                                           AS "user",
-          NULLIF(a.version, '')                                AS version,
-          NULLIF(a.facts->>'primary_ip', '')                   AS primary_ip,
-          a.agent_uuid::text                                   AS agent_uuid
+          END AS status,
+
+          c.id::text AS client_id,
+          s.id::text AS site_id,
+          c.name::text AS client,
+          s.name::text AS site,
+
+          -- agent-reported logged in user
+          COALESCE(
+            NULLIF(a.facts->>'user', ''),
+            NULLIF(a.facts->>'logged_in_user', ''),
+            NULL
+          ) AS "user",
+
+          NULLIF(a.version, '') AS version,
+          NULLIF(a.facts->>'primary_ip', '') AS primary_ip,
+
+          COALESCE(NULLIF(a.agent_uuid, ''), a.id::text) AS agent_uuid
         FROM public.agents a
         LEFT JOIN public.devices d ON d.id = a.device_id
         LEFT JOIN public.sites   s ON s.id = d.site_id
@@ -92,13 +118,18 @@ export class DevicesService {
       device_rows AS (
         SELECT
           d.id::text            AS id,
+          d.id::text            AS device_id,
           d.hostname            AS hostname,
           COALESCE(NULLIF(d.operating_system, ''), 'unknown') AS os,
           d.architecture        AS arch,
           d.last_seen_at        AS last_seen,
           CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END AS status,
+
+          c.id::text            AS client_id,
+          s.id::text            AS site_id,
           c.name::text          AS client,
           s.name::text          AS site,
+
           NULL::text            AS "user",
           NULL::text            AS version,
           NULL::text            AS primary_ip,
@@ -108,7 +139,7 @@ export class DevicesService {
         LEFT JOIN public.clients c ON c.id = s.client_id
         WHERE NOT EXISTS (
           SELECT 1 FROM public.agents a
-          WHERE COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') = d.hostname
+          WHERE a.device_id = d.id
         )
       ),
       all_devs AS (
@@ -116,7 +147,22 @@ export class DevicesService {
         UNION ALL
         SELECT * FROM device_rows
       )
-      SELECT id, hostname, os, arch, last_seen, status, client, site, "user", version, primary_ip, agent_uuid
+      SELECT
+        id,
+        device_id,
+        hostname,
+        os,
+        arch,
+        last_seen,
+        status,
+        client_id,
+        site_id,
+        client,
+        site,
+        "user",
+        version,
+        primary_ip,
+        agent_uuid
       FROM all_devs
       ${whereSql}
       ORDER BY hostname ASC
@@ -128,13 +174,19 @@ export class DevicesService {
 
     const items = rows.slice(0, pageSize).map((r: any) => ({
       id: r.id,
+      deviceId: r.device_id ?? null,
       hostname: r.hostname,
       os: r.os,
       arch: r.arch ?? null,
       lastSeen: r.last_seen ? new Date(r.last_seen).toISOString() : null,
       status: r.status as "online" | "offline",
+
+      clientId: r.client_id ?? null,
+      siteId: r.site_id ?? null,
+
       client: r.client ?? null,
       site: r.site ?? null,
+
       user: r.user ?? null,
       version: r.version ?? null,
       primaryIp: r.primary_ip ?? null,
@@ -148,52 +200,82 @@ export class DevicesService {
     const sql = `
       WITH rows AS (
         SELECT
-          0                                                    AS pref,
-          a.id::text                                           AS id,
+          0 AS pref,
+          a.id::text AS id,
+          a.device_id::text AS device_id,
+
           COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') AS hostname,
-          COALESCE(NULLIF(d.operating_system, ''), 'unknown')   AS os,
-          d.architecture                                       AS arch,
-          COALESCE(a.last_check_in_at, d.last_seen_at)          AS last_seen,
+          COALESCE(NULLIF(a.facts->>'os', ''), NULLIF(d.operating_system, ''), 'unknown') AS os,
+          COALESCE(NULLIF(a.facts->>'arch', ''), d.architecture, NULL) AS arch,
+          COALESCE(a.last_check_in_at, d.last_seen_at) AS last_seen,
           CASE
             WHEN a.last_check_in_at IS NOT NULL
              AND a.last_check_in_at > NOW() - INTERVAL '5 minutes'
             THEN 'online'
             ELSE CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END
-          END                                                  AS status,
-          c.name::text                                         AS client,
-          s.name::text                                         AS site,
-          NULL::text                                           AS "user",
-          NULLIF(a.version, '')                                AS version,
-          NULLIF(a.facts->>'primary_ip', '')                    AS primary_ip,
-          a.agent_uuid::text                                   AS agent_uuid
+          END AS status,
+
+          c.id::text AS client_id,
+          s.id::text AS site_id,
+          c.name::text AS client,
+          s.name::text AS site,
+
+          COALESCE(
+            NULLIF(a.facts->>'user', ''),
+            NULLIF(a.facts->>'logged_in_user', ''),
+            NULL
+          ) AS "user",
+          NULLIF(a.version, '') AS version,
+          NULLIF(a.facts->>'primary_ip', '') AS primary_ip,
+          COALESCE(NULLIF(a.agent_uuid, ''), a.id::text) AS agent_uuid
         FROM public.agents a
         LEFT JOIN public.devices d ON d.id = a.device_id
         LEFT JOIN public.sites   s ON s.id = d.site_id
         LEFT JOIN public.clients c ON c.id = s.client_id
-        WHERE a.id::text = $1
+        WHERE a.id::text = $1 OR a.device_id::text = $1
 
         UNION ALL
 
         SELECT
-          1                        AS pref,
-          d.id::text               AS id,
-          d.hostname               AS hostname,
+          1 AS pref,
+          d.id::text AS id,
+          d.id::text AS device_id,
+          d.hostname AS hostname,
           COALESCE(NULLIF(d.operating_system, ''), 'unknown') AS os,
-          d.architecture           AS arch,
-          d.last_seen_at           AS last_seen,
+          d.architecture AS arch,
+          d.last_seen_at AS last_seen,
           CASE WHEN d.status = 'online' THEN 'online' ELSE 'offline' END AS status,
-          c.name::text             AS client,
-          s.name::text             AS site,
-          NULL::text               AS "user",
-          NULL::text               AS version,
-          NULL::text               AS primary_ip,
-          NULL::text               AS agent_uuid
+
+          c.id::text AS client_id,
+          s.id::text AS site_id,
+          c.name::text AS client,
+          s.name::text AS site,
+
+          NULL::text AS "user",
+          NULL::text AS version,
+          NULL::text AS primary_ip,
+          NULL::text AS agent_uuid
         FROM public.devices d
         LEFT JOIN public.sites   s ON s.id = d.site_id
         LEFT JOIN public.clients c ON c.id = s.client_id
         WHERE d.id::text = $1
       )
-      SELECT id, hostname, os, arch, last_seen, status, client, site, "user", version, primary_ip, agent_uuid
+      SELECT
+        id,
+        device_id,
+        hostname,
+        os,
+        arch,
+        last_seen,
+        status,
+        client_id,
+        site_id,
+        client,
+        site,
+        "user",
+        version,
+        primary_ip,
+        agent_uuid
       FROM rows
       ORDER BY pref ASC
       LIMIT 1;
@@ -205,13 +287,19 @@ export class DevicesService {
 
     return {
       id: r.id,
+      deviceId: r.device_id ?? null,
       hostname: r.hostname,
       os: r.os,
       arch: r.arch ?? null,
       lastSeen: r.last_seen ? new Date(r.last_seen).toISOString() : null,
       status: r.status as "online" | "offline",
+
+      clientId: r.client_id ?? null,
+      siteId: r.site_id ?? null,
+
       client: r.client ?? null,
       site: r.site ?? null,
+
       user: r.user ?? null,
       version: r.version ?? null,
       primaryIp: r.primary_ip ?? null,
@@ -260,8 +348,6 @@ export class DevicesService {
    * Accepts either:
    * - a devices.id UUID
    * - or an agents.id (because your UI/device pages often use the agent row id)
-   *
-   * It updates public.devices.site_id (if the device row exists).
    */
   async moveToSite(deviceOrAgentId: string, targetSiteId: string): Promise<Device> {
     const rawId = String(deviceOrAgentId ?? "").trim();
@@ -315,7 +401,6 @@ export class DevicesService {
       [deviceId, siteId]
     );
 
-    // Return updated (now includes client/site names due to joins)
     const updated = (await this.getOne(rawId)) || (await this.getOne(deviceId));
     if (!updated) throw new NotFoundException("Device not found after update");
     return updated;
@@ -339,11 +424,11 @@ export class DevicesService {
     return null;
   }
 
-  // NEW: create uninstall job in a simple job queue
+  // create uninstall job in a simple job queue
   async requestUninstall(id: string, body: { name: string; version?: string | null }): Promise<string> {
     // ensure agent exists
     const { rows: arows } = await this.pg.query(`SELECT id FROM public.agents WHERE id::text = $1`, [id]);
-    const agentId: number | undefined = arows[0]?.id;
+    const agentId: string | undefined = arows[0]?.id;
     if (!agentId) throw new NotFoundException("Agent not found");
 
     const payload = {
