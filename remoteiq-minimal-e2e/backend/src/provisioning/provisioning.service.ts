@@ -339,34 +339,156 @@ function Stop-AgentProcesses {
   }
 }
 
-function Wait-ServiceGone {
-  param([string]$ServiceName, [int]$Seconds = 30)
+function Service-Exists {
+  param([string]$ServiceName)
+  $out = (sc.exe query $ServiceName 2>&1 | Out-String)
+  if ($out -match "SERVICE_NAME") { return $true }
+  if ($out -match "1060") { return $false } # does not exist
+  return $false
+}
 
+function Wait-ServiceNotExists {
+  param([string]$ServiceName, [int]$Seconds = 45)
   $deadline = (Get-Date).AddSeconds($Seconds)
   while ((Get-Date) -lt $deadline) {
-    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if (-not $svc) { return $true }
+    if (-not (Service-Exists -ServiceName $ServiceName)) { return $true }
     Start-Sleep -Milliseconds 500
   }
   return $false
 }
 
-function Ensure-ServiceCreated {
-  param([string]$ServiceName, [string]$BinPath, [string]$DisplayName, [string]$Description)
+function Force-DeleteService {
+  param([string]$ServiceName)
 
-  # sc.exe is picky: needs "binPath= <value>" with a space after '='
-  $createOut = (sc.exe create $ServiceName binPath= $BinPath start= auto DisplayName= "$DisplayName" 2>&1 | Out-String)
-  Write-Log "sc.exe create output: $($createOut.Trim())"
-  if ($LASTEXITCODE -ne 0) {
-    Fail "sc.exe create failed (exit=$LASTEXITCODE). Output: $($createOut.Trim())"
+  Write-Log "Force-delete attempting for service: $ServiceName"
+
+  # Stop service best-effort
+  try {
+    $stopOut = (sc.exe stop $ServiceName 2>&1 | Out-String)
+    Write-Log "sc.exe stop output: $($stopOut.Trim())"
+  } catch {}
+
+  Start-Sleep -Milliseconds 800
+
+  # Kill known agent processes
+  Stop-AgentProcesses
+  Start-Sleep -Milliseconds 400
+
+  # Standard delete
+  try {
+    $delOut = (sc.exe delete $ServiceName 2>&1 | Out-String)
+    Write-Log "sc.exe delete output: $($delOut.Trim())"
+  } catch {}
+
+  Start-Sleep -Seconds 1
+
+  # CIM/WMI delete fallback (similar to many GUI/tooling paths)
+  try {
+    $svc = Get-CimInstance Win32_Service -Filter ("Name='" + $ServiceName + "'") -ErrorAction SilentlyContinue
+    if ($svc) {
+      $r = Invoke-CimMethod -InputObject $svc -MethodName Delete -ErrorAction SilentlyContinue
+      Write-Log "CIM Delete() invoked. ReturnValue=$($r.ReturnValue)"
+    }
+  } catch {
+    Write-Log "CIM Delete() error (ignored): $($_.Exception.Message)"
   }
 
-  # Verify the service exists now (avoid silent failures)
-  $exists = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-  if (-not $exists) {
-    $qcOut = (sc.exe qc $ServiceName 2>&1 | Out-String)
-    Write-Log "sc.exe qc output: $($qcOut.Trim())"
-    Fail "Service was not created successfully (Get-Service cannot find '$ServiceName')."
+  Start-Sleep -Milliseconds 800
+
+  # Registry cleanup fallback (aggressive; requires admin)
+  try {
+    $regPath = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\$ServiceName"
+    if (Test-Path $regPath) {
+      Write-Log "Removing registry key: $regPath"
+      Remove-Item -Path $regPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  } catch {
+    Write-Log "Registry cleanup error (ignored): $($_.Exception.Message)"
+  }
+
+  # Wait for SCM to release it
+  $gone = Wait-ServiceNotExists -ServiceName $ServiceName -Seconds 45
+  if ($gone) {
+    Write-Log "Force-delete success: service no longer exists."
+    return $true
+  }
+
+  Write-Log "Force-delete could not fully remove service (likely marked for deletion)."
+  return $false
+}
+
+function Ensure-ServiceConfigOrCreate {
+  param(
+    [string]$ServiceName,
+    [string]$BinPath,
+    [string]$DisplayName,
+    [string]$Description,
+    [bool]$ForceDeleteOnConflict
+  )
+
+  if (Service-Exists -ServiceName $ServiceName) {
+    Write-Log "Service exists; updating config..."
+    $cfgOut = (sc.exe config $ServiceName binPath= $BinPath start= auto DisplayName= "$DisplayName" 2>&1 | Out-String)
+    Write-Log "sc.exe config output: $($cfgOut.Trim())"
+    if ($LASTEXITCODE -ne 0) { Fail "sc.exe config failed (exit=$LASTEXITCODE). Output: $($cfgOut.Trim())" }
+
+    $descOut = (sc.exe description $ServiceName "$Description" 2>&1 | Out-String)
+    Write-Log "sc.exe description output: $($descOut.Trim())"
+    return
+  }
+
+  Write-Log "Service does not exist; creating..."
+  $createOut = (sc.exe create $ServiceName binPath= $BinPath start= auto DisplayName= "$DisplayName" 2>&1 | Out-String)
+  Write-Log "sc.exe create output: $($createOut.Trim())"
+
+  if ($LASTEXITCODE -eq 1078) {
+    Write-Log "CreateService FAILED 1078: name or display name collision."
+
+    # If name collision (service exists even though our check didn't see it), try force delete then retry create
+    $nameExists = Service-Exists -ServiceName $ServiceName
+    if ($nameExists -and $ForceDeleteOnConflict) {
+      Write-Log "Service name appears to exist. Attempting force-delete fallback..."
+      $deleted = Force-DeleteService -ServiceName $ServiceName
+      if ($deleted) {
+        Write-Log "Retrying service creation after force-delete..."
+        $createOut2 = (sc.exe create $ServiceName binPath= $BinPath start= auto DisplayName= "$DisplayName" 2>&1 | Out-String)
+        Write-Log "sc.exe create output (retry): $($createOut2.Trim())"
+        if ($LASTEXITCODE -eq 0) {
+          $descOut2 = (sc.exe description $ServiceName "$Description" 2>&1 | Out-String)
+          Write-Log "sc.exe description output: $($descOut2.Trim())"
+          return
+        }
+        Write-Log "Create retry still failing (exit=$LASTEXITCODE). Falling back to config/update if service exists..."
+      }
+    }
+
+    # DisplayName collision: keep service name, pick a unique display name
+    if (-not (Service-Exists -ServiceName $ServiceName)) {
+      $altDisplay = "$DisplayName ($ServiceName)"
+      Write-Log "Retrying create with DisplayName='$altDisplay'..."
+      $createOut3 = (sc.exe create $ServiceName binPath= $BinPath start= auto DisplayName= "$altDisplay" 2>&1 | Out-String)
+      Write-Log "sc.exe create output (display retry): $($createOut3.Trim())"
+      if ($LASTEXITCODE -ne 0) {
+        Fail "sc.exe create failed (exit=$LASTEXITCODE). Output: $($createOut3.Trim())"
+      }
+      $descOut3 = (sc.exe description $ServiceName "$Description" 2>&1 | Out-String)
+      Write-Log "sc.exe description output: $($descOut3.Trim())"
+      return
+    }
+
+    # Service exists after all -> update config as last resort
+    Write-Log "Service exists after collision. Falling back to sc.exe config..."
+    $cfgOut2 = (sc.exe config $ServiceName binPath= $BinPath start= auto DisplayName= "$DisplayName" 2>&1 | Out-String)
+    Write-Log "sc.exe config output (fallback): $($cfgOut2.Trim())"
+    if ($LASTEXITCODE -ne 0) { Fail "sc.exe config failed (exit=$LASTEXITCODE). Output: $($cfgOut2.Trim())" }
+
+    $descOut4 = (sc.exe description $ServiceName "$Description" 2>&1 | Out-String)
+    Write-Log "sc.exe description output: $($descOut4.Trim())"
+    return
+  }
+
+  if ($LASTEXITCODE -ne 0) {
+    Fail "sc.exe create failed (exit=$LASTEXITCODE). Output: $($createOut.Trim())"
   }
 
   $descOut = (sc.exe description $ServiceName "$Description" 2>&1 | Out-String)
@@ -376,6 +498,9 @@ function Ensure-ServiceCreated {
 $BundleId = "${safeBundleId}"
 $DownloadToken = "${safeToken}"
 $EnrollmentKey = "${safeKey}"
+
+# DEV/TEST flag: when true, we will attempt aggressive "manual-style" service deletion on name collision.
+$ForceDeleteServiceOnConflict = $true
 
 # Server base URL (prefer baked baseUrl; if empty, prompt)
 $ServerBaseUrl = "${safeBaseUrl}"
@@ -442,32 +567,16 @@ Retry -Attempts 8 -DelaySeconds 6 -Script {
 if (!(Test-Path $ZipPath)) { Fail "Download failed: $ZipPath not found after download." }
 Write-Log "Download complete."
 
-# Extract agent
 Write-Log "Extracting agent to: $InstallDir"
 
-# Stop service/process BEFORE overwriting files
+# Stop service/process BEFORE overwriting files (best-effort)
 $ServiceName = "RemoteIQAgent"
-$svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($svc) {
+if (Service-Exists -ServiceName $ServiceName) {
   try {
-    if ($svc.Status -eq "Running") {
-      Write-Log "Stopping existing service..."
-      Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-      Start-Sleep -Seconds 2
-    }
-  } catch {
-    Write-Log "Warning: failed to stop service: $($_.Exception.Message)"
-  }
-
-  Write-Log "Deleting existing service..."
-  $delOut = (sc.exe delete $ServiceName 2>&1 | Out-String)
-  Write-Log "sc.exe delete output: $($delOut.Trim())"
+    $stopOut = (sc.exe stop $ServiceName 2>&1 | Out-String)
+    Write-Log "sc.exe stop output: $($stopOut.Trim())"
+  } catch {}
   Start-Sleep -Seconds 1
-
-  # Wait until the service is actually gone (avoid 'marked for deletion')
-  if (-not (Wait-ServiceGone -ServiceName $ServiceName -Seconds 30)) {
-    Fail "Service '$ServiceName' still exists after delete (likely marked for deletion). Reboot or wait longer and retry."
-  }
 }
 
 Stop-AgentProcesses
@@ -498,7 +607,7 @@ if (-not $AgentExe) {
 }
 Write-Log "Agent executable: $AgentExe"
 
-# Install service
+# Install service (prefer NSSM if shipped)
 $ServiceDisplay = "RemoteIQ Agent"
 $ServiceDesc = "RemoteIQ endpoint agent"
 
@@ -510,12 +619,11 @@ if (Test-Path $NssmPath) {
   & $NssmPath set $ServiceName DisplayName $ServiceDisplay | Out-Null
   & $NssmPath set $ServiceName Start SERVICE_AUTO_START | Out-Null
 } else {
-  Write-Log "nssm.exe not present. Registering service via sc.exe (agent must be service-capable)."
+  Write-Log "nssm.exe not present. Using sc.exe create/config."
   $binPath = '"' + $AgentExe + '"'
-  Ensure-ServiceCreated -ServiceName $ServiceName -BinPath $binPath -DisplayName $ServiceDisplay -Description $ServiceDesc
+  Ensure-ServiceConfigOrCreate -ServiceName $ServiceName -BinPath $binPath -DisplayName $ServiceDisplay -Description $ServiceDesc -ForceDeleteOnConflict $ForceDeleteServiceOnConflict
 }
 
-# Start + verify
 Write-Log "Starting service..."
 $startOut = (sc.exe start $ServiceName 2>&1 | Out-String)
 Write-Log "sc.exe start output: $($startOut.Trim())"
@@ -593,7 +701,6 @@ echo "DeviceId: $DEVICE_ID"
     return { filename, contentType: "text/plain; charset=utf-8", content };
   }
 
-  // ✅ FIX: accept derivedBaseUrl as optional 2nd arg (matches your controller)
   async createInstallerBundle(
     dto: CreateInstallerBundleDto,
     derivedBaseUrl?: string | null
