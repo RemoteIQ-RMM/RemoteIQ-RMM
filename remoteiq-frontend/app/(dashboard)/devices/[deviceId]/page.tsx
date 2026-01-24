@@ -38,6 +38,26 @@ const dtFmt = new Intl.DateTimeFormat("en-US", {
     hour12: true,
 });
 
+function formatLastSeenSafe(input?: unknown): string {
+    if (input == null) return "—";
+
+    const raw = String(input).trim();
+    const low = raw.toLowerCase();
+
+    // handle common “missing” string values
+    if (!raw || low === "null" || low === "undefined" || low === "nan") return "—";
+
+    const d = new Date(raw);
+    const t = d.getTime();
+    if (!Number.isFinite(t)) return "—";
+
+    try {
+        return dtFmt.format(d).replace(",", " -");
+    } catch {
+        return "—";
+    }
+}
+
 type BadgeStatus = "healthy" | "warning" | "critical" | "offline";
 function normalizeStatus(s?: string): BadgeStatus {
     switch ((s || "").toLowerCase()) {
@@ -56,7 +76,12 @@ function normalizeStatus(s?: string): BadgeStatus {
 
 export default function DeviceDetailPage({ params }: { params: { deviceId: string } }) {
     const { masterDevices, filteredDevices } = useDashboard();
-    const devices = masterDevices?.length ? masterDevices : filteredDevices;
+
+    // ✅ Make "devices" stable so it doesn't trip react-hooks/exhaustive-deps
+    const devices = React.useMemo(
+        () => (masterDevices?.length ? masterDevices : filteredDevices) ?? [],
+        [masterDevices, filteredDevices]
+    );
 
     // Local (dashboard) device if present
     const localDevice: UiDevice | undefined = React.useMemo(
@@ -89,7 +114,8 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     primaryIp: apiDevice.primaryIp,
                     version: apiDevice.version,
                     user: apiDevice.user,
-                    agentUuid: (apiDevice as any)?.agentUuid ?? (localDevice as any)?.agentUuid ?? null,
+                    agentUuid:
+                        (apiDevice as any)?.agentUuid ?? (localDevice as any)?.agentUuid ?? null,
                 }
                 : {
                     agentUuid: (localDevice as any)?.agentUuid ?? null,
@@ -166,8 +192,8 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
 
     const badgeStatus: BadgeStatus = normalizeStatus(device.status as unknown as string);
 
-    const lastSeenIso = (device as any).lastResponse as string | null;
-    const lastSeenStr = lastSeenIso ? dtFmt.format(new Date(lastSeenIso)).replace(",", " -") : "—";
+    const lastSeenIso = (device as any).lastResponse as string | null | undefined;
+    const lastSeenStr = formatLastSeenSafe(lastSeenIso);
 
     const os = (device as any).os ?? "Unknown";
     const arch = (device as any).arch ?? "—";
@@ -195,7 +221,9 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                             </BreadcrumbItem>
                             <BreadcrumbSeparator />
                             <BreadcrumbItem>
-                                <BreadcrumbPage>{(device as any).alias || (device as any).hostname}</BreadcrumbPage>
+                                <BreadcrumbPage>
+                                    {(device as any).alias || (device as any).hostname}
+                                </BreadcrumbPage>
                             </BreadcrumbItem>
                         </BreadcrumbList>
                     </Breadcrumb>
@@ -318,7 +346,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                         <RemoteTab />
                     </TabsContent>
                     <TabsContent value="checks">
-                        <ChecksAndAlertsTab />
+                        <ChecksAndAlertsTab deviceId={params.deviceId} />
                     </TabsContent>
                     <TabsContent value="patch">
                         <PatchTab />

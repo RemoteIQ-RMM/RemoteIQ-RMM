@@ -3,13 +3,15 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { PgPoolService } from "../storage/pg-pool.service";
 
 export type Device = {
-  id: string;                 // agent id when present, else devices.id
-  deviceId?: string | null;   // ALWAYS the underlying public.devices.id (uuid)
+  id: string; // agent id when present, else devices.id
+  deviceId?: string | null; // ALWAYS the underlying public.devices.id (uuid)
   hostname: string;
   os: string;
   arch?: string | null;
   lastSeen: string | null;
   status: "online" | "offline";
+
+  deletionStatus?: "pending" | null;
 
   clientId?: string | null;
   siteId?: string | null;
@@ -21,7 +23,7 @@ export type Device = {
   version?: string | null;
   primaryIp?: string | null;
 
-  agentUuid?: string | null;  // present when sourced from agents
+  agentUuid?: string | null; // present when sourced from agents
 };
 
 function decodeCursor(cur?: string | null) {
@@ -39,7 +41,36 @@ function encodeCursor(n: number) {
 
 @Injectable()
 export class DevicesService {
+  private deletionTableReady = false;
+
   constructor(private readonly pg: PgPoolService) { }
+
+  private async ensureDeviceDeletionRequestsTable(): Promise<void> {
+    if (this.deletionTableReady) return;
+
+    // NOTE: gen_random_uuid() requires pgcrypto extension.
+    // If you don't have it enabled, you'll need:
+    //   CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    await this.pg.query(`
+      CREATE TABLE IF NOT EXISTS public.device_deletion_requests (
+        id uuid PRIMARY KEY,
+        device_id uuid NOT NULL UNIQUE,
+        status text NOT NULL, -- 'pending' | 'completed'
+        requested_by_user_id uuid NULL,
+        requested_at timestamptz NOT NULL DEFAULT NOW(),
+        approved_by_user_id uuid NULL,
+        approved_at timestamptz NULL,
+        completed_at timestamptz NULL
+      );
+    `);
+
+    await this.pg.query(`
+      CREATE INDEX IF NOT EXISTS device_deletion_requests_status_idx
+      ON public.device_deletion_requests (status);
+    `);
+
+    this.deletionTableReady = true;
+  }
 
   async list(opts: {
     pageSize: number;
@@ -48,6 +79,8 @@ export class DevicesService {
     status?: "online" | "offline";
     os?: string[];
   }): Promise<{ items: Device[]; nextCursor: string | null }> {
+    await this.ensureDeviceDeletionRequestsTable();
+
     const { pageSize, cursor, q, status, os } = opts;
     const offset = decodeCursor(cursor);
 
@@ -99,6 +132,9 @@ export class DevicesService {
           c.name::text AS client,
           s.name::text AS site,
 
+          -- deletion status (pending only)
+          dr.status::text AS deletion_status,
+
           -- agent-reported logged in user
           COALESCE(
             NULLIF(a.facts->>'user', ''),
@@ -114,6 +150,8 @@ export class DevicesService {
         LEFT JOIN public.devices d ON d.id = a.device_id
         LEFT JOIN public.sites   s ON s.id = d.site_id
         LEFT JOIN public.clients c ON c.id = s.client_id
+        LEFT JOIN public.device_deletion_requests dr
+          ON dr.device_id = d.id AND dr.status = 'pending'
       ),
       device_rows AS (
         SELECT
@@ -130,6 +168,9 @@ export class DevicesService {
           c.name::text          AS client,
           s.name::text          AS site,
 
+          -- deletion status (pending only)
+          dr.status::text       AS deletion_status,
+
           NULL::text            AS "user",
           NULL::text            AS version,
           NULL::text            AS primary_ip,
@@ -137,6 +178,8 @@ export class DevicesService {
         FROM public.devices d
         LEFT JOIN public.sites   s ON s.id = d.site_id
         LEFT JOIN public.clients c ON c.id = s.client_id
+        LEFT JOIN public.device_deletion_requests dr
+          ON dr.device_id = d.id AND dr.status = 'pending'
         WHERE NOT EXISTS (
           SELECT 1 FROM public.agents a
           WHERE a.device_id = d.id
@@ -159,6 +202,7 @@ export class DevicesService {
         site_id,
         client,
         site,
+        deletion_status,
         "user",
         version,
         primary_ip,
@@ -181,6 +225,8 @@ export class DevicesService {
       lastSeen: r.last_seen ? new Date(r.last_seen).toISOString() : null,
       status: r.status as "online" | "offline",
 
+      deletionStatus: (r.deletion_status ?? null) as "pending" | null,
+
       clientId: r.client_id ?? null,
       siteId: r.site_id ?? null,
 
@@ -197,6 +243,8 @@ export class DevicesService {
   }
 
   async getOne(id: string): Promise<Device | null> {
+    await this.ensureDeviceDeletionRequestsTable();
+
     const sql = `
       WITH rows AS (
         SELECT
@@ -220,6 +268,8 @@ export class DevicesService {
           c.name::text AS client,
           s.name::text AS site,
 
+          dr.status::text AS deletion_status,
+
           COALESCE(
             NULLIF(a.facts->>'user', ''),
             NULLIF(a.facts->>'logged_in_user', ''),
@@ -232,6 +282,8 @@ export class DevicesService {
         LEFT JOIN public.devices d ON d.id = a.device_id
         LEFT JOIN public.sites   s ON s.id = d.site_id
         LEFT JOIN public.clients c ON c.id = s.client_id
+        LEFT JOIN public.device_deletion_requests dr
+          ON dr.device_id = d.id AND dr.status = 'pending'
         WHERE a.id::text = $1 OR a.device_id::text = $1
 
         UNION ALL
@@ -251,6 +303,8 @@ export class DevicesService {
           c.name::text AS client,
           s.name::text AS site,
 
+          dr.status::text AS deletion_status,
+
           NULL::text AS "user",
           NULL::text AS version,
           NULL::text AS primary_ip,
@@ -258,6 +312,8 @@ export class DevicesService {
         FROM public.devices d
         LEFT JOIN public.sites   s ON s.id = d.site_id
         LEFT JOIN public.clients c ON c.id = s.client_id
+        LEFT JOIN public.device_deletion_requests dr
+          ON dr.device_id = d.id AND dr.status = 'pending'
         WHERE d.id::text = $1
       )
       SELECT
@@ -272,6 +328,7 @@ export class DevicesService {
         site_id,
         client,
         site,
+        deletion_status,
         "user",
         version,
         primary_ip,
@@ -294,6 +351,8 @@ export class DevicesService {
       lastSeen: r.last_seen ? new Date(r.last_seen).toISOString() : null,
       status: r.status as "online" | "offline",
 
+      deletionStatus: (r.deletion_status ?? null) as "pending" | null,
+
       clientId: r.client_id ?? null,
       siteId: r.site_id ?? null,
 
@@ -305,6 +364,96 @@ export class DevicesService {
       primaryIp: r.primary_ip ?? null,
       agentUuid: r.agent_uuid ?? null,
     };
+  }
+
+  async requestDeviceDeletion(deviceOrAgentId: string, requestedByUserId: string | null) {
+    await this.ensureDeviceDeletionRequestsTable();
+
+    const deviceId = await this.resolveDeviceRowId(String(deviceOrAgentId ?? "").trim());
+    if (!deviceId) throw new NotFoundException("Device not found");
+
+    const reqRes = await this.pg.query<{ id: string; status: string }>(
+      `
+      INSERT INTO public.device_deletion_requests (id, device_id, status, requested_by_user_id)
+      VALUES (gen_random_uuid(), $1::uuid, 'pending', $2::uuid)
+      ON CONFLICT (device_id) DO UPDATE
+        SET status = CASE
+          WHEN public.device_deletion_requests.status = 'completed' THEN 'pending'
+          ELSE public.device_deletion_requests.status
+        END
+      RETURNING id::text AS id, status::text AS status
+      `,
+      [deviceId, requestedByUserId]
+    );
+
+    return { deviceId, status: (reqRes.rows[0]?.status ?? "pending") as "pending" };
+  }
+
+  async approveAndDeleteDevice(deviceOrAgentId: string, approvedByUserId: string | null) {
+    await this.ensureDeviceDeletionRequestsTable();
+
+    const rawId = String(deviceOrAgentId ?? "").trim();
+    const deviceId = await this.resolveDeviceRowId(rawId);
+    if (!deviceId) throw new NotFoundException("Device not found");
+
+    await this.pg.query("BEGIN");
+    try {
+      // Ensure a pending row exists (so approvals can happen even if no one requested)
+      await this.pg.query(
+        `
+        INSERT INTO public.device_deletion_requests (id, device_id, status, requested_by_user_id, requested_at)
+        VALUES (gen_random_uuid(), $1::uuid, 'pending', NULL, NOW())
+        ON CONFLICT (device_id) DO NOTHING
+        `,
+        [deviceId]
+      );
+
+      await this.pg.query(
+        `
+        UPDATE public.device_deletion_requests
+           SET approved_by_user_id = $2::uuid,
+               approved_at = NOW()
+         WHERE device_id = $1::uuid
+           AND status = 'pending'
+        `,
+        [deviceId, approvedByUserId]
+      );
+
+      // Find any agents for this device
+      const agentRows = await this.pg.query<{ id: string }>(
+        `SELECT a.id::text AS id FROM public.agents a WHERE a.device_id = $1::uuid`,
+        [deviceId]
+      );
+      const agentIds = agentRows.rows.map((r) => r.id);
+
+      // Delete agent-dependent data first (best-effort)
+      if (agentIds.length) {
+        await this.pg.query(`DELETE FROM public.agent_software WHERE agent_id = ANY($1::uuid[])`, [agentIds]);
+        await this.pg.query(`DELETE FROM public.agent_jobs     WHERE agent_id = ANY($1::uuid[])`, [agentIds]);
+      }
+
+      // Delete agents then device row
+      await this.pg.query(`DELETE FROM public.agents  WHERE device_id = $1::uuid`, [deviceId]);
+      await this.pg.query(`DELETE FROM public.devices WHERE id = $1::uuid`, [deviceId]);
+
+      // Mark completed
+      await this.pg.query(
+        `
+        UPDATE public.device_deletion_requests
+           SET status = 'completed',
+               completed_at = NOW()
+         WHERE device_id = $1::uuid
+        `,
+        [deviceId]
+      );
+
+      await this.pg.query("COMMIT");
+    } catch (e) {
+      await this.pg.query("ROLLBACK");
+      throw e;
+    }
+
+    return { deleted: true, deviceId };
   }
 
   async listSoftware(

@@ -114,6 +114,11 @@ export const PERMISSION_GROUPS = [
                 label: "Run device actions",
                 description: "Reboot, patch, uninstall software, etc.",
             },
+            {
+                key: "devices.delete",
+                label: "Delete devices (approve/finalize)",
+                description: "Approve and finalize deletion of a device endpoint.",
+            },
         ] as const,
     },
 
@@ -247,6 +252,7 @@ export const rolePermissions: Record<Role, Permission[]> = {
         "devices.read",
         "devices.write",
         "devices.actions",
+        "devices.delete",
 
         "checks.read",
         "checks.run",

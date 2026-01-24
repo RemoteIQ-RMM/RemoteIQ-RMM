@@ -22,7 +22,11 @@ import {
     MoveRight,
     MapPin,
     CheckCircle2,
+    Trash2,
 } from "lucide-react";
+
+import { hasPerm } from "@/lib/permissions";
+import { requestDeviceDeletion, approveDeviceDeletion } from "@/lib/device-deletion";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -33,14 +37,7 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -102,11 +99,7 @@ function subscribePlacement(cb: () => void) {
 }
 
 function usePlacementOverride(deviceId: string) {
-    React.useSyncExternalStore(
-        subscribePlacement,
-        () => placementVersion,
-        () => 0
-    );
+    React.useSyncExternalStore(subscribePlacement, () => placementVersion, () => 0);
     return placementOverrides.get(String(deviceId ?? "").trim()) ?? null;
 }
 
@@ -263,7 +256,21 @@ function RowActions({ device }: { device: Device }) {
     const router = useRouter();
     const pathname = usePathname();
     const searchParams = useSearchParams();
-    const { updateDeviceAlias } = useDashboard();
+
+    const dash = useDashboard() as any;
+    const updateDeviceAlias = dash?.updateDeviceAlias as (id: string, alias: string | null) => void;
+
+    const myPerms =
+        dash?.me?.permissions ??
+        dash?.me?.perms ??
+        dash?.permissions ??
+        dash?.perms ??
+        dash?.me?.rolePermissions ??
+        [];
+
+    const canFinalizeDelete = hasPerm(myPerms, "devices.delete");
+    const deletionStatusRaw = String((device as any)?.deletionStatus ?? "").trim().toLowerCase();
+    const isDeletionPending = deletionStatusRaw === "pending";
 
     const [menuOpen, setMenuOpen] = React.useState(false);
 
@@ -271,6 +278,10 @@ function RowActions({ device }: { device: Device }) {
     const [aliasOpen, setAliasOpen] = React.useState(false);
     const [aliasValue, setAliasValue] = React.useState(device.alias ?? "");
     const [confirmClearOpen, setConfirmClearOpen] = React.useState(false);
+
+    // Delete/request deletion
+    const [deleteOpen, setDeleteOpen] = React.useState(false);
+    const [deleteLoading, setDeleteLoading] = React.useState(false);
 
     // Move-to-site dialog (same-client only)
     const [moveOpen, setMoveOpen] = React.useState(false);
@@ -360,15 +371,13 @@ function RowActions({ device }: { device: Device }) {
 
             let match = clients.find((c) => normalizeName(c.name) === targetNorm);
             if (!match) {
-                match = clients.find(
-                    (c) =>
-                        normalizeName(c.name).includes(targetNorm) ||
-                        targetNorm.includes(normalizeName(c.name))
-                );
+                match = clients.find((c) => normalizeName(c.name).includes(targetNorm) || targetNorm.includes(normalizeName(c.name)));
             }
 
             if (!match?.id) {
-                toast.error(`Could not find clientId for “${currentClientName}”. Make sure the client list contains this name.`);
+                toast.error(
+                    `Could not find clientId for “${currentClientName}”. Make sure the client list contains this name.`
+                );
                 return;
             }
 
@@ -440,6 +449,33 @@ function RowActions({ device }: { device: Device }) {
             toast.error(e?.message || "Failed to move device");
         } finally {
             setMoveLoading(false);
+        }
+    };
+
+    const openDeleteDialog = () => {
+        setMenuOpen(false);
+        setDeleteOpen(true);
+    };
+
+    const doDeleteOrRequest = async () => {
+        try {
+            setDeleteLoading(true);
+
+            if (canFinalizeDelete) {
+                await approveDeviceDeletion(device.id);
+                toast.success("Device deleted");
+            } else {
+                await requestDeviceDeletion(device.id);
+                toast.success("Deletion requested (pending approval)");
+            }
+
+            setDeleteOpen(false);
+            // best-effort refresh
+            (router as any)?.refresh?.();
+        } catch (e: any) {
+            toast.error(e?.message || "Delete action failed");
+        } finally {
+            setDeleteLoading(false);
         }
     };
 
@@ -525,6 +561,26 @@ function RowActions({ device }: { device: Device }) {
 
                     <DropdownMenuSeparator />
 
+                    {isDeletionPending ? (
+                        <DropdownMenuItem disabled>
+                            <CheckCircle2 className="mr-2 h-4 w-4" />
+                            DELETION PENDING
+                        </DropdownMenuItem>
+                    ) : null}
+
+                    <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onSelect={(e) => {
+                            e.preventDefault();
+                            openDeleteDialog();
+                        }}
+                    >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        {canFinalizeDelete ? (isDeletionPending ? "Approve & delete…" : "Delete device…") : "Request deletion…"}
+                    </DropdownMenuItem>
+
+                    <DropdownMenuSeparator />
+
                     <DropdownMenuItem
                         onSelect={(e) => {
                             e.preventDefault();
@@ -559,14 +615,38 @@ function RowActions({ device }: { device: Device }) {
                 </DropdownMenuContent>
             </DropdownMenu>
 
+            {/* Delete / Request Deletion confirm */}
+            <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+                <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>{canFinalizeDelete ? "Delete this device?" : "Request device deletion?"}</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {canFinalizeDelete
+                                ? "This will permanently remove the device endpoint and associated agent records."
+                                : "This will mark the device as DELETION PENDING. A user with delete permission must approve and finalize the deletion."}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={deleteLoading}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            disabled={deleteLoading}
+                            onClick={doDeleteOrRequest}
+                            title={canFinalizeDelete ? "Delete device" : "Request deletion"}
+                        >
+                            {deleteLoading ? "Working…" : canFinalizeDelete ? "Delete" : "Request"}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
             {/* Move-to-site dialog */}
             <Dialog open={moveOpen} onOpenChange={setMoveOpen}>
                 <DialogContent onClick={(e) => e.stopPropagation()} className="sm:max-w-[560px]">
                     <DialogHeader>
                         <DialogTitle>Move device to a new site</DialogTitle>
-                        <DialogDescription>
-                            You can only move this device within its current client.
-                        </DialogDescription>
+                        <DialogDescription>You can only move this device within its current client.</DialogDescription>
                     </DialogHeader>
 
                     <div className="space-y-4 py-2">
@@ -591,13 +671,8 @@ function RowActions({ device }: { device: Device }) {
                             <div className="text-xs text-muted-foreground">{device.hostname}</div>
                             <div className="mt-2 text-xs text-muted-foreground">
                                 Current:{" "}
-                                <span className="font-medium text-foreground">
-                                    {moveClientName || currentClientName || "—"}
-                                </span>{" "}
-                                →{" "}
-                                <span className="font-medium text-foreground">
-                                    {currentSiteName || "—"}
-                                </span>
+                                <span className="font-medium text-foreground">{moveClientName || currentClientName || "—"}</span> →{" "}
+                                <span className="font-medium text-foreground">{currentSiteName || "—"}</span>
                             </div>
                         </div>
 
@@ -607,9 +682,7 @@ function RowActions({ device }: { device: Device }) {
                                 <MapPin className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
                                 <div className="text-sm font-medium">Site</div>
                                 {(moveClientName || currentClientName) ? (
-                                    <span className="text-xs text-muted-foreground">
-                                        for {moveClientName || currentClientName}
-                                    </span>
+                                    <span className="text-xs text-muted-foreground">for {moveClientName || currentClientName}</span>
                                 ) : null}
                             </div>
 
@@ -673,19 +746,10 @@ function RowActions({ device }: { device: Device }) {
                     </div>
 
                     <DialogFooter>
-                        <Button
-                            variant="outline"
-                            onClick={() => setMoveOpen(false)}
-                            disabled={moveLoading}
-                            title="Cancel"
-                        >
+                        <Button variant="outline" onClick={() => setMoveOpen(false)} disabled={moveLoading} title="Cancel">
                             Cancel
                         </Button>
-                        <Button
-                            onClick={doMove}
-                            disabled={!selectedSiteId || moveLoading || !!moveSuccess}
-                            title="Move device"
-                        >
+                        <Button onClick={doMove} disabled={!selectedSiteId || moveLoading || !!moveSuccess} title="Move device">
                             {moveLoading ? "Moving…" : moveSuccess ? "Moved" : "Move"}
                         </Button>
                     </DialogFooter>

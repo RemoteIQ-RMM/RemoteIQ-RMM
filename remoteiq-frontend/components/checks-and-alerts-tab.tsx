@@ -3,14 +3,25 @@
 
 import * as React from "react";
 import { useParams } from "next/navigation";
+import { AlertTriangle, CheckCircle2, OctagonX, Info, Search, Filter, Ban, Download, Play } from "lucide-react";
+
+import { fetchDeviceChecks, type DeviceCheck } from "@/lib/api";
+
 import {
-    Card, CardHeader, CardTitle, CardDescription, CardContent,
+    Card,
+    CardHeader,
+    CardTitle,
+    CardDescription,
+    CardContent,
 } from "@/components/ui/card";
 import {
-    Table, TableHeader, TableRow, TableHead, TableBody, TableCell,
+    Table,
+    TableHeader,
+    TableRow,
+    TableHead,
+    TableBody,
+    TableCell,
 } from "@/components/ui/table";
-import { AlertTriangle, CheckCircle2, OctagonX, Info, Search, Filter, Ban, Download, Play } from "lucide-react";
-import { fetchDeviceChecks, type DeviceCheck } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -153,13 +164,21 @@ function truncate(str: string, max = 160) {
 
 function toCSV(items: AugmentedDeviceCheck[]) {
     const cols = [
-        "id", "name", "status", "type", "severity",
-        "category", "lastRun", "maintenance", "dedupeKey", "output",
+        "id",
+        "name",
+        "status",
+        "type",
+        "severity",
+        "category",
+        "lastRun",
+        "maintenance",
+        "dedupeKey",
+        "output",
     ];
     const esc = (v: any) => {
         if (v == null) return "";
         const s = String(v);
-        if (s.includes(",") || s.includes("\"") || s.includes("\n")) {
+        if (s.includes(",") || s.includes('"') || s.includes("\n")) {
             return `"${s.replace(/"/g, '""')}"`;
         }
         return s;
@@ -167,9 +186,16 @@ function toCSV(items: AugmentedDeviceCheck[]) {
     const header = cols.join(",");
     const lines = items.map((it) =>
         [
-            it.id, it.name, it.status, (it as any).type ?? "", (it as any).severity ?? "",
-            (it as any).category ?? "", it.lastRun ?? "", (it as any).maintenance ?? "",
-            (it as any).dedupeKey ?? "", it.output ?? "",
+            it.id,
+            it.name,
+            it.status,
+            (it as any).type ?? "",
+            (it as any).severity ?? "",
+            (it as any).category ?? "",
+            it.lastRun ?? "",
+            (it as any).maintenance ?? "",
+            (it as any).dedupeKey ?? "",
+            it.output ?? "",
         ].map(esc).join(",")
     );
     return [header, ...lines].join("\n");
@@ -191,9 +217,9 @@ function makeWsUrl(path = "/ws") {
 
 /* -------------------------------- component ------------------------------- */
 
-export default function ChecksAndAlertsTab() {
+export default function ChecksAndAlertsTab({ deviceId: deviceIdProp }: { deviceId?: string }) {
     const params = useParams<{ deviceId: string }>();
-    const deviceId = params?.deviceId;
+    const deviceId = deviceIdProp ?? params?.deviceId;
 
     const [items, setItems] = React.useState<AugmentedDeviceCheck[]>([]);
     const [loading, setLoading] = React.useState(false);
@@ -226,14 +252,12 @@ export default function ChecksAndAlertsTab() {
         }
     };
 
-    // ✅ Memoized stop/start heartbeat
     const stopHeartbeat = React.useCallback(() => {
         clearTimer(pingTimerRef);
     }, []);
 
     const startHeartbeat = React.useCallback(() => {
         stopHeartbeat();
-        // Send ping every 25s to keep idle proxies happy
         pingTimerRef.current = window.setTimeout(function tick() {
             try {
                 wsRef.current?.send(JSON.stringify({ t: "ping", at: new Date().toISOString() }));
@@ -242,24 +266,21 @@ export default function ChecksAndAlertsTab() {
         }, 25_000) as unknown as number;
     }, [stopHeartbeat]);
 
-    // ✅ Memoized reconnect scheduler using a ref to avoid circular deps
     const scheduleReconnect = React.useCallback(() => {
         clearTimer(reconnectTimerRef);
         const delay = Math.min(retryRef.current, 25_000);
         reconnectTimerRef.current = window.setTimeout(() => {
-            connectWsRef.current?.(); // call latest connectWs
+            connectWsRef.current?.();
             retryRef.current = Math.min(retryRef.current * 2, 25_000);
         }, delay) as unknown as number;
     }, []);
 
-    // Stable, memoized safe close
     const safeCloseWs = React.useCallback(() => {
         try { wsRef.current?.close(); } catch { /* ignore */ }
         wsRef.current = null;
         stopHeartbeat();
     }, [stopHeartbeat]);
 
-    // Subscribe helper (no need to memoize)
     const subscribeDevice = (id: string | null | undefined) => {
         const target = id ? String(id) : null;
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -271,14 +292,13 @@ export default function ChecksAndAlertsTab() {
         } catch { /* ignore */ }
     };
 
-    // ✅ Memoized incoming handler
     const refetchChecks = React.useCallback(async () => {
         if (!deviceId) return;
         try {
             setLoading(true);
             setError(null);
-            const { items } = await fetchDeviceChecks(deviceId);
-            setItems((items ?? []) as AugmentedDeviceCheck[]);
+            const res = await fetchDeviceChecks(deviceId);
+            setItems(((res as any)?.items ?? []) as AugmentedDeviceCheck[]);
         } catch (e: any) {
             setError(e?.message ?? "Failed to load checks");
         } finally {
@@ -308,22 +328,14 @@ export default function ChecksAndAlertsTab() {
                 }, 500) as unknown as number;
                 break;
             }
-            case "pong": {
-                break;
-            }
-            case "error": {
-                // eslint-disable-next-line no-console
-                console.warn("[UI WS] error:", (msg as any).message);
-                break;
-            }
+            case "pong":
             default:
                 break;
         }
     }, [deviceId, refetchChecks]);
 
-    // ✅ Memoized connect using memoized deps; store to ref for scheduler
     const connectWs = React.useCallback(() => {
-        if (!isVisible()) return; // don't connect while tab hidden
+        if (!isVisible()) return;
         try {
             safeCloseWs();
             const url = makeWsUrl("/ws");
@@ -331,7 +343,7 @@ export default function ChecksAndAlertsTab() {
             wsRef.current = ws;
 
             ws.addEventListener("open", () => {
-                retryRef.current = 1000; // reset backoff
+                retryRef.current = 1000;
                 startHeartbeat();
                 try {
                     ws.send(JSON.stringify({ t: "ui_hello" }));
@@ -352,22 +364,20 @@ export default function ChecksAndAlertsTab() {
         }
     }, [deviceId, handleIncoming, safeCloseWs, scheduleReconnect, startHeartbeat, stopHeartbeat]);
 
-    // Keep the latest connectWs in a ref (used by scheduleReconnect)
     React.useEffect(() => {
         connectWsRef.current = connectWs;
     }, [connectWs]);
-
-    /* ----------------------------- initial data load ----------------------------- */
 
     React.useEffect(() => {
         let alive = true;
         (async () => {
             if (!deviceId) return;
-            setLoading(true); setError(null);
+            setLoading(true);
+            setError(null);
             try {
-                const { items } = await fetchDeviceChecks(deviceId);
+                const res = await fetchDeviceChecks(deviceId);
                 if (!alive) return;
-                setItems((items ?? []) as AugmentedDeviceCheck[]);
+                setItems(((res as any)?.items ?? []) as AugmentedDeviceCheck[]);
             } catch (e: any) {
                 if (!alive) return;
                 setError(e?.message ?? "Failed to load checks");
@@ -378,22 +388,13 @@ export default function ChecksAndAlertsTab() {
         return () => { alive = false; };
     }, [deviceId]);
 
-    /* ----------------------------- ws lifecycle & vis ---------------------------- */
-
     React.useEffect(() => {
-        // Initial connect
         connectWs();
 
-        // Re-subscribe when deviceId changes
         if (deviceId) subscribeDevice(deviceId);
 
-        // Visibility handling (pause connections while hidden)
         const onVis = () => {
-            if (isVisible()) {
-                connectWsRef.current?.();
-            } else {
-                // optional: could safeCloseWs() to save resources
-            }
+            if (isVisible()) connectWsRef.current?.();
         };
         document.addEventListener("visibilitychange", onVis);
 
@@ -406,18 +407,15 @@ export default function ChecksAndAlertsTab() {
         };
     }, [deviceId, connectWs, safeCloseWs]);
 
-    // counts
     const failingChecks = items.filter((c) => c.status === "Failing").length;
     const warningChecks = items.filter((c) => c.status === "Warning").length;
 
-    // derive type list for filter menu
     const allTypes = React.useMemo(() => {
         const t = new Set<string>();
         for (const it of items) if ((it as any).type) t.add((it as any).type as string);
         return Array.from(t).sort();
     }, [items]);
 
-    // filtered view
     const filtered = items
         .filter((c) => (statusFilter === "all" ? true : c.status === statusFilter))
         .filter((c) => (severityFilter === "all" ? true : (c as any).severity === severityFilter))
@@ -425,7 +423,10 @@ export default function ChecksAndAlertsTab() {
         .filter((c) => {
             if (!q.trim()) return true;
             const hay = [
-                c.name, c.output ?? "", (c as any).type ?? "", (c as any).category ?? "",
+                c.name,
+                c.output ?? "",
+                (c as any).type ?? "",
+                (c as any).category ?? "",
                 Object.entries((c as any).metrics ?? {}).map(([k, v]) => `${k}:${v}`).join(" "),
                 Object.entries((c as any).thresholds ?? {}).map(([k, v]) => `${k}:${v}`).join(" "),
                 ((c as any).tags ?? []).join(" "),
@@ -438,7 +439,6 @@ export default function ChecksAndAlertsTab() {
             return db - da;
         });
 
-    const allSelected = filtered.length > 0 && filtered.every((r) => selectedIds.has(r.id));
     const toggleSelectAll = (checked: boolean) => {
         const next = new Set(selectedIds);
         if (checked) filtered.forEach((r) => next.add(r.id));
@@ -447,11 +447,11 @@ export default function ChecksAndAlertsTab() {
     };
     const toggleRow = (id: string, on: boolean) => {
         const next = new Set(selectedIds);
-        if (on) next.add(id); else next.delete(id);
+        if (on) next.add(id);
+        else next.delete(id);
         setSelectedIds(next);
     };
 
-    // CSV export
     const exportCSV = () => {
         const csv = toCSV(filtered);
         const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -463,24 +463,21 @@ export default function ChecksAndAlertsTab() {
         URL.revokeObjectURL(url);
     };
 
-    // NOTE: Bulk actions are UI-only for now (backend endpoints pending)
-    const bulkAck = () => { /* wire to /api/alerts/bulk when ready */ };
-    const bulkSilence = () => { /* wire to /api/alerts/bulk when ready */ };
-    const bulkResolve = () => { /* wire to /api/alerts/bulk when ready */ };
-    const runNow = (id: string) => { /* wire to /api/check-assignments/:id/run or /api/checks/:id/run */ };
+    const bulkAck = () => { /* pending */ };
+    const bulkSilence = () => { /* pending */ };
+    const bulkResolve = () => { /* pending */ };
+    const runNow = (id: string) => { /* pending */ };
 
     return (
         <TooltipProvider>
             <div className="grid gap-6">
                 <div className="grid md:grid-cols-2 gap-6">
-                    {/* Active Alerts */}
                     <Card>
                         <CardHeader>
                             <CardTitle>Active Alerts</CardTitle>
                             <CardDescription>A summary of checks that require attention.</CardDescription>
                         </CardHeader>
                         <CardContent className="grid gap-4">
-                            {/* Failing */}
                             <div className="flex items-center justify-between p-4 rounded-lg ring-1 ring-red-500/25 bg-red-500/10">
                                 <div className="flex items-center gap-4">
                                     <StatusGlyph status="Failing" className="scale-110" />
@@ -496,7 +493,6 @@ export default function ChecksAndAlertsTab() {
                                 </StatusCountBadge>
                             </div>
 
-                            {/* Warning */}
                             <div className="flex items-center justify-between p-4 rounded-lg ring-1 ring-amber-500/25 bg-amber-500/10">
                                 <div className="flex items-center gap-4">
                                     <StatusGlyph status="Warning" className="scale-110" />
@@ -514,7 +510,6 @@ export default function ChecksAndAlertsTab() {
                         </CardContent>
                     </Card>
 
-                    {/* Summary / Filters */}
                     <Card>
                         <CardHeader>
                             <CardTitle>Checks Summary</CardTitle>
@@ -527,7 +522,6 @@ export default function ChecksAndAlertsTab() {
                                 <div className="text-sm text-muted-foreground">No checks found.</div>
                             )}
 
-                            {/* Quick filters */}
                             <div className="flex flex-wrap items-center gap-2">
                                 <Button
                                     variant={statusFilter === "all" ? "default" : "secondary"}
@@ -560,7 +554,7 @@ export default function ChecksAndAlertsTab() {
 
                                 <Separator orientation="vertical" className="mx-1 h-6" />
 
-                                <div className="relative w/full sm:w-64">
+                                <div className="relative w-full sm:w-64">
                                     <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
                                     <Input
                                         className="pl-8"
@@ -585,17 +579,23 @@ export default function ChecksAndAlertsTab() {
                                                     size="sm"
                                                     variant={severityFilter === "all" ? "default" : "secondary"}
                                                     onClick={() => setSeverityFilter("all")}
-                                                >All</Button>
+                                                >
+                                                    All
+                                                </Button>
                                                 <Button
                                                     size="sm"
                                                     variant={severityFilter === "WARN" ? "default" : "secondary"}
                                                     onClick={() => setSeverityFilter("WARN")}
-                                                >WARN</Button>
+                                                >
+                                                    WARN
+                                                </Button>
                                                 <Button
                                                     size="sm"
                                                     variant={severityFilter === "CRIT" ? "destructive" : "secondary"}
                                                     onClick={() => setSeverityFilter("CRIT")}
-                                                >CRIT</Button>
+                                                >
+                                                    CRIT
+                                                </Button>
                                             </div>
 
                                             <Separator />
@@ -606,7 +606,9 @@ export default function ChecksAndAlertsTab() {
                                                     size="sm"
                                                     variant={typeFilter === "all" ? "default" : "secondary"}
                                                     onClick={() => setTypeFilter("all")}
-                                                >All</Button>
+                                                >
+                                                    All
+                                                </Button>
                                                 {allTypes.map((t) => (
                                                     <Button
                                                         key={t}
@@ -629,7 +631,6 @@ export default function ChecksAndAlertsTab() {
                                 </div>
                             </div>
 
-                            {/* Legend */}
                             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                 <Info className="h-4 w-4" />
                                 <span>Type/Severity/Thresholds/Metrics columns show when provided by backend.</span>
@@ -638,7 +639,6 @@ export default function ChecksAndAlertsTab() {
                     </Card>
                 </div>
 
-                {/* History / Results */}
                 <Card>
                     <CardHeader>
                         <CardTitle>Check History</CardTitle>
@@ -646,7 +646,6 @@ export default function ChecksAndAlertsTab() {
                     </CardHeader>
 
                     <CardContent className="overflow-x-auto">
-                        {/* Bulk bar */}
                         <div className="flex items-center justify-between pb-2">
                             <div className="flex items-center gap-3">
                                 <Checkbox
@@ -654,12 +653,9 @@ export default function ChecksAndAlertsTab() {
                                     onCheckedChange={(v) => toggleSelectAll(Boolean(v))}
                                     aria-label="Select all"
                                 />
-                                <span className="text-sm text-muted-foreground">
-                                    {selectedIds.size} selected
-                                </span>
+                                <span className="text-sm text-muted-foreground">{selectedIds.size} selected</span>
                             </div>
                             <div className="flex items-center gap-2">
-                                {/* Disabled until backend routes are wired */}
                                 <Tooltip>
                                     <TooltipTrigger asChild>
                                         <span>
@@ -703,7 +699,7 @@ export default function ChecksAndAlertsTab() {
                                             aria-label="Select all"
                                         />
                                     </TableHead>
-                                    <TableHead className="w/[44px]"></TableHead>
+                                    <TableHead className="w-[44px]"></TableHead>
                                     <TableHead>Check Name</TableHead>
                                     <TableHead className="hidden xl:table-cell">Type</TableHead>
                                     <TableHead className="hidden lg:table-cell">Severity</TableHead>
@@ -725,10 +721,7 @@ export default function ChecksAndAlertsTab() {
                                     const long = output.length > 160;
 
                                     return (
-                                        <TableRow
-                                            key={check.id}
-                                            className="hover:bg-accent/40"
-                                        >
+                                        <TableRow key={check.id} className="hover:bg-accent/40">
                                             <TableCell>
                                                 <Checkbox
                                                     checked={selectedIds.has(check.id)}
@@ -760,7 +753,9 @@ export default function ChecksAndAlertsTab() {
                                                 {!!tags?.length && (
                                                     <div className="mt-1 flex flex-wrap gap-1">
                                                         {tags.slice(0, 4).map((t) => (
-                                                            <Badge key={t} variant="secondary" className="text-[10px]">{t}</Badge>
+                                                            <Badge key={t} variant="secondary" className="text-[10px]">
+                                                                {t}
+                                                            </Badge>
                                                         ))}
                                                         {tags.length > 4 && (
                                                             <Badge variant="outline" className="text-[10px]">
@@ -794,10 +789,14 @@ export default function ChecksAndAlertsTab() {
                                                             </Badge>
                                                         ))}
                                                         {Object.keys(metrics).length > 5 && (
-                                                            <Badge variant="outline" className="text-[10px]">+{Object.keys(metrics).length - 5}</Badge>
+                                                            <Badge variant="outline" className="text-[10px]">
+                                                                +{Object.keys(metrics).length - 5}
+                                                            </Badge>
                                                         )}
                                                     </div>
-                                                ) : <span className="text-muted-foreground">—</span>}
+                                                ) : (
+                                                    <span className="text-muted-foreground">—</span>
+                                                )}
                                             </TableCell>
 
                                             <TableCell className="hidden 2xl:table-cell">
@@ -809,10 +808,14 @@ export default function ChecksAndAlertsTab() {
                                                             </Badge>
                                                         ))}
                                                         {Object.keys(thresholds).length > 5 && (
-                                                            <Badge variant="outline" className="text-[10px]">+{Object.keys(thresholds).length - 5}</Badge>
+                                                            <Badge variant="outline" className="text-[10px]">
+                                                                +{Object.keys(thresholds).length - 5}
+                                                            </Badge>
                                                         )}
                                                     </div>
-                                                ) : <span className="text-muted-foreground">—</span>}
+                                                ) : (
+                                                    <span className="text-muted-foreground">—</span>
+                                                )}
                                             </TableCell>
 
                                             <TableCell className="text-muted-foreground">{formatWhen(check.lastRun)}</TableCell>
@@ -877,7 +880,6 @@ export default function ChecksAndAlertsTab() {
                     </CardContent>
                 </Card>
 
-                {/* Detail drawer */}
                 <Sheet open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
                     <SheetContent side="right" className="w-full sm:max-w-xl">
                         <SheetHeader>
@@ -889,20 +891,14 @@ export default function ChecksAndAlertsTab() {
                                 {selected ? (
                                     <div className="grid gap-3 text-sm">
                                         <div className="flex flex-wrap items-center gap-2">
-                                            {(selected as any).type && (
-                                                <Badge variant="secondary">{(selected as any).type}</Badge>
-                                            )}
+                                            {(selected as any).type && <Badge variant="secondary">{(selected as any).type}</Badge>}
                                             {(selected as any).severity && (
                                                 <Badge variant={(selected as any).severity === "CRIT" ? "destructive" : "secondary"}>
                                                     {(selected as any).severity}
                                                 </Badge>
                                             )}
-                                            {(selected as any).category && (
-                                                <Badge variant="outline">{(selected as any).category}</Badge>
-                                            )}
-                                            {(selected as any).maintenance && (
-                                                <Badge variant="outline">Maintenance</Badge>
-                                            )}
+                                            {(selected as any).category && <Badge variant="outline">{(selected as any).category}</Badge>}
+                                            {(selected as any).maintenance && <Badge variant="outline">Maintenance</Badge>}
                                         </div>
 
                                         <div className="flex items-center gap-2">
@@ -922,7 +918,9 @@ export default function ChecksAndAlertsTab() {
                                                 <span className="text-muted-foreground">Tags:</span>
                                                 <div className="flex flex-wrap gap-1">
                                                     {(selected as any).tags.map((t: string) => (
-                                                        <Badge key={t} variant="secondary" className="text-[10px]">{t}</Badge>
+                                                        <Badge key={t} variant="secondary" className="text-[10px]">
+                                                            {t}
+                                                        </Badge>
                                                     ))}
                                                 </div>
                                             </div>
@@ -947,7 +945,10 @@ export default function ChecksAndAlertsTab() {
                                                 {Object.keys((selected as any).metrics ?? {}).length ? (
                                                     <div className="grid grid-cols-2 gap-2">
                                                         {Object.entries((selected as any).metrics).map(([k, v]) => (
-                                                            <div key={k} className="flex items-center justify-between rounded border bg-muted/20 px-2 py-1">
+                                                            <div
+                                                                key={k}
+                                                                className="flex items-center justify-between rounded border bg-muted/20 px-2 py-1"
+                                                            >
                                                                 <span className="text-muted-foreground">{k}</span>
                                                                 <span className="font-medium">{String(v)}</span>
                                                             </div>
@@ -962,7 +963,10 @@ export default function ChecksAndAlertsTab() {
                                                 {Object.keys((selected as any).thresholds ?? {}).length ? (
                                                     <div className="grid grid-cols-2 gap-2">
                                                         {Object.entries((selected as any).thresholds).map(([k, v]) => (
-                                                            <div key={k} className="flex items-center justify-between rounded border bg-muted/20 px-2 py-1">
+                                                            <div
+                                                                key={k}
+                                                                className="flex items-center justify-between rounded border bg-muted/20 px-2 py-1"
+                                                            >
                                                                 <span className="text-muted-foreground">{k}</span>
                                                                 <span className="font-medium">{String(v)}</span>
                                                             </div>
