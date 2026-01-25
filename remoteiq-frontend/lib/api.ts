@@ -119,6 +119,12 @@ export type Device = {
 
   /** Optional UUID for the underlying agent (if backend provides it). */
   agentUuid?: string | null;
+
+  /**
+   * ✅ Raw agent facts payload (jsonb) when present.
+   * Used by the device details Summary panel (hardware/disks/etc).
+   */
+  facts?: Record<string, any> | null;
 };
 
 export type DevicesResponse = {

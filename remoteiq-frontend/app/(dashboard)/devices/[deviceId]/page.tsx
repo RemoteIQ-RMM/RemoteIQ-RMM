@@ -44,7 +44,6 @@ function formatLastSeenSafe(input?: unknown): string {
     const raw = String(input).trim();
     const low = raw.toLowerCase();
 
-    // handle common “missing” string values
     if (!raw || low === "null" || low === "undefined" || low === "nan") return "—";
 
     const d = new Date(raw);
@@ -74,25 +73,89 @@ function normalizeStatus(s?: string): BadgeStatus {
     }
 }
 
+function formatBytes(bytes: unknown, decimals = 1): string {
+    const n = typeof bytes === "string" ? Number(bytes) : typeof bytes === "number" ? bytes : NaN;
+    if (!Number.isFinite(n) || n < 0) return "—";
+    if (n === 0) return "0 B";
+    const k = 1024;
+    const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(k)));
+    const v = n / Math.pow(k, i);
+    const fixed = i === 0 ? 0 : decimals;
+    return `${v.toFixed(fixed)} ${units[i]}`;
+}
+
+function clampPct(x: number): number {
+    if (!Number.isFinite(x)) return 0;
+    return Math.max(0, Math.min(100, x));
+}
+
+function pickDiskBarClass(usedPct: number): string {
+    // Used% thresholds (you can tweak later)
+    if (usedPct >= 90) return "bg-red-500";
+    if (usedPct >= 80) return "bg-yellow-500";
+    return "bg-emerald-500";
+}
+
+type DiskFact = {
+    mount?: string; // "C:" or "/"
+    name?: string;
+    fs?: string; // "NTFS"
+    totalBytes?: number;
+    freeBytes?: number;
+    usedBytes?: number;
+    usedPercent?: number; // 0-100
+    summary?: string; // if agent wants to pre-format: "2.9 TB free of 7.3 TB"
+};
+
+function computeDisk(d: DiskFact) {
+    const total = typeof d.totalBytes === "number" ? d.totalBytes : NaN;
+    const free = typeof d.freeBytes === "number" ? d.freeBytes : NaN;
+    const used = typeof d.usedBytes === "number" ? d.usedBytes : Number.isFinite(total) && Number.isFinite(free) ? total - free : NaN;
+
+    const usedPct =
+        typeof d.usedPercent === "number"
+            ? d.usedPercent
+            : Number.isFinite(total) && total > 0 && Number.isFinite(used)
+                ? (used / total) * 100
+                : NaN;
+
+    const safeUsedPct = clampPct(Number.isFinite(usedPct) ? usedPct : 0);
+
+    // Prefer agent summary, else build one if we have bytes
+    const builtSummary =
+        d.summary ??
+        (Number.isFinite(total) && Number.isFinite(free)
+            ? `${formatBytes(free)} free of ${formatBytes(total)}`
+            : "—");
+
+    const title = String(d.mount ?? d.name ?? "Disk");
+    const fs = d.fs ? String(d.fs) : "";
+
+    return {
+        title,
+        fs,
+        summary: builtSummary,
+        usedPct: safeUsedPct,
+        hasUsage: Number.isFinite(usedPct) || (Number.isFinite(total) && total > 0),
+    };
+}
+
 export default function DeviceDetailPage({ params }: { params: { deviceId: string } }) {
     const { masterDevices, filteredDevices } = useDashboard();
 
-    // ✅ Make "devices" stable so it doesn't trip react-hooks/exhaustive-deps
     const devices = React.useMemo(
         () => (masterDevices?.length ? masterDevices : filteredDevices) ?? [],
         [masterDevices, filteredDevices]
     );
 
-    // Local (dashboard) device if present
     const localDevice: UiDevice | undefined = React.useMemo(
         () => devices.find((d) => d.id === params.deviceId),
         [devices, params.deviceId]
     );
 
-    // Backend device (authoritative)
     const { device: apiDevice, loading, error, refresh } = useDevice(params.deviceId);
 
-    // Merge API device into the UI shape your page expects.
     const device: UiDevice | undefined = React.useMemo(() => {
         if (!apiDevice && !localDevice) return undefined;
 
@@ -105,20 +168,19 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
             site: (localDevice as any)?.site ?? "—",
             os: apiDevice?.os ?? (localDevice as any)?.os ?? "Unknown",
             status,
-            // carry lastSeen through as lastResponse for display
             lastResponse: apiDevice?.lastSeen ?? (localDevice as any)?.lastResponse ?? null,
-            // extra fields from backend we’ll show directly below
             ...(apiDevice
                 ? {
                     arch: apiDevice.arch,
                     primaryIp: apiDevice.primaryIp,
                     version: apiDevice.version,
                     user: apiDevice.user,
-                    agentUuid:
-                        (apiDevice as any)?.agentUuid ?? (localDevice as any)?.agentUuid ?? null,
+                    agentUuid: (apiDevice as any)?.agentUuid ?? (localDevice as any)?.agentUuid ?? null,
+                    facts: (apiDevice as any)?.facts ?? null,
                 }
                 : {
                     agentUuid: (localDevice as any)?.agentUuid ?? null,
+                    facts: null,
                 }),
         };
 
@@ -136,23 +198,20 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
     }, [params.deviceId, pathname, router, search]);
 
     const onReboot = React.useCallback(async () => {
-        // TODO: wire your reboot call if available
+        // TODO
     }, []);
     const onPatchNow = React.useCallback(async () => {
-        // TODO: wire your patch call if available
+        // TODO
     }, []);
 
-    // ✅ HOOK DECLARED BEFORE ANY CONDITIONAL RETURNS
     const copy = React.useCallback(async (text: string) => {
         try {
             await navigator.clipboard.writeText(text);
-            // optional: toast here
         } catch {
             // ignore
         }
     }, []);
 
-    // ----- Conditional returns (no hooks below this line) -----
     if (loading && !device) {
         return (
             <div className="flex flex-col items-center justify-center h-full gap-3 text-center p-6">
@@ -201,6 +260,23 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
     const version = (device as any).version ?? "—";
     const currentUser = (device as any).user ?? "—";
     const agentUuid = (device as any)?.agentUuid as string | undefined | null;
+    const facts = ((device as any)?.facts ?? null) as Record<string, any> | null;
+
+    const hwModel = facts?.hardware?.model ?? null;
+    const hwCpu = facts?.hardware?.cpu ?? null;
+
+    // RAM: prefer a pretty string if your agent sends it, else format ramBytes if present
+    const hwRam =
+        facts?.hardware?.ram ??
+        (typeof facts?.hardware?.ramBytes === "number" ? formatBytes(facts.hardware.ramBytes) : null);
+
+    // GPU: if array, join; else string
+    const rawGpu = facts?.hardware?.gpu ?? null;
+    const hwGpu = Array.isArray(rawGpu) ? rawGpu.filter(Boolean).join(", ") : rawGpu;
+
+    const hwSerial = facts?.hardware?.serial ?? null;
+
+    const disks = Array.isArray(facts?.disks) ? (facts?.disks as DiskFact[]) : null;
 
     return (
         <main className="grid flex-1 items-start gap-4 p-4 sm:px-6 sm:py-0 md:gap-8">
@@ -221,9 +297,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                             </BreadcrumbItem>
                             <BreadcrumbSeparator />
                             <BreadcrumbItem>
-                                <BreadcrumbPage>
-                                    {(device as any).alias || (device as any).hostname}
-                                </BreadcrumbPage>
+                                <BreadcrumbPage>{(device as any).alias || (device as any).hostname}</BreadcrumbPage>
                             </BreadcrumbItem>
                         </BreadcrumbList>
                     </Breadcrumb>
@@ -264,82 +338,195 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </div>
 
                     <TabsContent value="overview">
-                        <Card>
-                            <CardHeader>
-                                <div className="flex justify-between items-start gap-4">
-                                    <div className="min-w-0">
-                                        <CardTitle className="truncate">
-                                            {(device as any).alias || (device as any).hostname}
-                                        </CardTitle>
-                                        <CardDescription className="truncate">
-                                            {(device as any).client} / {(device as any).site}
-                                        </CardDescription>
-                                    </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                        <Button variant="outline" size="icon" title="Edit alias" aria-label="Edit alias">
-                                            <Tag className="h-4 w-4" />
-                                        </Button>
-                                        <Button variant="outline" size="icon" title="Move device" aria-label="Move device">
-                                            <Move className="h-4 w-4" />
-                                        </Button>
-                                    </div>
-                                </div>
-                            </CardHeader>
-                            <CardContent>
-                                <Separator className="my-4" />
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
-                                    <div className="space-y-1">
-                                        <h3 className="font-medium text-muted-foreground">Status</h3>
-                                        <StatusBadge status={badgeStatus} />
-                                    </div>
-                                    <div className="space-y-1">
-                                        <h3 className="font-medium text-muted-foreground">Operating System</h3>
-                                        <p>{os}</p>
-                                    </div>
-                                    <div className="space-y-1">
-                                        <h3 className="font-medium text-muted-foreground">Architecture</h3>
-                                        <p>{arch}</p>
-                                    </div>
-                                    <div className="space-y-1">
-                                        <h3 className="font-medium text-muted-foreground">IP Address</h3>
-                                        <p>{primaryIp}</p>
-                                    </div>
-                                    <div className="space-y-1">
-                                        <h3 className="font-medium text-muted-foreground">Agent Version</h3>
-                                        <p>{version}</p>
-                                    </div>
-                                    <div className="space-y-1">
-                                        <h3 className="font-medium text-muted-foreground">Last Response</h3>
-                                        <p>{lastSeenStr}</p>
-                                    </div>
-
-                                    {/* Agent UUID (optional) */}
-                                    {agentUuid ? (
-                                        <div className="space-y-1 md:col-span-3">
-                                            <h3 className="font-medium text-muted-foreground">Agent UUID</h3>
-                                            <div className="flex items-center gap-2">
-                                                <code className="text-xs break-all">{agentUuid}</code>
-                                                <Button
-                                                    size="sm"
-                                                    variant="outline"
-                                                    title="Copy agent UUID"
-                                                    onClick={() => copy(agentUuid)}
-                                                    className="gap-2"
-                                                >
-                                                    <Copy className="h-3.5 w-3.5" />
-                                                    Copy
-                                                </Button>
-                                            </div>
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                            <Card className="lg:col-span-2">
+                                <CardHeader>
+                                    <div className="flex justify-between items-start gap-4">
+                                        <div className="min-w-0">
+                                            <CardTitle className="truncate">
+                                                {(device as any).alias || (device as any).hostname}
+                                            </CardTitle>
+                                            <CardDescription className="truncate">
+                                                {(device as any).client} / {(device as any).site}
+                                            </CardDescription>
                                         </div>
-                                    ) : null}
-
-                                    <div className="space-y-1 md:col-span-3">
-                                        <h3 className="font-medium text-muted-foreground">Logged-in User</h3>
-                                        <p>{currentUser}</p>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <Button
+                                                variant="outline"
+                                                size="icon"
+                                                title="Edit alias"
+                                                aria-label="Edit alias"
+                                            >
+                                                <Tag className="h-4 w-4" />
+                                            </Button>
+                                            <Button
+                                                variant="outline"
+                                                size="icon"
+                                                title="Move device"
+                                                aria-label="Move device"
+                                            >
+                                                <Move className="h-4 w-4" />
+                                            </Button>
+                                        </div>
                                     </div>
-                                </div>
-                            </CardContent>
-                        </Card>
+                                </CardHeader>
+
+                                <CardContent>
+                                    <div className="text-sm text-muted-foreground">
+                                        <span className="font-medium text-foreground">{(device as any).hostname}</span>
+                                        {" · "}
+                                        <span>{os}</span>
+                                        {" · "}
+                                        <span>Agent v{version}</span>
+                                    </div>
+
+                                    <Separator className="my-4" />
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
+                                        <div className="space-y-2">
+                                            <h3 className="font-medium">Hardware Details</h3>
+
+                                            <div className="space-y-1 text-muted-foreground">
+                                                <div className="flex justify-between gap-4">
+                                                    <span>Status</span>
+                                                    <span className="text-foreground">
+                                                        <StatusBadge status={badgeStatus} />
+                                                    </span>
+                                                </div>
+
+                                                <div className="flex justify-between gap-4">
+                                                    <span>Architecture</span>
+                                                    <span className="text-foreground">{arch}</span>
+                                                </div>
+
+                                                <div className="flex justify-between gap-4">
+                                                    <span>Logged-in User</span>
+                                                    <span className="text-foreground">{currentUser}</span>
+                                                </div>
+
+                                                <div className="flex justify-between gap-4">
+                                                    <span>LAN IP</span>
+                                                    <span className="text-foreground">{primaryIp}</span>
+                                                </div>
+
+                                                <div className="flex justify-between gap-4">
+                                                    <span>Last Response</span>
+                                                    <span className="text-foreground">{lastSeenStr}</span>
+                                                </div>
+
+                                                <Separator className="my-3" />
+
+                                                <div className="flex justify-between gap-4">
+                                                    <span>System Model</span>
+                                                    <span className="text-foreground">
+                                                        {hwModel ? String(hwModel) : "—"}
+                                                    </span>
+                                                </div>
+
+                                                <div className="flex justify-between gap-4">
+                                                    <span>CPU</span>
+                                                    <span className="text-foreground">{hwCpu ? String(hwCpu) : "—"}</span>
+                                                </div>
+
+                                                <div className="flex justify-between gap-4">
+                                                    <span>RAM</span>
+                                                    <span className="text-foreground">{hwRam ? String(hwRam) : "—"}</span>
+                                                </div>
+
+                                                <div className="flex justify-between gap-4">
+                                                    <span>GPU</span>
+                                                    <span className="text-foreground">{hwGpu ? String(hwGpu) : "—"}</span>
+                                                </div>
+
+                                                <div className="flex justify-between gap-4">
+                                                    <span>System Serial Number</span>
+                                                    <span className="text-foreground">
+                                                        {hwSerial ? String(hwSerial) : "—"}
+                                                    </span>
+                                                </div>
+                                            </div>
+
+                                            {agentUuid ? (
+                                                <div className="pt-3 space-y-1">
+                                                    <h3 className="font-medium text-muted-foreground">Agent UUID</h3>
+                                                    <div className="flex items-center gap-2">
+                                                        <code className="text-xs break-all">{agentUuid}</code>
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            title="Copy agent UUID"
+                                                            onClick={() => copy(agentUuid)}
+                                                            className="gap-2"
+                                                        >
+                                                            <Copy className="h-3.5 w-3.5" />
+                                                            Copy
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            ) : null}
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <h3 className="font-medium">Checks Status</h3>
+                                            <div className="text-sm text-muted-foreground">No checks</div>
+                                        </div>
+                                    </div>
+                                </CardContent>
+                            </Card>
+
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle>Disks</CardTitle>
+                                </CardHeader>
+                                <CardContent className="text-sm">
+                                    {!disks?.length ? (
+                                        <div className="text-muted-foreground">—</div>
+                                    ) : (
+                                        <div className="space-y-4">
+                                            {disks.map((raw, idx) => {
+                                                const d = computeDisk(raw);
+                                                const barClass = pickDiskBarClass(d.usedPct);
+
+                                                return (
+                                                    <div key={idx} className="space-y-1">
+                                                        <div className="flex items-center justify-between">
+                                                            <div className="font-medium">
+                                                                {d.title}
+                                                                {d.fs ? (
+                                                                    <span className="text-muted-foreground font-normal">
+                                                                        {" "}
+                                                                        ({d.fs})
+                                                                    </span>
+                                                                ) : null}
+                                                            </div>
+                                                            <div className="text-xs text-muted-foreground">
+                                                                {d.hasUsage ? `${d.usedPct.toFixed(0)}% used` : ""}
+                                                            </div>
+                                                        </div>
+
+                                                        <div
+                                                            className="h-2 w-full rounded-full bg-muted overflow-hidden"
+                                                            role="progressbar"
+                                                            aria-valuenow={d.usedPct}
+                                                            aria-valuemin={0}
+                                                            aria-valuemax={100}
+                                                            aria-label={`${d.title} disk usage`}
+                                                        >
+                                                            <div
+                                                                className={`h-full ${barClass}`}
+                                                                style={{ width: `${d.usedPct}%` }}
+                                                            />
+                                                        </div>
+
+                                                        <div className="text-xs text-muted-foreground">{d.summary}</div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </CardContent>
+                            </Card>
+                        </div>
                     </TabsContent>
 
                     <TabsContent value="remote">

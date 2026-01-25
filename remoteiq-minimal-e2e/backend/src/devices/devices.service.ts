@@ -24,6 +24,9 @@ export type Device = {
   primaryIp?: string | null;
 
   agentUuid?: string | null; // present when sourced from agents
+
+  // ✅ raw agent facts (jsonb) when present (agent-sourced rows)
+  facts?: Record<string, any> | null;
 };
 
 function decodeCursor(cur?: string | null) {
@@ -145,7 +148,10 @@ export class DevicesService {
           NULLIF(a.version, '') AS version,
           NULLIF(a.facts->>'primary_ip', '') AS primary_ip,
 
-          COALESCE(NULLIF(a.agent_uuid, ''), a.id::text) AS agent_uuid
+          COALESCE(NULLIF(a.agent_uuid, ''), a.id::text) AS agent_uuid,
+
+          -- ✅ raw facts for UI (jsonb)
+          a.facts AS facts
         FROM public.agents a
         LEFT JOIN public.devices d ON d.id = a.device_id
         LEFT JOIN public.sites   s ON s.id = d.site_id
@@ -174,7 +180,10 @@ export class DevicesService {
           NULL::text            AS "user",
           NULL::text            AS version,
           NULL::text            AS primary_ip,
-          NULL::text            AS agent_uuid
+          NULL::text            AS agent_uuid,
+
+          -- ✅ no agent facts on device-only rows
+          NULL::jsonb           AS facts
         FROM public.devices d
         LEFT JOIN public.sites   s ON s.id = d.site_id
         LEFT JOIN public.clients c ON c.id = s.client_id
@@ -206,7 +215,8 @@ export class DevicesService {
         "user",
         version,
         primary_ip,
-        agent_uuid
+        agent_uuid,
+        facts
       FROM all_devs
       ${whereSql}
       ORDER BY hostname ASC
@@ -237,6 +247,8 @@ export class DevicesService {
       version: r.version ?? null,
       primaryIp: r.primary_ip ?? null,
       agentUuid: r.agent_uuid ?? null,
+
+      facts: r.facts ?? null,
     })) as Device[];
 
     return { items, nextCursor: hasNext ? encodeCursor(offset + pageSize) : null };
@@ -277,7 +289,10 @@ export class DevicesService {
           ) AS "user",
           NULLIF(a.version, '') AS version,
           NULLIF(a.facts->>'primary_ip', '') AS primary_ip,
-          COALESCE(NULLIF(a.agent_uuid, ''), a.id::text) AS agent_uuid
+          COALESCE(NULLIF(a.agent_uuid, ''), a.id::text) AS agent_uuid,
+
+          -- ✅ raw facts for UI
+          a.facts AS facts
         FROM public.agents a
         LEFT JOIN public.devices d ON d.id = a.device_id
         LEFT JOIN public.sites   s ON s.id = d.site_id
@@ -308,7 +323,10 @@ export class DevicesService {
           NULL::text AS "user",
           NULL::text AS version,
           NULL::text AS primary_ip,
-          NULL::text AS agent_uuid
+          NULL::text AS agent_uuid,
+
+          -- ✅ no agent facts on device-only row
+          NULL::jsonb AS facts
         FROM public.devices d
         LEFT JOIN public.sites   s ON s.id = d.site_id
         LEFT JOIN public.clients c ON c.id = s.client_id
@@ -332,7 +350,8 @@ export class DevicesService {
         "user",
         version,
         primary_ip,
-        agent_uuid
+        agent_uuid,
+        facts
       FROM rows
       ORDER BY pref ASC
       LIMIT 1;
@@ -363,6 +382,8 @@ export class DevicesService {
       version: r.version ?? null,
       primaryIp: r.primary_ip ?? null,
       agentUuid: r.agent_uuid ?? null,
+
+      facts: r.facts ?? null,
     };
   }
 
