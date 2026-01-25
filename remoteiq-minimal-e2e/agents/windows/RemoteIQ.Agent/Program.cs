@@ -45,5 +45,10 @@ builder.Services.AddHostedService<TaskWorker>();
 // Keep UpdateService optional (it will effectively no-op if endpoint doesn’t exist)
 builder.Services.AddHostedService<UpdateService>();
 
+services.AddSingleton<SystemInfoCollector>();
+services.AddHostedService<HeartbeatService>();
+services.AddHostedService<InventoryService>();
+
+
 var host = builder.Build();
 await host.RunAsync();
