@@ -1,9 +1,11 @@
+// RemoteIQ.Agent/Program.cs
+
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using RemoteIQ.Agent.Services;
 using Serilog;
 using Serilog.Events;
-using RemoteIQ.Agent.Services;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -44,11 +46,6 @@ builder.Services.AddHostedService<TaskWorker>();
 
 // Keep UpdateService optional (it will effectively no-op if endpoint doesn’t exist)
 builder.Services.AddHostedService<UpdateService>();
-
-services.AddSingleton<SystemInfoCollector>();
-services.AddHostedService<HeartbeatService>();
-services.AddHostedService<InventoryService>();
-
 
 var host = builder.Build();
 await host.RunAsync();
