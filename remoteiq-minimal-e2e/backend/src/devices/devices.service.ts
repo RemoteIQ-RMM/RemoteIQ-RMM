@@ -3,8 +3,15 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { PgPoolService } from "../storage/pg-pool.service";
 
 export type Device = {
-  id: string; // agent id when present, else devices.id
-  deviceId?: string | null; // ALWAYS the underlying public.devices.id (uuid)
+  /**
+   * ✅ Stable row id returned by backend:
+   * Always public.devices.id (uuid), even for agent-sourced rows.
+   */
+  id: string;
+
+  /** Always the underlying public.devices.id (uuid). */
+  deviceId?: string | null;
+
   hostname: string;
   os: string;
   arch?: string | null;
@@ -23,9 +30,10 @@ export type Device = {
   version?: string | null;
   primaryIp?: string | null;
 
-  agentUuid?: string | null; // present when sourced from agents
+  /** Optional UUID for the underlying agent (if backend provides it). */
+  agentUuid?: string | null;
 
-  // ✅ raw agent facts (jsonb) when present (agent-sourced rows)
+  /** ✅ raw agent facts (jsonb) when present (agent-sourced rows) */
   facts?: Record<string, any> | null;
 };
 
@@ -51,9 +59,6 @@ export class DevicesService {
   private async ensureDeviceDeletionRequestsTable(): Promise<void> {
     if (this.deletionTableReady) return;
 
-    // NOTE: gen_random_uuid() requires pgcrypto extension.
-    // If you don't have it enabled, you'll need:
-    //   CREATE EXTENSION IF NOT EXISTS pgcrypto;
     await this.pg.query(`
       CREATE TABLE IF NOT EXISTS public.device_deletion_requests (
         id uuid PRIMARY KEY,
@@ -110,15 +115,13 @@ export class DevicesService {
     const sql = `
       WITH agent_rows AS (
         SELECT
-          a.id::text AS id,
+          -- ✅ stable id for UI routing: ALWAYS the underlying devices.id
+          a.device_id::text AS id,
           a.device_id::text AS device_id,
 
           COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') AS hostname,
 
-          -- agent-reported OS (facts.os) fallback to device row
           COALESCE(NULLIF(a.facts->>'os', ''), NULLIF(d.operating_system, ''), 'unknown') AS os,
-
-          -- agent-reported arch (facts.arch) fallback to device row
           COALESCE(NULLIF(a.facts->>'arch', ''), d.architecture, NULL) AS arch,
 
           COALESCE(a.last_check_in_at, d.last_seen_at) AS last_seen,
@@ -135,10 +138,8 @@ export class DevicesService {
           c.name::text AS client,
           s.name::text AS site,
 
-          -- deletion status (pending only)
           dr.status::text AS deletion_status,
 
-          -- agent-reported logged in user
           COALESCE(
             NULLIF(a.facts->>'user', ''),
             NULLIF(a.facts->>'logged_in_user', ''),
@@ -150,7 +151,6 @@ export class DevicesService {
 
           COALESCE(NULLIF(a.agent_uuid, ''), a.id::text) AS agent_uuid,
 
-          -- ✅ raw facts for UI (jsonb)
           a.facts AS facts
         FROM public.agents a
         LEFT JOIN public.devices d ON d.id = a.device_id
@@ -174,7 +174,6 @@ export class DevicesService {
           c.name::text          AS client,
           s.name::text          AS site,
 
-          -- deletion status (pending only)
           dr.status::text       AS deletion_status,
 
           NULL::text            AS "user",
@@ -182,7 +181,6 @@ export class DevicesService {
           NULL::text            AS primary_ip,
           NULL::text            AS agent_uuid,
 
-          -- ✅ no agent facts on device-only rows
           NULL::jsonb           AS facts
         FROM public.devices d
         LEFT JOIN public.sites   s ON s.id = d.site_id
@@ -227,8 +225,9 @@ export class DevicesService {
     const hasNext = rows.length > pageSize;
 
     const items = rows.slice(0, pageSize).map((r: any) => ({
-      id: r.id,
+      id: r.id, // ✅ stable = devices.id
       deviceId: r.device_id ?? null,
+
       hostname: r.hostname,
       os: r.os,
       arch: r.arch ?? null,
@@ -261,7 +260,9 @@ export class DevicesService {
       WITH rows AS (
         SELECT
           0 AS pref,
-          a.id::text AS id,
+
+          -- ✅ stable id for UI routing: ALWAYS devices.id
+          a.device_id::text AS id,
           a.device_id::text AS device_id,
 
           COALESCE(a.hostname, d.hostname, a.device_id::text, 'unknown') AS hostname,
@@ -291,7 +292,6 @@ export class DevicesService {
           NULLIF(a.facts->>'primary_ip', '') AS primary_ip,
           COALESCE(NULLIF(a.agent_uuid, ''), a.id::text) AS agent_uuid,
 
-          -- ✅ raw facts for UI
           a.facts AS facts
         FROM public.agents a
         LEFT JOIN public.devices d ON d.id = a.device_id
@@ -325,7 +325,6 @@ export class DevicesService {
           NULL::text AS primary_ip,
           NULL::text AS agent_uuid,
 
-          -- ✅ no agent facts on device-only row
           NULL::jsonb AS facts
         FROM public.devices d
         LEFT JOIN public.sites   s ON s.id = d.site_id
@@ -362,8 +361,9 @@ export class DevicesService {
     if (!r) return null;
 
     return {
-      id: r.id,
+      id: r.id, // ✅ stable = devices.id
       deviceId: r.device_id ?? null,
+
       hostname: r.hostname,
       os: r.os,
       arch: r.arch ?? null,
@@ -419,7 +419,6 @@ export class DevicesService {
 
     await this.pg.query("BEGIN");
     try {
-      // Ensure a pending row exists (so approvals can happen even if no one requested)
       await this.pg.query(
         `
         INSERT INTO public.device_deletion_requests (id, device_id, status, requested_by_user_id, requested_at)
@@ -440,24 +439,20 @@ export class DevicesService {
         [deviceId, approvedByUserId]
       );
 
-      // Find any agents for this device
       const agentRows = await this.pg.query<{ id: string }>(
         `SELECT a.id::text AS id FROM public.agents a WHERE a.device_id = $1::uuid`,
         [deviceId]
       );
       const agentIds = agentRows.rows.map((r) => r.id);
 
-      // Delete agent-dependent data first (best-effort)
       if (agentIds.length) {
         await this.pg.query(`DELETE FROM public.agent_software WHERE agent_id = ANY($1::uuid[])`, [agentIds]);
         await this.pg.query(`DELETE FROM public.agent_jobs     WHERE agent_id = ANY($1::uuid[])`, [agentIds]);
       }
 
-      // Delete agents then device row
       await this.pg.query(`DELETE FROM public.agents  WHERE device_id = $1::uuid`, [deviceId]);
       await this.pg.query(`DELETE FROM public.devices WHERE id = $1::uuid`, [deviceId]);
 
-      // Mark completed
       await this.pg.query(
         `
         UPDATE public.device_deletion_requests
@@ -477,6 +472,11 @@ export class DevicesService {
     return { deleted: true, deviceId };
   }
 
+  /**
+   * ✅ Works whether caller provides:
+   * - agents.id
+   * - devices.id
+   */
   async listSoftware(
     id: string
   ): Promise<
@@ -488,6 +488,9 @@ export class DevicesService {
       installDate?: string | null;
     }>
   > {
+    const agentId = await this.resolveAgentRowId(String(id ?? "").trim());
+    if (!agentId) return [];
+
     const { rows } = await this.pg.query(
       `
       SELECT
@@ -501,7 +504,7 @@ export class DevicesService {
       WHERE a.id::text = $1
       ORDER BY lower(s.name) ASC, COALESCE(s.version,'') ASC
       `,
-      [id]
+      [agentId]
     );
 
     return rows.map((r: any) => ({
@@ -517,7 +520,7 @@ export class DevicesService {
    * Move a device to another site, but ONLY within the same client.
    * Accepts either:
    * - a devices.id UUID
-   * - or an agents.id (because your UI/device pages often use the agent row id)
+   * - or an agents.id
    */
   async moveToSite(deviceOrAgentId: string, targetSiteId: string): Promise<Device> {
     const rawId = String(deviceOrAgentId ?? "").trim();
@@ -526,11 +529,9 @@ export class DevicesService {
     if (!rawId) throw new BadRequestException("id is required");
     if (!siteId) throw new BadRequestException("siteId is required");
 
-    // Resolve to the underlying public.devices.id
     const deviceId = await this.resolveDeviceRowId(rawId);
     if (!deviceId) throw new NotFoundException("Device not found");
 
-    // Look up current client via current site_id
     const cur = await this.pg.query<{ client_id: string | null }>(
       `
       SELECT s.client_id::text AS client_id
@@ -543,7 +544,6 @@ export class DevicesService {
     );
     const currentClientId = cur.rows[0]?.client_id ?? null;
 
-    // Look up target site's client
     const tgt = await this.pg.query<{ client_id: string }>(
       `
       SELECT s.client_id::text AS client_id
@@ -556,12 +556,10 @@ export class DevicesService {
     const targetClientId = tgt.rows[0]?.client_id ?? null;
     if (!targetClientId) throw new NotFoundException("Target site not found");
 
-    // Enforce: cannot move across clients (if device has a client)
     if (currentClientId && targetClientId && currentClientId !== targetClientId) {
       throw new BadRequestException("Device cannot be moved to a site under a different client.");
     }
 
-    // Update
     await this.pg.query(
       `
       UPDATE public.devices
@@ -577,14 +575,12 @@ export class DevicesService {
   }
 
   private async resolveDeviceRowId(deviceOrAgentId: string): Promise<string | null> {
-    // Try as a devices.id (uuid)
     const asDevice = await this.pg.query<{ id: string }>(
       `SELECT d.id::text AS id FROM public.devices d WHERE d.id::text = $1 LIMIT 1`,
       [deviceOrAgentId]
     );
     if (asDevice.rows[0]?.id) return asDevice.rows[0].id;
 
-    // Try as an agents.id -> device_id
     const asAgent = await this.pg.query<{ device_id: string }>(
       `SELECT a.device_id::text AS device_id FROM public.agents a WHERE a.id::text = $1 LIMIT 1`,
       [deviceOrAgentId]
@@ -594,11 +590,33 @@ export class DevicesService {
     return null;
   }
 
+  /**
+   * ✅ Resolve agents.id from either:
+   * - agents.id
+   * - devices.id (agents.device_id)
+   */
+  private async resolveAgentRowId(deviceOrAgentId: string): Promise<string | null> {
+    const raw = String(deviceOrAgentId ?? "").trim();
+    if (!raw) return null;
+
+    const asAgent = await this.pg.query<{ id: string }>(
+      `SELECT a.id::text AS id FROM public.agents a WHERE a.id::text = $1 LIMIT 1`,
+      [raw]
+    );
+    if (asAgent.rows[0]?.id) return asAgent.rows[0].id;
+
+    const byDevice = await this.pg.query<{ id: string }>(
+      `SELECT a.id::text AS id FROM public.agents a WHERE a.device_id::text = $1 LIMIT 1`,
+      [raw]
+    );
+    if (byDevice.rows[0]?.id) return byDevice.rows[0].id;
+
+    return null;
+  }
+
   // create uninstall job in a simple job queue
   async requestUninstall(id: string, body: { name: string; version?: string | null }): Promise<string> {
-    // ensure agent exists
-    const { rows: arows } = await this.pg.query(`SELECT id FROM public.agents WHERE id::text = $1`, [id]);
-    const agentId: string | undefined = arows[0]?.id;
+    const agentId = await this.resolveAgentRowId(String(id ?? "").trim());
     if (!agentId) throw new NotFoundException("Agent not found");
 
     const payload = {

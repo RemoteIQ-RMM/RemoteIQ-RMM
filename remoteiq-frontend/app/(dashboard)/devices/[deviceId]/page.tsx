@@ -111,7 +111,12 @@ type DiskFact = {
 function computeDisk(d: DiskFact) {
     const total = typeof d.totalBytes === "number" ? d.totalBytes : NaN;
     const free = typeof d.freeBytes === "number" ? d.freeBytes : NaN;
-    const used = typeof d.usedBytes === "number" ? d.usedBytes : Number.isFinite(total) && Number.isFinite(free) ? total - free : NaN;
+    const used =
+        typeof d.usedBytes === "number"
+            ? d.usedBytes
+            : Number.isFinite(total) && Number.isFinite(free)
+                ? total - free
+                : NaN;
 
     const usedPct =
         typeof d.usedPercent === "number"
@@ -139,6 +144,36 @@ function computeDisk(d: DiskFact) {
         usedPct: safeUsedPct,
         hasUsage: Number.isFinite(usedPct) || (Number.isFinite(total) && total > 0),
     };
+}
+
+// Facts can arrive in different shapes depending on how you store it in agents.facts:
+// - recommended: facts.device = { hardware, disks, ... }
+// - legacy/alternate: facts.hardware / facts.disks directly
+function extractDeviceFactsRoot(facts: Record<string, any> | null): Record<string, any> | null {
+    if (!facts || typeof facts !== "object") return null;
+
+    // If you store the summary blob under facts.device, prefer that.
+    const device = (facts as any).device;
+    if (device && typeof device === "object") return device as Record<string, any>;
+
+    // Some agents may nest it under "facts" (rare), allow it.
+    const nestedFacts = (facts as any).facts;
+    if (nestedFacts && typeof nestedFacts === "object") return nestedFacts as Record<string, any>;
+
+    // If it looks like the summary already (has hardware/disks), use it.
+    if ((facts as any).hardware || (facts as any).disks) return facts;
+
+    return null;
+}
+
+type ActionBanner = { kind: "success" | "error" | "info"; text: string } | null;
+
+async function safeJson(res: Response): Promise<any> {
+    try {
+        return await res.json();
+    } catch {
+        return null;
+    }
 }
 
 export default function DeviceDetailPage({ params }: { params: { deviceId: string } }) {
@@ -191,18 +226,60 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
     const pathname = usePathname();
     const search = useSearchParams();
 
+    const [banner, setBanner] = React.useState<ActionBanner>(null);
+
     const openRunScript = React.useCallback(() => {
         const current = new URLSearchParams(search?.toString() ?? "");
         current.set("device", params.deviceId);
         router.push(`${pathname}?${current.toString()}`);
     }, [params.deviceId, pathname, router, search]);
 
+    const postDeviceAction = React.useCallback(async (action: "reboot" | "patch") => {
+        setBanner(null);
+
+        const res = await fetch(`/api/devices/${encodeURIComponent(params.deviceId)}/actions/${action}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ reason: "manual" }),
+        });
+
+        const body = await safeJson(res);
+
+        // Your controller returns 202 + { accepted: true, jobId }
+        if (res.status === 202 && body?.accepted && body?.jobId) {
+            setBanner({
+                kind: "success",
+                text:
+                    action === "patch"
+                        ? `Patch job queued successfully (Job ID: ${body.jobId}).`
+                        : `Reboot job queued successfully (Job ID: ${body.jobId}).`,
+            });
+            return;
+        }
+
+        // Common auth/perm errors
+        if (res.status === 401 || res.status === 403) {
+            setBanner({
+                kind: "error",
+                text: "You don’t have permission to run this action (401/403).",
+            });
+            return;
+        }
+
+        setBanner({
+            kind: "error",
+            text: `Action failed (${res.status}). ${body?.message ? String(body.message) : ""}`.trim(),
+        });
+    }, [params.deviceId]);
+
     const onReboot = React.useCallback(async () => {
-        // TODO
-    }, []);
+        await postDeviceAction("reboot");
+    }, [postDeviceAction]);
+
     const onPatchNow = React.useCallback(async () => {
-        // TODO
-    }, []);
+        await postDeviceAction("patch");
+    }, [postDeviceAction]);
 
     const copy = React.useCallback(async (text: string) => {
         try {
@@ -260,23 +337,28 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
     const version = (device as any).version ?? "—";
     const currentUser = (device as any).user ?? "—";
     const agentUuid = (device as any)?.agentUuid as string | undefined | null;
+
+    // This is the raw agents.facts jsonb that your API returns
     const facts = ((device as any)?.facts ?? null) as Record<string, any> | null;
 
-    const hwModel = facts?.hardware?.model ?? null;
-    const hwCpu = facts?.hardware?.cpu ?? null;
+    // ✅ Extract the device summary blob in a tolerant way:
+    const deviceFacts = extractDeviceFactsRoot(facts);
+
+    const hwModel = deviceFacts?.hardware?.model ?? null;
+    const hwCpu = deviceFacts?.hardware?.cpu ?? null;
 
     // RAM: prefer a pretty string if your agent sends it, else format ramBytes if present
     const hwRam =
-        facts?.hardware?.ram ??
-        (typeof facts?.hardware?.ramBytes === "number" ? formatBytes(facts.hardware.ramBytes) : null);
+        deviceFacts?.hardware?.ram ??
+        (typeof deviceFacts?.hardware?.ramBytes === "number" ? formatBytes(deviceFacts.hardware.ramBytes) : null);
 
     // GPU: if array, join; else string
-    const rawGpu = facts?.hardware?.gpu ?? null;
+    const rawGpu = deviceFacts?.hardware?.gpu ?? null;
     const hwGpu = Array.isArray(rawGpu) ? rawGpu.filter(Boolean).join(", ") : rawGpu;
 
-    const hwSerial = facts?.hardware?.serial ?? null;
+    const hwSerial = deviceFacts?.hardware?.serial ?? null;
 
-    const disks = Array.isArray(facts?.disks) ? (facts?.disks as DiskFact[]) : null;
+    const disks = Array.isArray(deviceFacts?.disks) ? (deviceFacts?.disks as DiskFact[]) : null;
 
     return (
         <main className="grid flex-1 items-start gap-4 p-4 sm:px-6 sm:py-0 md:gap-8">
@@ -320,6 +402,32 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                         </Button>
                     </div>
                 </div>
+
+                {banner ? (
+                    <div
+                        className={[
+                            "rounded-md border px-3 py-2 text-sm",
+                            banner.kind === "success"
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                                : banner.kind === "error"
+                                    ? "border-red-200 bg-red-50 text-red-900"
+                                    : "border-border bg-muted/40 text-foreground",
+                        ].join(" ")}
+                        role="status"
+                    >
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">{banner.text}</div>
+                            <button
+                                className="text-xs opacity-70 hover:opacity-100"
+                                onClick={() => setBanner(null)}
+                                aria-label="Dismiss message"
+                                title="Dismiss"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
 
                 <Tabs defaultValue="overview">
                     <div className="flex items-center">
@@ -444,6 +552,12 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                                         {hwSerial ? String(hwSerial) : "—"}
                                                     </span>
                                                 </div>
+
+                                                {!deviceFacts ? (
+                                                    <div className="pt-2 text-xs text-muted-foreground">
+                                                        Awaiting agent hardware/disk facts (ensure the agent is sending them and the backend is storing them).
+                                                    </div>
+                                                ) : null}
                                             </div>
 
                                             {agentUuid ? (
@@ -536,7 +650,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                         <ChecksAndAlertsTab deviceId={params.deviceId} />
                     </TabsContent>
                     <TabsContent value="patch">
-                        <PatchTab />
+                        <PatchTab deviceId={params.deviceId} />
                     </TabsContent>
                     <TabsContent value="software">
                         <SoftwareTab />

@@ -29,6 +29,7 @@ import { TicketsModule } from "./tickets/tickets.module";
 import { AuthCookieMiddleware } from "./auth/auth-cookie.middleware";
 import { CompatModule } from "./compat/compat.module";
 import { EndpointsModule } from "./endpoints/endpoints.module";
+import { PatchesModule } from "./patches/patches.module";
 
 // ✅ NEW
 import { ProvisioningModule } from "./provisioning/provisioning.module";
@@ -71,6 +72,7 @@ import { ProvisioningModule } from "./provisioning/provisioning.module";
         SmtpModule,
         ScheduleModule.forRoot(),
         ImapModule,
+        PatchesModule,
     ],
     providers: [SessionCleanerService],
 })

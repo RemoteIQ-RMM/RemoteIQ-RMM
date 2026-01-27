@@ -2,7 +2,7 @@
 import { Injectable } from "@nestjs/common";
 import { PgPoolService } from "../storage/pg-pool.service";
 
-// DTOs are validated in controllers; here we accept partials safely.
+// Controller DTOs validated already; service accepts partials safely.
 type UpdateAgentFacts = Partial<{
     hostname: string;
     os: string;
@@ -11,6 +11,9 @@ type UpdateAgentFacts = Partial<{
     primaryIp: string;
     user: string; // logged-in user
     loggedInUser: string; // alias
+
+    // ✅ NEW: agent device summary blob (hardware/disks/etc)
+    facts: Record<string, any>;
 }>;
 
 type SoftwareItem = {
@@ -28,13 +31,15 @@ export class AgentsService {
     async getAgentUuidById(agentId: string): Promise<string | null> {
         try {
             const { rows } = await this.pg.query<{ agent_uuid: string | null }>(
-                `SELECT agent_uuid
-           FROM public.agents
-          WHERE id = $1::uuid
-          LIMIT 1`,
+                `
+        SELECT agent_uuid
+          FROM public.agents
+         WHERE id = $1::uuid
+         LIMIT 1
+        `,
                 [agentId]
             );
-            // If agent_uuid is empty/null, fall back to id as a useful stable display value
+
             const v = rows[0]?.agent_uuid ?? null;
             return v && String(v).trim() ? String(v) : String(agentId);
         } catch {
@@ -43,19 +48,23 @@ export class AgentsService {
     }
 
     /**
-     * Update agent facts and bump last_check_in_at (this powers "Last Response").
-     * Schema-compatible with your agents table:
-     *  - hostname (text) exists
-     *  - version (text) exists
-     *  - last_check_in_at (timestamptz) exists
-     *  - facts (jsonb) exists and is where we store os/arch/user/primary_ip
+     * Update agent facts and bump last_check_in_at (powers "Last Response").
+     *
+     * Your schema (public.agents):
+     *  - hostname           text NULL
+     *  - version            text NOT NULL
+     *  - last_check_in_at   timestamptz NULL
+     *  - facts              jsonb NOT NULL DEFAULT '{}'
+     *  - agent_uuid         text NOT NULL UNIQUE
      */
     async updateFacts(agentId: string, facts: UpdateAgentFacts): Promise<void> {
         const sets: string[] = [
             `last_check_in_at = NOW()`,
             `updated_at = NOW()`,
+            // keep agent_uuid stable + non-empty (your column is NOT NULL + UNIQUE)
             `agent_uuid = COALESCE(NULLIF(agent_uuid, ''), id::text)`,
         ];
+
         const params: any[] = [];
         let p = 1;
 
@@ -66,11 +75,15 @@ export class AgentsService {
             }
         };
 
-        // Update real columns if provided
+        // Real columns
         setIfDefined("hostname", facts.hostname);
         setIfDefined("version", facts.version);
 
-        // Build facts patch (jsonb)
+        /**
+         * Build ONE jsonb patch, then assign facts once.
+         * - basic keys used elsewhere in backend: os/arch/primary_ip/user/logged_in_user
+         * - device summary blob stored under facts.device (hardware/disks/etc)
+         */
         const patch: Record<string, any> = {};
 
         if (facts.os !== undefined) patch.os = facts.os || null;
@@ -83,10 +96,14 @@ export class AgentsService {
             patch.logged_in_user = loginUser || null;
         }
 
-        // Only apply facts merge if we have any keys
-        const hasPatch = Object.keys(patch).length > 0;
-        if (hasPatch) {
-            // Merge existing facts with patch; patch values overwrite existing keys
+        // ✅ store the device summary blob under facts.device
+        if (facts.facts !== undefined) {
+            // if someone sends null/empty, we’ll store null to “clear” it
+            patch.device = facts.facts && typeof facts.facts === "object" ? facts.facts : null;
+        }
+
+        if (Object.keys(patch).length > 0) {
+            // IMPORTANT: facts assigned exactly once
             sets.push(`facts = COALESCE(facts, '{}'::jsonb) || $${p++}::jsonb`);
             params.push(JSON.stringify(patch));
         }
@@ -103,16 +120,11 @@ export class AgentsService {
 
     /**
      * Replace full software inventory for an agent.
-     * (This avoids relying on ON CONFLICT for expression indexes and keeps behavior deterministic.)
      */
     async replaceSoftwareInventory(agentId: string, items: SoftwareItem[]): Promise<void> {
         if (!Array.isArray(items)) return;
 
-        // Delete existing inventory first (simple + reliable)
-        await this.pg.query(
-            `DELETE FROM public.agent_software WHERE agent_id = $1::uuid`,
-            [agentId]
-        );
+        await this.pg.query(`DELETE FROM public.agent_software WHERE agent_id = $1::uuid`, [agentId]);
 
         const cleaned: SoftwareItem[] = items
             .map((it) => ({

@@ -21,6 +21,9 @@ public sealed class HeartbeatService : BackgroundService
     private DateTimeOffset _factsLastCollected = DateTimeOffset.MinValue;
     private DeviceFacts? _factsCache;
 
+    // ✅ log once per service start (so we can see EXACT payload + probe results)
+    private bool _loggedOnce = false;
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -62,7 +65,10 @@ public sealed class HeartbeatService : BackgroundService
                     var factsJson = JsonSerializer.Serialize(_factsCache, JsonOpts);
                     if (factsJson.Length > 64 * 1024)
                     {
-                        _log.LogWarning("Facts payload too large ({Len} chars). Skipping facts for this cycle.", factsJson.Length);
+                        _log.LogWarning(
+                            "Facts payload too large ({Len} chars). Skipping facts for this cycle.",
+                            factsJson.Length
+                        );
                         _factsCache = null;
                     }
                 }
@@ -71,21 +77,50 @@ public sealed class HeartbeatService : BackgroundService
                 var url = $"{_cfg.Current.ApiBaseUrl.TrimEnd('/')}/api/agent/ping";
 
                 using var req = new HttpRequestMessage(HttpMethod.Post, url);
-                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _cfg.Current.AgentKey);
+                req.Headers.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _cfg.Current.AgentKey);
+
+                // ✅ Probe interactive user (WTS + WMI) and log what each source returns
+                var probe = SystemInfoCollector.GetInteractiveUserProbeSafe();
+
+                // IMPORTANT:
+                // - We ALWAYS include "user" in payload (string), even if empty.
+                // - Backend turns "" into null (your updateFacts does that).
+                // - This prevents old wrong values like "HOSTNAME$" from sticking forever.
+                var interactiveUser = probe.ResultUser ?? "";
 
                 var payload = new
                 {
+                    hostname = Environment.MachineName,
                     os = "windows",
                     arch = Environment.Is64BitOperatingSystem ? "x64" : "x86",
                     version = typeof(HeartbeatService).Assembly.GetName().Version?.ToString() ?? "1.0.0",
                     primaryIp = GetPrimaryIpv4(),
-                    user = Environment.UserName,
+                    user = interactiveUser,
 
-                    // ✅ NEW: device summary facts
+                    // ✅ device summary blob
                     facts = _factsCache
                 };
 
                 req.Content = JsonContent.Create(payload, options: JsonOpts);
+
+                // ✅ One-time log dump (exactly what we need)
+                if (!_loggedOnce)
+                {
+                    _loggedOnce = true;
+
+                    _log.LogInformation(
+                        "INTERACTIVE_USER_PROBE: sessionId={SessionId} wtsUser='{WtsUser}' wtsDomain='{WtsDomain}' wmiUser='{WmiUser}' result='{Result}'",
+                        probe.ActiveSessionId,
+                        probe.WtsUser ?? "",
+                        probe.WtsDomain ?? "",
+                        probe.WmiUser ?? "",
+                        probe.ResultUser ?? ""
+                    );
+
+                    var payloadJson = JsonSerializer.Serialize(payload, JsonOpts);
+                    _log.LogInformation("PING_PAYLOAD_JSON: {Json}", payloadJson);
+                }
 
                 var resp = await http.SendAsync(req, stoppingToken);
                 resp.EnsureSuccessStatusCode();

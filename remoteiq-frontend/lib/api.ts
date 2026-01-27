@@ -6,6 +6,9 @@
 const API_BASE =
   (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE) || "";
 
+
+
+
 // Utility to join base + path safely
 function url(path: string) {
   if (!API_BASE) return path;
@@ -90,13 +93,12 @@ export async function jfetch<T>(path: string, init: JsonInit = {}): Promise<T> {
 // ---------------------------------------------------------------------------
 export type Device = {
   /**
-   * Row id returned by backend:
-   * - agent-sourced rows: agents.id
-   * - device-only rows: public.devices.id
+   * ✅ Stable id returned by backend:
+   * Always public.devices.id (uuid), even for agent-sourced rows.
    */
   id: string;
 
-  /** Always the underlying public.devices.id when known (agent rows include it). */
+  /** Same as id (kept for backwards compatibility / clarity). */
   deviceId?: string | null;
 
   hostname: string;
@@ -105,11 +107,9 @@ export type Device = {
   lastSeen?: string | null;
   status: "online" | "offline";
 
-  /** Human-readable names (existing UI uses these today). */
   client?: string | null;
   site?: string | null;
 
-  /** Stable UUIDs for customer/site (needed for correct move + sidebar scoping). */
   clientId?: string | null;
   siteId?: string | null;
 
@@ -117,15 +117,11 @@ export type Device = {
   version?: string | null;
   primaryIp?: string | null;
 
-  /** Optional UUID for the underlying agent (if backend provides it). */
   agentUuid?: string | null;
 
-  /**
-   * ✅ Raw agent facts payload (jsonb) when present.
-   * Used by the device details Summary panel (hardware/disks/etc).
-   */
   facts?: Record<string, any> | null;
 };
+
 
 export type DevicesResponse = {
   items: Device[];

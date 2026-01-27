@@ -1,7 +1,9 @@
-// src/agents/agents.controller.ts
+// backend/src/agents/agents.controller.ts
 import {
+  BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Post,
   Query,
@@ -9,17 +11,10 @@ import {
   UseGuards,
   UsePipes,
   ValidationPipe,
-  BadRequestException,
-  ForbiddenException,
 } from "@nestjs/common";
-import { AuthService } from "../auth/auth.service";
-import { EnrollAgentDto } from "./dto/enroll-agent.dto";
-import { AgentsService } from "./agents.service";
-import { AgentTokenGuard, getAgentFromRequest } from "../common/agent-token.util";
-import { UpdateAgentFactsDto } from "./dto/update-agent-facts.dto";
-import { SubmitSoftwareDto } from "./dto/submit-software.dto";
-import { ChecksService } from "../checks/checks.service";
+import { Type } from "class-transformer";
 import {
+  ArrayMinSize,
   IsArray,
   IsDateString,
   IsObject,
@@ -27,10 +22,16 @@ import {
   IsString,
   MaxLength,
   ValidateNested,
-  ArrayMinSize,
 } from "class-validator";
-import { Type } from "class-transformer";
 import { Public } from "../auth/public.decorator";
+import { AuthService } from "../auth/auth.service";
+import { ChecksService } from "../checks/checks.service";
+import { AgentTokenGuard, getAgentFromRequest } from "../common/agent-token.util";
+import { AgentsService } from "./agents.service";
+import { AgentsTasksService } from "./agents.tasks.service";
+import { EnrollAgentDto } from "./dto/enroll-agent.dto";
+import { SubmitSoftwareDto } from "./dto/submit-software.dto";
+import { UpdateAgentFactsDto } from "./dto/update-agent-facts.dto";
 
 /* ----------------------------- DTOs for runs ----------------------------- */
 
@@ -130,7 +131,8 @@ export class AgentsController {
   constructor(
     private readonly auth: AuthService,
     private readonly agents: AgentsService,
-    private readonly checks: ChecksService
+    private readonly checks: ChecksService,
+    private readonly tasks: AgentsTasksService
   ) { }
 
   @Post("/enroll")
@@ -182,7 +184,8 @@ export class AgentsController {
     checkRate(String((agent as any).id));
 
     const tokenDeviceRaw = (agent as any)?.deviceId ?? (agent as any)?.device_id;
-    const deviceIdFromToken: string | undefined = tokenDeviceRaw != null ? String(tokenDeviceRaw) : undefined;
+    const deviceIdFromToken: string | undefined =
+      tokenDeviceRaw != null ? String(tokenDeviceRaw) : undefined;
 
     const deviceIdFromBody: string | undefined = body?.deviceId ? String(body.deviceId) : undefined;
 
@@ -233,4 +236,72 @@ export class AgentsController {
     const { items } = await this.checks.getAssignmentsForDevice(effective);
     return { items };
   }
+
+  // ===================== Agent task dispatch ======================
+  /**
+   * Agent polls for queued tasks (patch_scan, patch_install, etc).
+   * Returns { ok: true, task: ..., run: ... } or { ok: true, task: null } when nothing is queued.
+   */
+  @Post("/tasks/next")
+  @UseGuards(AgentTokenGuard)
+  async claimNextTask(@Req() req: any) {
+    const agent = getAgentFromRequest(req);
+    const agentId = String((agent as any).id);
+
+    const claimed = await this.tasks.claimNext(agentId);
+    return { ok: true, task: claimed?.task ?? null, run: claimed?.run ?? null };
+  }
+
+  /**
+   * Agent reports a task run completion (stdout/stderr/artifacts/output + status).
+   * Body shape is intentionally simple to allow different task types.
+   */
+  @Post("/tasks/complete")
+  @UseGuards(AgentTokenGuard)
+  async completeTask(@Req() req: any, @Body() body: any) {
+    const agent = getAgentFromRequest(req);
+    const agentId = String((agent as any).id);
+
+    const taskId = String(body?.taskId ?? "");
+    const runId = String(body?.runId ?? "");
+    const status = String(body?.status ?? "");
+
+    if (!taskId || !runId) throw new BadRequestException("taskId and runId are required");
+    if (!status) throw new BadRequestException("status is required");
+
+    const allowed: Set<string> = new Set(["succeeded", "failed", "cancelled"]);
+    if (!allowed.has(status)) {
+      throw new BadRequestException("status must be one of: succeeded | failed | cancelled");
+    }
+
+    // ✅ Merge artifacts into output because DB only has agent_task_runs.output (no artifacts column)
+    const rawOutput = body?.output && typeof body.output === "object" ? body.output : null;
+    const rawArtifacts = body?.artifacts && typeof body.artifacts === "object" ? body.artifacts : null;
+
+    const mergedOutput =
+      rawOutput || rawArtifacts
+        ? {
+          ...(rawOutput ?? {}),
+          ...(rawArtifacts ? { artifacts: rawArtifacts } : {}),
+        }
+        : null;
+
+    await this.tasks.completeRun({
+      agentId,
+      taskId,
+      runId,
+      status: status as any,
+      stdout: body?.stdout != null ? String(body.stdout) : null,
+      stderr: body?.stderr != null ? String(body.stderr) : null,
+
+      // ✅ store everything in output jsonb
+      output: mergedOutput,
+
+      // ✅ DO NOT pass artifacts separately (it doesn't exist in schema)
+      artifacts: null,
+    });
+
+    return { ok: true };
+  }
+
 }
