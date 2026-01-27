@@ -169,6 +169,26 @@ function HistoryStatusPill({ status }: { status: string }) {
     );
 }
 
+function normalizeKb(kb: string) {
+    const raw = String(kb ?? "").trim();
+    const digits = raw.replace(/[^0-9]/g, "");
+    return digits ? `KB${digits}` : raw.toUpperCase();
+}
+
+function kbToMicrosoftSupportUrl(kb: string) {
+    const norm = normalizeKb(kb);
+    // Reliable: Microsoft Support KB search (works even when topic URLs differ)
+    return `https://www.google.com/search?q=${encodeURIComponent(norm)}`;
+}
+
+function extractBuildFromTitle(title: string): string | null {
+    // Looks for things like "(26200.7623)" or "(26100.7623)"
+    const t = String(title ?? "");
+    const matches = [...t.matchAll(/\((\d{4,6}\.\d{1,6})\)/g)].map((m) => m[1]);
+    if (!matches.length) return null;
+    return matches[matches.length - 1] ?? null; // usually the last paren is the build/version
+}
+
 export default function PatchTab({ deviceId }: { deviceId: string }) {
     const [sorting, setSorting] = React.useState<SortingState>([]);
     const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([]);
@@ -213,14 +233,16 @@ export default function PatchTab({ deviceId }: { deviceId: string }) {
         const patches = Array.isArray(data?.patches) ? data!.patches : [];
         setLastScanAt(data?.lastScanAt ?? null);
 
-        const mapped: PatchRow[] = patches.map((p) => ({
-            id: String(p.id ?? ""),
-            title: String(p.title ?? ""),
-            severity: p.severity != null ? String(p.severity) : null,
-            requiresReboot: !!p.requiresReboot,
-            kbIds: Array.isArray(p.kbIds) ? p.kbIds.map((x) => String(x)) : [],
-            status: normalizeStatus((p as any).status),
-        })).filter((p) => !!p.id);
+        const mapped: PatchRow[] = patches
+            .map((p) => ({
+                id: String(p.id ?? ""),
+                title: String(p.title ?? ""),
+                severity: p.severity != null ? String(p.severity) : null,
+                requiresReboot: !!p.requiresReboot,
+                kbIds: Array.isArray(p.kbIds) ? p.kbIds.map((x) => String(x)) : [],
+                status: normalizeStatus((p as any).status),
+            }))
+            .filter((p) => !!p.id);
 
         setRows(mapped);
         setLoading(false);
@@ -288,34 +310,52 @@ export default function PatchTab({ deviceId }: { deviceId: string }) {
         setBusyScan(false);
     }, [deviceId, refreshAll]);
 
-    const installOne = React.useCallback(async (id: string) => {
-        setBusyInstallId(id);
-        setMsg(null);
+    const installOne = React.useCallback(
+        async (id: string) => {
+            setBusyInstallId(id);
+            setMsg(null);
 
-        const { res } = await api<any>(`/api/patches/install`, {
-            method: "POST",
-            body: JSON.stringify({ deviceId, includeOptional: false, ids: [id] }),
-        });
+            const { res } = await api<any>(`/api/patches/install`, {
+                method: "POST",
+                body: JSON.stringify({ deviceId, includeOptional: false, ids: [id] }),
+            });
 
-        if (res.status === 404) {
-            setApiMissing(true);
-            setMsg({ kind: "info", text: "Patch APIs are not enabled in the backend yet (404)." });
+            if (res.status === 404) {
+                setApiMissing(true);
+                setMsg({ kind: "info", text: "Patch APIs are not enabled in the backend yet (404)." });
+                setBusyInstallId(null);
+                return;
+            }
+
+            if (!res.ok) {
+                setMsg({ kind: "error", text: `Install request failed (${res.status}).` });
+                setBusyInstallId(null);
+                return;
+            }
+
+            setApiMissing(false);
+            setMsg({ kind: "success", text: "Install queued. Refreshing…" });
+
+            setTimeout(() => void refreshAll(), 1500);
             setBusyInstallId(null);
-            return;
+        },
+        [deviceId, refreshAll]
+    );
+
+    // Build a lookup from latest scan results: KB -> { version/build, title }
+    const kbVersionMap = React.useMemo(() => {
+        const map = new Map<string, { version: string | null; title: string }>();
+
+        for (const p of rows ?? []) {
+            const version = extractBuildFromTitle(p.title);
+            for (const kb of p.kbIds ?? []) {
+                const k = normalizeKb(kb);
+                if (!map.has(k)) map.set(k, { version, title: p.title });
+            }
         }
 
-        if (!res.ok) {
-            setMsg({ kind: "error", text: `Install request failed (${res.status}).` });
-            setBusyInstallId(null);
-            return;
-        }
-
-        setApiMissing(false);
-        setMsg({ kind: "success", text: "Install queued. Refreshing…" });
-
-        setTimeout(() => void refreshAll(), 1500);
-        setBusyInstallId(null);
-    }, [deviceId, refreshAll]);
+        return map;
+    }, [rows]);
 
     const columns: ColumnDef<PatchRow>[] = React.useMemo(() => {
         return [
@@ -463,7 +503,13 @@ export default function PatchTab({ deviceId }: { deviceId: string }) {
                 <CardHeader className="pb-3">
                     <div className="flex items-center justify-between gap-3">
                         <CardTitle className="truncate">Patch History</CardTitle>
-                        <Button variant="outline" size="sm" onClick={loadHistory} className="gap-2" disabled={historyLoading}>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={loadHistory}
+                            className="gap-2"
+                            disabled={historyLoading}
+                        >
                             <RefreshCw className="h-4 w-4" />
                             Refresh
                         </Button>
@@ -492,6 +538,8 @@ export default function PatchTab({ deviceId }: { deviceId: string }) {
                                 {history.map((h) => {
                                     const when = h.finishedAt ?? h.startedAt;
                                     const installed = Array.isArray(h.installed) ? h.installed : [];
+                                    const succeeded = String(h.status ?? "").trim().toLowerCase() === "succeeded";
+
                                     return (
                                         <div key={h.runId} className="grid grid-cols-12 gap-2 px-3 py-2 text-sm">
                                             <div className="col-span-3 text-muted-foreground">{fmtDt(when)}</div>
@@ -501,15 +549,44 @@ export default function PatchTab({ deviceId }: { deviceId: string }) {
                                             <div className="col-span-2 text-muted-foreground">
                                                 <span title={h.createdByName ?? h.createdBy ?? "System"}>{whoLabel(h)}</span>
                                             </div>
+
                                             <div className="col-span-4">
                                                 {installed.length ? (
-                                                    <div className="truncate" title={installed.join(", ")}>
-                                                        {installed.join(", ")}
-                                                    </div>
+                                                    succeeded ? (
+                                                        <div className="space-y-1">
+                                                            {installed.map((kbRaw, idx) => {
+                                                                const kb = normalizeKb(kbRaw);
+                                                                const meta = kbVersionMap.get(kb);
+                                                                const version = meta?.version ?? null;
+
+                                                                return (
+                                                                    <div key={`${kb}-${idx}`} className="truncate" title={kb}>
+                                                                        <a
+                                                                            href={kbToMicrosoftSupportUrl(kb)}
+                                                                            target="_blank"
+                                                                            rel="noopener noreferrer"
+                                                                            className="underline underline-offset-2 hover:opacity-80"
+                                                                            title="Open Microsoft Support"
+                                                                        >
+                                                                            {kb}
+                                                                        </a>
+                                                                        {version ? (
+                                                                            <span className="text-muted-foreground">{" — "}{version}</span>
+                                                                        ) : null}
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    ) : (
+                                                        <div className="truncate" title={installed.join(", ")}>
+                                                            {installed.join(", ")}
+                                                        </div>
+                                                    )
                                                 ) : (
                                                     <span className="text-muted-foreground">—</span>
                                                 )}
                                             </div>
+
                                             <div className="col-span-1 text-right text-muted-foreground">
                                                 {h.requiresReboot === null ? "—" : h.requiresReboot ? "Yes" : "No"}
                                             </div>

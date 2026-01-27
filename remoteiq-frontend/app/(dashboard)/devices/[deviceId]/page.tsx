@@ -4,7 +4,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
-import { Power, Play, ShieldCheck, Tag, Move, Copy } from "lucide-react";
+import { Power, Play, Tag, Move, Copy } from "lucide-react";
 
 import {
     Breadcrumb,
@@ -234,7 +234,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
         router.push(`${pathname}?${current.toString()}`);
     }, [params.deviceId, pathname, router, search]);
 
-    const postDeviceAction = React.useCallback(async (action: "reboot" | "patch") => {
+    const postDeviceAction = React.useCallback(async (action: "reboot") => {
         setBanner(null);
 
         const res = await fetch(`/api/devices/${encodeURIComponent(params.deviceId)}/actions/${action}`, {
@@ -250,10 +250,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
         if (res.status === 202 && body?.accepted && body?.jobId) {
             setBanner({
                 kind: "success",
-                text:
-                    action === "patch"
-                        ? `Patch job queued successfully (Job ID: ${body.jobId}).`
-                        : `Reboot job queued successfully (Job ID: ${body.jobId}).`,
+                text: `Reboot job queued successfully (Job ID: ${body.jobId}).`,
             });
             return;
         }
@@ -275,10 +272,6 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
 
     const onReboot = React.useCallback(async () => {
         await postDeviceAction("reboot");
-    }, [postDeviceAction]);
-
-    const onPatchNow = React.useCallback(async () => {
-        await postDeviceAction("patch");
     }, [postDeviceAction]);
 
     const copy = React.useCallback(async (text: string) => {
@@ -394,9 +387,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                         >
                             <Play className="h-4 w-4" /> Run Script
                         </Button>
-                        <Button variant="outline" size="sm" title="Trigger a patch cycle" onClick={onPatchNow}>
-                            <ShieldCheck className="h-4 w-4" /> Patch Now
-                        </Button>
+
                         <Button variant="destructive" size="sm" title="Reboot this device" onClick={onReboot}>
                             <Power className="h-4 w-4" /> Reboot
                         </Button>

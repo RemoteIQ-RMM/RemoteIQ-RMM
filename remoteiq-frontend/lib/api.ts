@@ -3,11 +3,8 @@
 // It reads NEXT_PUBLIC_API_BASE for the backend base URL.
 
 // ---------------------------- ENV / BASE ------------------------------------
-const API_BASE =
+export const API_BASE =
   (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE) || "";
-
-
-
 
 // Utility to join base + path safely
 function url(path: string) {
@@ -61,6 +58,7 @@ async function tryJfetch<T>(path: string, init?: JsonInit): Promise<T | undefine
 // unified fetch wrapper w/ JSON
 export async function jfetch<T>(path: string, init: JsonInit = {}): Promise<T> {
   const { body, ...rest } = init;
+
   const res = await fetch(url(path), {
     method: init.method ?? (body != null ? "POST" : "GET"),
     credentials: "include",
@@ -80,6 +78,7 @@ export async function jfetch<T>(path: string, init: JsonInit = {}): Promise<T> {
   }
 
   if (res.status === 204) return undefined as unknown as T;
+
   try {
     return (await res.json()) as T;
   } catch {
@@ -121,7 +120,6 @@ export type Device = {
 
   facts?: Record<string, any> | null;
 };
-
 
 export type DevicesResponse = {
   items: Device[];
@@ -874,7 +872,10 @@ export async function revokeMySession(sessionId: string): Promise<void> {
   await jfetch(base, { method: "PATCH", body: { action: "revoke" } });
 }
 
-export async function trustMySession(sessionId: string, trusted: boolean): Promise<{ trusted: boolean }> {
+export async function trustMySession(
+  sessionId: string,
+  trusted: boolean
+): Promise<{ trusted: boolean }> {
   const enc = encodeURIComponent(sessionId);
   const base = `/api/users/me/sessions/${enc}`;
 
@@ -1282,8 +1283,10 @@ export async function createCustomerSite(
 }
 
 // ------------------------- Deletes (Clients + Sites) -------------------------
-
-export async function deleteCustomerClient(clientIdOrName: string, opts?: { force?: boolean }): Promise<void> {
+export async function deleteCustomerClient(
+  clientIdOrName: string,
+  opts?: { force?: boolean }
+): Promise<void> {
   const cid = encodeURIComponent(String(clientIdOrName ?? "").trim());
   const q = opts?.force ? `?force=true` : "";
 
@@ -1358,7 +1361,6 @@ export async function deleteCustomerSite(clientIdOrName: string, siteIdOrName: s
 //   POST /api/provisioning/endpoints
 //   POST /endpoints
 // ---------------------------------------------------------------------------
-
 export type CreateEndpointRequest = {
   clientId: string;
   siteId: string;
@@ -1440,7 +1442,6 @@ export async function createEndpoint(req: CreateEndpointRequest): Promise<Create
 // Backend route:
 //   POST /api/provisioning/enrollment-keys
 // ---------------------------------------------------------------------------
-
 export type CreateEnrollmentKeyRequest = {
   clientId: string;
   siteId: string;
@@ -1518,7 +1519,6 @@ export async function createEnrollmentKey(
 //   POST /api/provisioning/installer-bundles  -> { url, filename, expiresAt, ... }
 //   GET  /api/provisioning/installer-bundles/:id/download?token=...
 // ---------------------------------------------------------------------------
-
 export type InstallerOs = "windows" | "linux" | "macos";
 
 export type InstallerBundleRequest = {
