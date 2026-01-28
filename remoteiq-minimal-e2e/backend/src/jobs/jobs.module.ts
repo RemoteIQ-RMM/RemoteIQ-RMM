@@ -5,9 +5,11 @@ import { CommonModule } from "../common/common.module";        // SocketRegistry
 import { WsModule } from "../ws/ws.module";                    // if you use ws gateway/handlers
 
 import { JobsController } from "./jobs.controller";
+import { AgentJobsController } from "./agent-jobs.controller";
+import { JobsPublicController } from "./jobs.public.controller";
+
 import { JobsService } from "./jobs.service";
 import { DispatcherService } from "./dispatcher.service";
-import { AgentJobsController } from "./agent-jobs.controller";
 
 @Module({
   imports: [
@@ -15,7 +17,7 @@ import { AgentJobsController } from "./agent-jobs.controller";
     CommonModule,                  // exports SocketRegistry
     forwardRef(() => WsModule),    // keep if you have circular deps with ws
   ],
-  controllers: [JobsController, AgentJobsController],
+  controllers: [JobsController, AgentJobsController, JobsPublicController],
   providers: [JobsService, DispatcherService],
   exports: [JobsService, DispatcherService],
 })

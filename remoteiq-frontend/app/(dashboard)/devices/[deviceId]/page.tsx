@@ -4,7 +4,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
-import { Power, Play, Tag, Move, Copy } from "lucide-react";
+import { Power, Play, Tag, Move, Copy, ArrowLeft, ExternalLink } from "lucide-react";
 
 import {
     Breadcrumb,
@@ -25,6 +25,7 @@ import SoftwareTab from "@/components/software-tab";
 import ChecksAndAlertsTab from "@/components/checks-and-alerts-tab";
 import PatchTab from "@/components/patch-tab";
 import RemoteTab from "@/components/remote-tab";
+import FileBrowserTab from "@/components/file-browser-tab";
 
 import { useDevice } from "@/lib/use-device";
 
@@ -91,21 +92,20 @@ function clampPct(x: number): number {
 }
 
 function pickDiskBarClass(usedPct: number): string {
-    // Used% thresholds (you can tweak later)
     if (usedPct >= 90) return "bg-red-500";
     if (usedPct >= 80) return "bg-yellow-500";
     return "bg-emerald-500";
 }
 
 type DiskFact = {
-    mount?: string; // "C:" or "/"
+    mount?: string;
     name?: string;
-    fs?: string; // "NTFS"
+    fs?: string;
     totalBytes?: number;
     freeBytes?: number;
     usedBytes?: number;
-    usedPercent?: number; // 0-100
-    summary?: string; // if agent wants to pre-format: "2.9 TB free of 7.3 TB"
+    usedPercent?: number;
+    summary?: string;
 };
 
 function computeDisk(d: DiskFact) {
@@ -127,7 +127,6 @@ function computeDisk(d: DiskFact) {
 
     const safeUsedPct = clampPct(Number.isFinite(usedPct) ? usedPct : 0);
 
-    // Prefer agent summary, else build one if we have bytes
     const builtSummary =
         d.summary ??
         (Number.isFinite(total) && Number.isFinite(free)
@@ -146,21 +145,15 @@ function computeDisk(d: DiskFact) {
     };
 }
 
-// Facts can arrive in different shapes depending on how you store it in agents.facts:
-// - recommended: facts.device = { hardware, disks, ... }
-// - legacy/alternate: facts.hardware / facts.disks directly
 function extractDeviceFactsRoot(facts: Record<string, any> | null): Record<string, any> | null {
     if (!facts || typeof facts !== "object") return null;
 
-    // If you store the summary blob under facts.device, prefer that.
     const device = (facts as any).device;
     if (device && typeof device === "object") return device as Record<string, any>;
 
-    // Some agents may nest it under "facts" (rare), allow it.
     const nestedFacts = (facts as any).facts;
     if (nestedFacts && typeof nestedFacts === "object") return nestedFacts as Record<string, any>;
 
-    // If it looks like the summary already (has hardware/disks), use it.
     if ((facts as any).hardware || (facts as any).disks) return facts;
 
     return null;
@@ -175,6 +168,9 @@ async function safeJson(res: Response): Promise<any> {
         return null;
     }
 }
+
+type ToolParam = "" | "remote-desktop" | "remote-shell" | "file-browser";
+type TabValue = "overview" | "remote" | "checks" | "patch" | "software";
 
 export default function DeviceDetailPage({ params }: { params: { deviceId: string } }) {
     const { masterDevices, filteredDevices } = useDashboard();
@@ -226,7 +222,13 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
     const pathname = usePathname();
     const search = useSearchParams();
 
+    const tool = (String(search?.get("tool") ?? "").trim() as ToolParam) || "";
+    const popout = String(search?.get("popout") ?? "").trim() === "1";
+
     const [banner, setBanner] = React.useState<ActionBanner>(null);
+
+    // ✅ Fix: tabs must have real state so clicks work
+    const [tab, setTab] = React.useState<TabValue>("overview");
 
     const openRunScript = React.useCallback(() => {
         const current = new URLSearchParams(search?.toString() ?? "");
@@ -234,41 +236,42 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
         router.push(`${pathname}?${current.toString()}`);
     }, [params.deviceId, pathname, router, search]);
 
-    const postDeviceAction = React.useCallback(async (action: "reboot") => {
-        setBanner(null);
+    const postDeviceAction = React.useCallback(
+        async (action: "reboot") => {
+            setBanner(null);
 
-        const res = await fetch(`/api/devices/${encodeURIComponent(params.deviceId)}/actions/${action}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ reason: "manual" }),
-        });
-
-        const body = await safeJson(res);
-
-        // Your controller returns 202 + { accepted: true, jobId }
-        if (res.status === 202 && body?.accepted && body?.jobId) {
-            setBanner({
-                kind: "success",
-                text: `Reboot job queued successfully (Job ID: ${body.jobId}).`,
+            const res = await fetch(`/api/devices/${encodeURIComponent(params.deviceId)}/actions/${action}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ reason: "manual" }),
             });
-            return;
-        }
 
-        // Common auth/perm errors
-        if (res.status === 401 || res.status === 403) {
+            const body = await safeJson(res);
+
+            if (res.status === 202 && body?.accepted && body?.jobId) {
+                setBanner({
+                    kind: "success",
+                    text: `Reboot job queued successfully (Job ID: ${body.jobId}).`,
+                });
+                return;
+            }
+
+            if (res.status === 401 || res.status === 403) {
+                setBanner({
+                    kind: "error",
+                    text: "You don’t have permission to run this action (401/403).",
+                });
+                return;
+            }
+
             setBanner({
                 kind: "error",
-                text: "You don’t have permission to run this action (401/403).",
+                text: `Action failed (${res.status}). ${body?.message ? String(body.message) : ""}`.trim(),
             });
-            return;
-        }
-
-        setBanner({
-            kind: "error",
-            text: `Action failed (${res.status}). ${body?.message ? String(body.message) : ""}`.trim(),
-        });
-    }, [params.deviceId]);
+        },
+        [params.deviceId]
+    );
 
     const onReboot = React.useCallback(async () => {
         await postDeviceAction("reboot");
@@ -281,6 +284,34 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
             // ignore
         }
     }, []);
+
+    const setTool = React.useCallback(
+        (nextTool: ToolParam) => {
+            const current = new URLSearchParams(search?.toString() ?? "");
+            if (nextTool) current.set("tool", nextTool);
+            else current.delete("tool");
+            router.push(`${pathname}?${current.toString()}`);
+        },
+        [pathname, router, search]
+    );
+
+    const openPopout = React.useCallback(() => {
+        const current = new URLSearchParams(search?.toString() ?? "");
+        if (!current.get("tool")) current.set("tool", "file-browser");
+        current.set("popout", "1");
+        const url = `${pathname}?${current.toString()}`;
+        window.open(url, "_blank", "noopener,noreferrer,width=1280,height=800");
+    }, [pathname, search]);
+
+    // ✅ If a tool is selected, force "remote" tab active.
+    const tabsValue: TabValue = tool ? "remote" : tab;
+
+    // ✅ Keep tab state sane if tool query param appears/disappears
+    React.useEffect(() => {
+        if (tool) {
+            setTab("remote");
+        }
+    }, [tool]);
 
     if (loading && !device) {
         return (
@@ -331,27 +362,67 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
     const currentUser = (device as any).user ?? "—";
     const agentUuid = (device as any)?.agentUuid as string | undefined | null;
 
-    // This is the raw agents.facts jsonb that your API returns
     const facts = ((device as any)?.facts ?? null) as Record<string, any> | null;
-
-    // ✅ Extract the device summary blob in a tolerant way:
     const deviceFacts = extractDeviceFactsRoot(facts);
 
     const hwModel = deviceFacts?.hardware?.model ?? null;
     const hwCpu = deviceFacts?.hardware?.cpu ?? null;
 
-    // RAM: prefer a pretty string if your agent sends it, else format ramBytes if present
     const hwRam =
         deviceFacts?.hardware?.ram ??
         (typeof deviceFacts?.hardware?.ramBytes === "number" ? formatBytes(deviceFacts.hardware.ramBytes) : null);
 
-    // GPU: if array, join; else string
     const rawGpu = deviceFacts?.hardware?.gpu ?? null;
     const hwGpu = Array.isArray(rawGpu) ? rawGpu.filter(Boolean).join(", ") : rawGpu;
 
     const hwSerial = deviceFacts?.hardware?.serial ?? null;
 
     const disks = Array.isArray(deviceFacts?.disks) ? (deviceFacts?.disks as DiskFact[]) : null;
+
+    // ✅ Popout mode: FULL WINDOW (no max width, no centered wrapper) + NO Back button
+    if (popout) {
+        return (
+            <main className="min-h-screen w-full">
+                <div className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur">
+                    <div className="flex items-center justify-between gap-3 px-4 py-3">
+                        <div className="min-w-0">
+                            <div className="text-xs text-muted-foreground">Device</div>
+                            <div className="text-base font-semibold truncate">
+                                {(device as any).alias || (device as any).hostname}
+                            </div>
+                            <div className="text-xs text-muted-foreground truncate">
+                                {(device as any).client} / {(device as any).site}
+                            </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                            <Button variant="outline" onClick={() => window.close()} title="Close popout">
+                                Close
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="w-full p-4">
+                    {tool === "file-browser" ? (
+                        <FileBrowserTab deviceId={params.deviceId} popout />
+                    ) : (
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Remote Tool</CardTitle>
+                                <CardDescription>
+                                    This popout is wired for File Browser right now. Other tools can be added next.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="text-sm text-muted-foreground">
+                                Unknown tool: <code className="text-xs">{tool || "(none)"}</code>
+                            </CardContent>
+                        </Card>
+                    )}
+                </div>
+            </main>
+        );
+    }
 
     return (
         <main className="grid flex-1 items-start gap-4 p-4 sm:px-6 sm:py-0 md:gap-8">
@@ -378,13 +449,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </Breadcrumb>
 
                     <div className="flex items-center gap-2">
-                        <Button
-                            variant="default"
-                            size="sm"
-                            onClick={openRunScript}
-                            className="gap-2"
-                            title="Open Run Script"
-                        >
+                        <Button variant="default" size="sm" onClick={openRunScript} className="gap-2" title="Open Run Script">
                             <Play className="h-4 w-4" /> Run Script
                         </Button>
 
@@ -420,7 +485,16 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </div>
                 ) : null}
 
-                <Tabs defaultValue="overview">
+                <Tabs
+                    value={tabsValue}
+                    onValueChange={(v) => {
+                        const next = (v as TabValue) || "overview";
+                        setTab(next);
+
+                        // leaving Remote? clear any selected tool so it stops forcing Remote
+                        if (next !== "remote") setTool("");
+                    }}
+                >
                     <div className="flex items-center">
                         <TabsList>
                             <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -450,20 +524,10 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                             </CardDescription>
                                         </div>
                                         <div className="flex items-center gap-2 shrink-0">
-                                            <Button
-                                                variant="outline"
-                                                size="icon"
-                                                title="Edit alias"
-                                                aria-label="Edit alias"
-                                            >
+                                            <Button variant="outline" size="icon" title="Edit alias" aria-label="Edit alias">
                                                 <Tag className="h-4 w-4" />
                                             </Button>
-                                            <Button
-                                                variant="outline"
-                                                size="icon"
-                                                title="Move device"
-                                                aria-label="Move device"
-                                            >
+                                            <Button variant="outline" size="icon" title="Move device" aria-label="Move device">
                                                 <Move className="h-4 w-4" />
                                             </Button>
                                         </div>
@@ -517,9 +581,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
 
                                                 <div className="flex justify-between gap-4">
                                                     <span>System Model</span>
-                                                    <span className="text-foreground">
-                                                        {hwModel ? String(hwModel) : "—"}
-                                                    </span>
+                                                    <span className="text-foreground">{hwModel ? String(hwModel) : "—"}</span>
                                                 </div>
 
                                                 <div className="flex justify-between gap-4">
@@ -539,9 +601,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
 
                                                 <div className="flex justify-between gap-4">
                                                     <span>System Serial Number</span>
-                                                    <span className="text-foreground">
-                                                        {hwSerial ? String(hwSerial) : "—"}
-                                                    </span>
+                                                    <span className="text-foreground">{hwSerial ? String(hwSerial) : "—"}</span>
                                                 </div>
 
                                                 {!deviceFacts ? (
@@ -598,10 +658,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                                             <div className="font-medium">
                                                                 {d.title}
                                                                 {d.fs ? (
-                                                                    <span className="text-muted-foreground font-normal">
-                                                                        {" "}
-                                                                        ({d.fs})
-                                                                    </span>
+                                                                    <span className="text-muted-foreground font-normal"> ({d.fs})</span>
                                                                 ) : null}
                                                             </div>
                                                             <div className="text-xs text-muted-foreground">
@@ -617,10 +674,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                                             aria-valuemax={100}
                                                             aria-label={`${d.title} disk usage`}
                                                         >
-                                                            <div
-                                                                className={`h-full ${barClass}`}
-                                                                style={{ width: `${d.usedPct}%` }}
-                                                            />
+                                                            <div className={`h-full ${barClass}`} style={{ width: `${d.usedPct}%` }} />
                                                         </div>
 
                                                         <div className="text-xs text-muted-foreground">{d.summary}</div>
@@ -635,8 +689,38 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </TabsContent>
 
                     <TabsContent value="remote">
-                        <RemoteTab />
+                        {tool === "file-browser" ? (
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                        <div className="text-sm text-muted-foreground">Remote</div>
+                                        <div className="text-lg font-semibold truncate">File Browser</div>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        <Button variant="outline" onClick={() => setTool("")} className="gap-2">
+                                            <ArrowLeft className="h-4 w-4" />
+                                            Back
+                                        </Button>
+                                        <Button
+                                            variant="outline"
+                                            onClick={openPopout}
+                                            className="gap-2"
+                                            title="Open in a new window"
+                                        >
+                                            <ExternalLink className="h-4 w-4" />
+                                            Pop out
+                                        </Button>
+                                    </div>
+                                </div>
+
+                                <FileBrowserTab deviceId={params.deviceId} />
+                            </div>
+                        ) : (
+                            <RemoteTab deviceId={params.deviceId} />
+                        )}
                     </TabsContent>
+
                     <TabsContent value="checks">
                         <ChecksAndAlertsTab deviceId={params.deviceId} />
                     </TabsContent>

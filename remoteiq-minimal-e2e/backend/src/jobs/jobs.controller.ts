@@ -1,3 +1,4 @@
+// backend/src/jobs/jobs.controller.ts
 import {
   Body,
   Controller,
@@ -19,7 +20,7 @@ export class JobsController {
 
   constructor(
     private readonly jobs: JobsService,
-    private readonly pg: PgPoolService,
+    private readonly pg: PgPoolService
   ) { }
 
   private checkAdmin(key: string | undefined) {
@@ -44,7 +45,7 @@ export class JobsController {
             created_at, 
             updated_at
          FROM public.agents
-         ORDER BY created_at DESC`,
+         ORDER BY created_at DESC`
       );
       return { items: rows };
     } catch (e: any) {
@@ -58,21 +59,46 @@ export class JobsController {
     @Headers("x-admin-api-key") key: string | undefined,
     @Body()
     body: {
-      agentId?: string; // numeric id as string (back-compat)
-      agentUuid?: string; // new: prefer uuid
+      agentId?: string;
+      agentUuid?: string;
       language: "powershell" | "bash";
       scriptText: string;
       args?: string[];
       env?: Record<string, string>;
       timeoutSec?: number;
-    },
+    }
   ) {
     this.checkAdmin(key);
     try {
-      const job = await this.jobs.createRunScriptJob(body);
-      return job;
+      return await this.jobs.createRunScriptJob(body);
     } catch (e: any) {
       this.logger.error(`run-script failed: ${e?.message ?? e}`, e?.stack ?? undefined);
+      throw e;
+    }
+  }
+
+  @Post("/jobs/file-op")
+  async fileOp(
+    @Headers("x-admin-api-key") key: string | undefined,
+    @Body()
+    body: {
+      agentId?: string;
+      agentUuid?: string;
+
+      op: "list" | "read" | "write" | "mkdir" | "delete" | "move" | "copy";
+      path: string;
+
+      path2?: string;
+      recursive?: boolean;
+      maxBytes?: number;
+      contentBase64?: string;
+    }
+  ) {
+    this.checkAdmin(key);
+    try {
+      return await this.jobs.createFileOpJob(body);
+    } catch (e: any) {
+      this.logger.error(`file-op failed: ${e?.message ?? e}`, e?.stack ?? undefined);
       throw e;
     }
   }
