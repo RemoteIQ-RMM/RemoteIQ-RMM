@@ -25,6 +25,7 @@ import { CustomersModule } from "./customers/customers.module";
 import { BackupsModule } from "./backups/backups.module";
 import { StorageModule } from "./storage/storage.module";
 import { TicketsModule } from "./tickets/tickets.module";
+import { RemoteShellModule } from "./remote-shell/remote-shell.module";
 
 import { AuthCookieMiddleware } from "./auth/auth-cookie.middleware";
 import { CompatModule } from "./compat/compat.module";
@@ -62,6 +63,7 @@ import { ProvisioningModule } from "./provisioning/provisioning.module";
         BackupsModule,
         TicketsModule,
         EndpointsModule,
+        RemoteShellModule,
 
         // ✅ compatibility endpoints for ticketing UI
         CompatModule,

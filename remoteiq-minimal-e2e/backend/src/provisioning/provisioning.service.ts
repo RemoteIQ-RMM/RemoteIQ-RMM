@@ -8,6 +8,7 @@ import {
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+
 import { PgPoolService } from "../storage/pg-pool.service";
 import { CreateEndpointDto, type CreateEndpointResult } from "./dto/create-endpoint.dto";
 import {
@@ -66,7 +67,10 @@ export class ProvisioningService {
 
     // Enforce: site must belong to client
     const siteRes = await this.pg.query<{ client_id: string }>(
-      `SELECT s.client_id::text AS client_id FROM public.sites s WHERE s.id = $1::uuid LIMIT 1`,
+      `SELECT s.client_id::text AS client_id
+       FROM public.sites s
+       WHERE s.id = $1::uuid
+       LIMIT 1`,
       [siteId]
     );
     const siteClientId = siteRes.rows[0]?.client_id ?? null;
@@ -78,8 +82,10 @@ export class ProvisioningService {
     // Create device row if missing (FK for agents.device_id requires this)
     await this.pg.query(
       `
-      INSERT INTO public.devices (id, site_id, hostname, alias, operating_system, architecture, status, last_seen_at, created_at, updated_at)
-      VALUES ($1::uuid, $2::uuid, $3::text, $4::text, $5::text, NULL, 'offline'::device_status, NULL, NOW(), NOW())
+      INSERT INTO public.devices
+        (id, site_id, hostname, alias, operating_system, architecture, status, last_seen_at, created_at, updated_at)
+      VALUES
+        ($1::uuid, $2::uuid, $3::text, $4::text, $5::text, NULL, 'offline'::device_status, NULL, NOW(), NOW())
       ON CONFLICT (id) DO UPDATE
       SET site_id = EXCLUDED.site_id,
           alias = EXCLUDED.alias,
@@ -98,7 +104,9 @@ export class ProvisioningService {
       INSERT INTO public.endpoint_enrollments
         (client_id, site_id, device_id, os, alias, token_hash, expires_at, used_at, created_at, updated_at)
       VALUES
-        ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, $6::text, NOW() + ($7::text || ' minutes')::interval, NULL, NOW(), NOW())
+        ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, $6::text,
+         NOW() + ($7::text || ' minutes')::interval,
+         NULL, NOW(), NOW())
       RETURNING expires_at
       `,
       [clientId, siteId, deviceId, os, alias, tokenHash, String(expiresMinutes)]
@@ -141,7 +149,10 @@ export class ProvisioningService {
 
     // Enforce: site must belong to client
     const siteRes = await this.pg.query<{ client_id: string }>(
-      `SELECT s.client_id::text AS client_id FROM public.sites s WHERE s.id = $1::uuid LIMIT 1`,
+      `SELECT s.client_id::text AS client_id
+       FROM public.sites s
+       WHERE s.id = $1::uuid
+       LIMIT 1`,
       [siteId]
     );
     const siteClientId = siteRes.rows[0]?.client_id ?? null;
@@ -157,9 +168,13 @@ export class ProvisioningService {
     const { rows } = await this.pg.query<{ expires_at: string }>(
       `
       INSERT INTO public.site_enrollment_keys
-        (id, client_id, site_id, name, token_hash, expires_at, revoked_at, last_used_at, created_by_user_id, created_at, updated_at)
+        (id, client_id, site_id, name, token_hash, expires_at,
+         revoked_at, last_used_at, created_by_user_id, created_at, updated_at)
       VALUES
-        ($1::uuid, $2::uuid, $3::uuid, NULLIF($4::text, ''), $5::text, NOW() + ($6::text || ' minutes')::interval, NULL, NULL, $7::uuid, NOW(), NOW())
+        ($1::uuid, $2::uuid, $3::uuid, NULLIF($4::text, ''),
+         $5::text,
+         NOW() + ($6::text || ' minutes')::interval,
+         NULL, NULL, $7::uuid, NOW(), NOW())
       RETURNING expires_at
       `,
       [tokenId, clientId, siteId, name, tokenHash, String(expiresMinutes), createdByUserId]
@@ -362,7 +377,6 @@ function Force-DeleteService {
 
   Write-Log "Force-delete attempting for service: $ServiceName"
 
-  # Stop service best-effort
   try {
     $stopOut = (sc.exe stop $ServiceName 2>&1 | Out-String)
     Write-Log "sc.exe stop output: $($stopOut.Trim())"
@@ -370,11 +384,9 @@ function Force-DeleteService {
 
   Start-Sleep -Milliseconds 800
 
-  # Kill known agent processes
   Stop-AgentProcesses
   Start-Sleep -Milliseconds 400
 
-  # Standard delete
   try {
     $delOut = (sc.exe delete $ServiceName 2>&1 | Out-String)
     Write-Log "sc.exe delete output: $($delOut.Trim())"
@@ -382,7 +394,6 @@ function Force-DeleteService {
 
   Start-Sleep -Seconds 1
 
-  # CIM/WMI delete fallback (similar to many GUI/tooling paths)
   try {
     $svc = Get-CimInstance Win32_Service -Filter ("Name='" + $ServiceName + "'") -ErrorAction SilentlyContinue
     if ($svc) {
@@ -395,7 +406,6 @@ function Force-DeleteService {
 
   Start-Sleep -Milliseconds 800
 
-  # Registry cleanup fallback (aggressive; requires admin)
   try {
     $regPath = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\$ServiceName"
     if (Test-Path $regPath) {
@@ -406,7 +416,6 @@ function Force-DeleteService {
     Write-Log "Registry cleanup error (ignored): $($_.Exception.Message)"
   }
 
-  # Wait for SCM to release it
   $gone = Wait-ServiceNotExists -ServiceName $ServiceName -Seconds 45
   if ($gone) {
     Write-Log "Force-delete success: service no longer exists."
@@ -444,7 +453,6 @@ function Ensure-ServiceConfigOrCreate {
   if ($LASTEXITCODE -eq 1078) {
     Write-Log "CreateService FAILED 1078: name or display name collision."
 
-    # If name collision (service exists even though our check didn't see it), try force delete then retry create
     $nameExists = Service-Exists -ServiceName $ServiceName
     if ($nameExists -and $ForceDeleteOnConflict) {
       Write-Log "Service name appears to exist. Attempting force-delete fallback..."
@@ -462,7 +470,6 @@ function Ensure-ServiceConfigOrCreate {
       }
     }
 
-    # DisplayName collision: keep service name, pick a unique display name
     if (-not (Service-Exists -ServiceName $ServiceName)) {
       $altDisplay = "$DisplayName ($ServiceName)"
       Write-Log "Retrying create with DisplayName='$altDisplay'..."
@@ -476,7 +483,6 @@ function Ensure-ServiceConfigOrCreate {
       return
     }
 
-    # Service exists after all -> update config as last resort
     Write-Log "Service exists after collision. Falling back to sc.exe config..."
     $cfgOut2 = (sc.exe config $ServiceName binPath= $BinPath start= auto DisplayName= "$DisplayName" 2>&1 | Out-String)
     Write-Log "sc.exe config output (fallback): $($cfgOut2.Trim())"
@@ -495,14 +501,46 @@ function Ensure-ServiceConfigOrCreate {
   Write-Log "sc.exe description output: $($descOut.Trim())"
 }
 
+function Ensure-ServiceRunsAsLocalSystem {
+  param([string]$ServiceName)
+
+  try {
+    $svc = Get-CimInstance Win32_Service -Filter ("Name='" + $ServiceName + "'") -ErrorAction SilentlyContinue
+    if (-not $svc) {
+      Write-Log "Ensure-ServiceRunsAsLocalSystem: service not found (yet): $ServiceName"
+      return
+    }
+
+    $startName = [string]$svc.StartName
+    Write-Log "Service StartName currently: $startName"
+
+    if ($startName -ieq "LocalSystem") {
+      Write-Log "Service already runs as LocalSystem."
+      return
+    }
+
+    Write-Log "Forcing service logon to LocalSystem..."
+    $out = (sc.exe config $ServiceName obj= LocalSystem password= "" 2>&1 | Out-String)
+    Write-Log "sc.exe config obj=LocalSystem output: $($out.Trim())"
+    if ($LASTEXITCODE -ne 0) {
+      Fail "Failed to set service to LocalSystem (exit=$LASTEXITCODE). Output: $($out.Trim())"
+    }
+
+    $svc2 = Get-CimInstance Win32_Service -Filter ("Name='" + $ServiceName + "'") -ErrorAction SilentlyContinue
+    if ($svc2) {
+      Write-Log "Service StartName after update: $([string]$svc2.StartName)"
+    }
+  } catch {
+    Fail "Ensure-ServiceRunsAsLocalSystem failed: $($_.Exception.Message)"
+  }
+}
+
 $BundleId = "${safeBundleId}"
 $DownloadToken = "${safeToken}"
 $EnrollmentKey = "${safeKey}"
 
-# DEV/TEST flag: when true, we will attempt aggressive "manual-style" service deletion on name collision.
 $ForceDeleteServiceOnConflict = $true
 
-# Server base URL (prefer baked baseUrl; if empty, prompt)
 $ServerBaseUrl = "${safeBaseUrl}"
 if ([string]::IsNullOrWhiteSpace($ServerBaseUrl)) {
   $ServerBaseUrl = Read-Host "Enter RemoteIQ Server Base URL (example: http://localhost:3001)"
@@ -528,7 +566,6 @@ if (-not $IsAdmin) { Fail "Please run this installer as Administrator." }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
 
-# Reuse deviceId if config already exists
 $DeviceId = $null
 if (Test-Path -LiteralPath $CfgPath) {
   try {
@@ -569,7 +606,6 @@ Write-Log "Download complete."
 
 Write-Log "Extracting agent to: $InstallDir"
 
-# Stop service/process BEFORE overwriting files (best-effort)
 $ServiceName = "RemoteIQAgent"
 if (Service-Exists -ServiceName $ServiceName) {
   try {
@@ -582,7 +618,6 @@ if (Service-Exists -ServiceName $ServiceName) {
 Stop-AgentProcesses
 Start-Sleep -Milliseconds 500
 
-# Clean install dir best-effort
 try {
   Get-ChildItem -Path $InstallDir -Force -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
 } catch {
@@ -594,7 +629,6 @@ Retry -Attempts 3 -DelaySeconds 2 -Script {
 } | Out-Null
 Write-Log "Extraction complete."
 
-# Find agent exe
 $ExeCandidates = @(
   (Join-Path $InstallDir "remoteiq-agent.exe"),
   (Join-Path $InstallDir "RemoteIQ.Agent.exe"),
@@ -607,7 +641,6 @@ if (-not $AgentExe) {
 }
 Write-Log "Agent executable: $AgentExe"
 
-# Install service (prefer NSSM if shipped)
 $ServiceDisplay = "RemoteIQ Agent"
 $ServiceDesc = "RemoteIQ endpoint agent"
 
@@ -618,11 +651,14 @@ if (Test-Path $NssmPath) {
   & $NssmPath set $ServiceName AppDirectory $InstallDir | Out-Null
   & $NssmPath set $ServiceName DisplayName $ServiceDisplay | Out-Null
   & $NssmPath set $ServiceName Start SERVICE_AUTO_START | Out-Null
+  try { & $NssmPath set $ServiceName ObjectName LocalSystem | Out-Null } catch {}
 } else {
   Write-Log "nssm.exe not present. Using sc.exe create/config."
   $binPath = '"' + $AgentExe + '"'
   Ensure-ServiceConfigOrCreate -ServiceName $ServiceName -BinPath $binPath -DisplayName $ServiceDisplay -Description $ServiceDesc -ForceDeleteOnConflict $ForceDeleteServiceOnConflict
 }
+
+Ensure-ServiceRunsAsLocalSystem -ServiceName $ServiceName
 
 Write-Log "Starting service..."
 $startOut = (sc.exe start $ServiceName 2>&1 | Out-String)
@@ -739,7 +775,9 @@ echo "DeviceId: $DEVICE_ID"
       INSERT INTO public.installer_bundles
         (id, client_id, site_id, os, filename, content, download_token_hash, expires_at, created_at)
       VALUES
-        ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, $6::text, $7::text, NOW() + ($8::text || ' minutes')::interval, NOW())
+        ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, $6::text, $7::text,
+         NOW() + ($8::text || ' minutes')::interval,
+         NOW())
       `,
       [bundleId, clientId, siteId, os, filename, built.content, downloadTokenHash, String(expiresMinutes)]
     );
@@ -826,6 +864,7 @@ echo "DeviceId: $DEVICE_ID"
     if (!st || typeof st.isFile !== "function" || !st.isFile()) {
       throw new NotFoundException(`Agent package path is not a file for os=${os}`);
     }
+
 
     return { filename: pkg.filename, contentType: pkg.contentType, absPath: pkg.absPath };
   }

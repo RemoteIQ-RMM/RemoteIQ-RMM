@@ -3,6 +3,7 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@import "xterm/css/xterm.css";
 
 /* -----------------------------------------------------------
    shadcn/ui expects HSL triplets in tokens like --primary and

@@ -26,8 +26,12 @@ import ChecksAndAlertsTab from "@/components/checks-and-alerts-tab";
 import PatchTab from "@/components/patch-tab";
 import RemoteTab from "@/components/remote-tab";
 import FileBrowserTab from "@/components/file-browser-tab";
-
 import { useDevice } from "@/lib/use-device";
+import dynamic from "next/dynamic";
+
+const RemoteShellPanel = dynamic(() => import("@/components/remote-shell-panel"), {
+    ssr: false,
+});
 
 // US-style "MM/DD/YYYY - H:MM AM/PM"
 const dtFmt = new Intl.DateTimeFormat("en-US", {
@@ -379,7 +383,11 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
 
     const disks = Array.isArray(deviceFacts?.disks) ? (deviceFacts?.disks as DiskFact[]) : null;
 
+    const remoteTitle =
+        tool === "file-browser" ? "File Browser" : tool === "remote-shell" ? "Remote Shell" : "Remote";
+
     // ✅ Popout mode: FULL WINDOW (no max width, no centered wrapper) + NO Back button
+    // ✅ Popout fix: tool area gets the remaining viewport height like the main Remote tab
     if (popout) {
         return (
             <main className="min-h-screen w-full">
@@ -403,26 +411,33 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </div>
                 </div>
 
-                <div className="w-full p-4">
-                    {tool === "file-browser" ? (
-                        <FileBrowserTab deviceId={params.deviceId} popout />
-                    ) : (
-                        <Card>
-                            <CardHeader>
-                                <CardTitle>Remote Tool</CardTitle>
-                                <CardDescription>
-                                    This popout is wired for File Browser right now. Other tools can be added next.
-                                </CardDescription>
-                            </CardHeader>
-                            <CardContent className="text-sm text-muted-foreground">
-                                Unknown tool: <code className="text-xs">{tool || "(none)"}</code>
-                            </CardContent>
-                        </Card>
-                    )}
+                {/* Give the tool the remaining viewport height (header is ~72px: py-3 + text) */}
+                <div className="w-full p-4 h-[calc(100vh-72px)] min-h-0">
+                    <div className="h-full min-h-0">
+                        {tool === "file-browser" ? (
+                            <FileBrowserTab deviceId={params.deviceId} popout />
+                        ) : tool === "remote-shell" ? (
+                            <RemoteShellPanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} popout />
+                        ) : (
+                            <Card className="h-full">
+                                <CardHeader>
+                                    <CardTitle>Remote Tool</CardTitle>
+                                    <CardDescription>
+                                        Select a supported tool via <code className="text-xs">?tool=...</code>.
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent className="text-sm text-muted-foreground">
+                                    Unknown tool: <code className="text-xs">{tool || "(none)"}</code>
+                                </CardContent>
+                            </Card>
+                        )}
+                    </div>
                 </div>
             </main>
         );
     }
+
+    const noAgent = !agentUuid;
 
     return (
         <main className="grid flex-1 items-start gap-4 p-4 sm:px-6 sm:py-0 md:gap-8">
@@ -449,7 +464,13 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </Breadcrumb>
 
                     <div className="flex items-center gap-2">
-                        <Button variant="default" size="sm" onClick={openRunScript} className="gap-2" title="Open Run Script">
+                        <Button
+                            variant="default"
+                            size="sm"
+                            onClick={openRunScript}
+                            className="gap-2"
+                            title="Open Run Script"
+                        >
                             <Play className="h-4 w-4" /> Run Script
                         </Button>
 
@@ -629,6 +650,12 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                                     </div>
                                                 </div>
                                             ) : null}
+
+                                            {noAgent ? (
+                                                <div className="pt-2 text-xs text-muted-foreground">
+                                                    This device has no <span className="font-medium">agentUuid</span> yet, so Remote Shell can’t connect.
+                                                </div>
+                                            ) : null}
                                         </div>
 
                                         <div className="space-y-2">
@@ -688,13 +715,13 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                         </div>
                     </TabsContent>
 
-                    <TabsContent value="remote">
-                        {tool === "file-browser" ? (
-                            <div className="space-y-3">
+                    <TabsContent value="remote" className="h-[calc(100vh-220px)] min-h-0">
+                        {tool === "file-browser" || tool === "remote-shell" ? (
+                            <div className="flex h-full flex-col gap-3 min-h-0">
                                 <div className="flex items-center justify-between gap-2">
                                     <div className="min-w-0">
                                         <div className="text-sm text-muted-foreground">Remote</div>
-                                        <div className="text-lg font-semibold truncate">File Browser</div>
+                                        <div className="text-lg font-semibold truncate">{remoteTitle}</div>
                                     </div>
 
                                     <div className="flex items-center gap-2 shrink-0">
@@ -714,7 +741,14 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                     </div>
                                 </div>
 
-                                <FileBrowserTab deviceId={params.deviceId} />
+                                {/* this is the key: give the tool area the remaining height */}
+                                <div className="flex-1 min-h-0">
+                                    {tool === "file-browser" ? (
+                                        <FileBrowserTab deviceId={params.deviceId} />
+                                    ) : (
+                                        <RemoteShellPanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} />
+                                    )}
+                                </div>
                             </div>
                         ) : (
                             <RemoteTab deviceId={params.deviceId} />

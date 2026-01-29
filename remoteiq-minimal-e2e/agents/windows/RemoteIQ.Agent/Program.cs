@@ -62,6 +62,9 @@ builder.Services.AddHostedService<InventoryService>();
 // WS-based job execution (dispatcher.service.ts -> /ws/agent -> job_run_script)
 builder.Services.AddHostedService<TaskWorker>();
 
+// Remote Shell WS (backend /ws/shell)
+builder.Services.AddHostedService<RemoteShellWorker>();
+
 // Optional agent self-update checker
 builder.Services.AddHostedService<UpdateService>();
 

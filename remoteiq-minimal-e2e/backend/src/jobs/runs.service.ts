@@ -1,7 +1,7 @@
 // backend/src/jobs/runs.service.ts
-import { Injectable, Inject, forwardRef } from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
 import { randomUUID } from "crypto";
-import { AgentGateway } from "../ws/agent.gateway";
+import { UiSocketRegistry } from "../common/ui-socket-registry.service";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
 
@@ -26,10 +26,7 @@ export type StartRunInput = {
 export class RunsService {
     private JOBS = new Map<string, JobSnapshot>();
 
-    constructor(
-        @Inject(forwardRef(() => AgentGateway))
-        private readonly ws: AgentGateway
-    ) { }
+    constructor(private readonly uiSockets: UiSocketRegistry) { }
 
     get(jobId: string) {
         return this.JOBS.get(jobId);
@@ -37,6 +34,7 @@ export class RunsService {
 
     async startRun(input: StartRunInput): Promise<string> {
         const jobId = randomUUID();
+
         const snap: JobSnapshot = {
             jobId,
             deviceId: input.deviceId,
@@ -46,11 +44,22 @@ export class RunsService {
         };
         this.JOBS.set(jobId, snap);
 
-        this.broadcast(jobId, { status: "queued", progress: 0 });
+        this.broadcastToDevice(input.deviceId, {
+            type: "job.run.updated",
+            jobId,
+            status: "queued",
+            progress: 0,
+            chunk: "",
+            exitCode: null,
+            finishedAt: null,
+        });
 
-        // --- Simulated execution: replace these timers with real agent execution ---
+        // --- Simulated execution: replace with real agent execution later ---
         setTimeout(() => {
-            this.append(jobId, `$ ${input.shell ?? "ps"} executing...\n`, { status: "running", progress: 5 });
+            this.append(jobId, `$ ${input.shell ?? "ps"} executing...\n`, {
+                status: "running",
+                progress: 5,
+            });
         }, 300);
 
         setTimeout(() => {
@@ -68,37 +77,55 @@ export class RunsService {
         setTimeout(() => {
             const done = this.JOBS.get(jobId);
             if (!done) return;
+
             done.status = "succeeded";
             done.exitCode = 0;
             done.finishedAt = Date.now();
             done.log += "Done.\n";
-            this.broadcast(jobId, { status: "succeeded", progress: 100, chunk: "Done.\n", exitCode: 0 });
+
+            this.broadcastToDevice(done.deviceId, {
+                type: "job.run.updated",
+                jobId,
+                status: "succeeded",
+                progress: 100,
+                chunk: "Done.\n",
+                exitCode: 0,
+                finishedAt: new Date().toISOString(),
+            });
         }, 3200);
-        // ---------------------------------------------------------------------------
+        // -------------------------------------------------------------------
 
         return jobId;
     }
 
-    private append(jobId: string, chunk: string, payload: { status: JobStatus; progress?: number }) {
+    private append(
+        jobId: string,
+        chunk: string,
+        payload: { status: JobStatus; progress?: number; exitCode?: number | null }
+    ) {
         const snap = this.JOBS.get(jobId);
         if (!snap) return;
+
         snap.status = payload.status;
         snap.log += chunk;
-        this.broadcast(jobId, { status: payload.status, progress: payload.progress ?? 0, chunk });
-    }
+        if (payload.exitCode !== undefined) snap.exitCode = payload.exitCode;
 
-    private broadcast(
-        jobId: string,
-        data: { status: JobStatus; progress?: number; chunk?: string; exitCode?: number | null }
-    ) {
-        this.ws.broadcast({
+        this.broadcastToDevice(snap.deviceId, {
             type: "job.run.updated",
             jobId,
-            status: data.status,
-            progress: typeof data.progress === "number" ? data.progress : undefined,
-            chunk: data.chunk,
-            exitCode: data.exitCode ?? null,
-            finishedAt: data.status === "succeeded" || data.status === "failed" ? new Date().toISOString() : null,
+            status: payload.status,
+            progress: typeof payload.progress === "number" ? payload.progress : undefined,
+            chunk,
+            exitCode: snap.exitCode ?? null,
+            finishedAt:
+                payload.status === "succeeded" || payload.status === "failed"
+                    ? new Date().toISOString()
+                    : null,
         });
+    }
+
+    private broadcastToDevice(deviceId: string, payload: any) {
+        // Only UI sockets subscribed to this device will receive it
+        this.uiSockets.broadcastToDevice(deviceId, payload);
     }
 }
