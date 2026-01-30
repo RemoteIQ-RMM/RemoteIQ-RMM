@@ -65,6 +65,9 @@ builder.Services.AddHostedService<TaskWorker>();
 // Remote Shell WS (backend /ws/shell)
 builder.Services.AddHostedService<RemoteShellWorker>();
 
+// ✅ Remote Desktop Tunnel WS (backend /ws/desktop-tunnel)
+builder.Services.AddHostedService<RemoteDesktopTunnelWorker>();
+
 // Optional agent self-update checker
 builder.Services.AddHostedService<UpdateService>();
 
