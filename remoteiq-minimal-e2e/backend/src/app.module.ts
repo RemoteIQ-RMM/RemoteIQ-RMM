@@ -1,3 +1,5 @@
+// remoteiq-minimal-e2e/backend/src/app.module.ts
+
 import { Module, MiddlewareConsumer, NestModule } from "@nestjs/common";
 import { ServeStaticModule } from "@nestjs/serve-static";
 import { join } from "path";
@@ -35,6 +37,9 @@ import { PatchesModule } from "./patches/patches.module";
 // ✅ NEW
 import { ProvisioningModule } from "./provisioning/provisioning.module";
 
+// ✅ NEW (Remote Desktop tunnel)
+import { RemoteDesktopModule } from "./remote-desktop/remote-desktop.module";
+
 @Module({
     imports: [
         ServeStaticModule.forRoot({
@@ -64,6 +69,9 @@ import { ProvisioningModule } from "./provisioning/provisioning.module";
         TicketsModule,
         EndpointsModule,
         RemoteShellModule,
+
+        // ✅ NEW Remote Desktop module
+        RemoteDesktopModule,
 
         // ✅ compatibility endpoints for ticketing UI
         CompatModule,
