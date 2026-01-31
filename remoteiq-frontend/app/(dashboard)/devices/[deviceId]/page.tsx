@@ -26,6 +26,7 @@ import ChecksAndAlertsTab from "@/components/checks-and-alerts-tab";
 import PatchTab from "@/components/patch-tab";
 import RemoteTab from "@/components/remote-tab";
 import FileBrowserTab from "@/components/file-browser-tab";
+import RemoteDesktopPanel from "@/components/remote-desktop-panel";
 import { useDevice } from "@/lib/use-device";
 import dynamic from "next/dynamic";
 
@@ -384,7 +385,13 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
     const disks = Array.isArray(deviceFacts?.disks) ? (deviceFacts?.disks as DiskFact[]) : null;
 
     const remoteTitle =
-        tool === "file-browser" ? "File Browser" : tool === "remote-shell" ? "Remote Shell" : "Remote";
+        tool === "file-browser"
+            ? "File Browser"
+            : tool === "remote-shell"
+                ? "Remote Shell"
+                : tool === "remote-desktop"
+                    ? "Remote Desktop"
+                    : "Remote";
 
     // ✅ Popout mode: FULL WINDOW (no max width, no centered wrapper) + NO Back button
     // ✅ Popout fix: tool area gets the remaining viewport height like the main Remote tab
@@ -418,6 +425,8 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                             <FileBrowserTab deviceId={params.deviceId} popout />
                         ) : tool === "remote-shell" ? (
                             <RemoteShellPanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} popout />
+                        ) : tool === "remote-desktop" ? (
+                            <RemoteDesktopPanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} popout />
                         ) : (
                             <Card className="h-full">
                                 <CardHeader>
@@ -653,7 +662,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
 
                                             {noAgent ? (
                                                 <div className="pt-2 text-xs text-muted-foreground">
-                                                    This device has no <span className="font-medium">agentUuid</span> yet, so Remote Shell can’t connect.
+                                                    This device has no <span className="font-medium">agentUuid</span> yet, so Remote tools can’t connect.
                                                 </div>
                                             ) : null}
                                         </div>
@@ -716,7 +725,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </TabsContent>
 
                     <TabsContent value="remote" className="h-[calc(100vh-220px)] min-h-0">
-                        {tool === "file-browser" || tool === "remote-shell" ? (
+                        {tool === "file-browser" || tool === "remote-shell" || tool === "remote-desktop" ? (
                             <div className="flex h-full flex-col gap-3 min-h-0">
                                 <div className="flex items-center justify-between gap-2">
                                     <div className="min-w-0">
@@ -745,8 +754,10 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                 <div className="flex-1 min-h-0">
                                     {tool === "file-browser" ? (
                                         <FileBrowserTab deviceId={params.deviceId} />
-                                    ) : (
+                                    ) : tool === "remote-shell" ? (
                                         <RemoteShellPanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} />
+                                    ) : (
+                                        <RemoteDesktopPanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} />
                                     )}
                                 </div>
                             </div>

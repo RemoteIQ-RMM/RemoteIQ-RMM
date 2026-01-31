@@ -1,25 +1,59 @@
-// backend/src/remote-desktop/rdp-tunnel.framing.ts
+// remoteiq-minimal-e2e/backend/src/remote-desktop/rdp-tunnel.framing.ts
 
 import { TextDecoder, TextEncoder } from "node:util";
 
+export type RdpDataFrame = {
+    sessionId: string;
+    payload: Uint8Array;
+};
+
 const FRAME_TYPE_DATA = 0x01;
 
-// Node-safe text codecs (avoids DOM lib assumptions)
 const enc = new TextEncoder();
 const dec = new TextDecoder("utf-8");
 
-export function encodeDataFrame(sessionId: string, payload: Uint8Array): Uint8Array {
+/**
+ * Convert ws "message" raw payload into a Uint8Array safely.
+ * ws can deliver: Buffer | ArrayBuffer | Uint8Array | string
+ */
+export function toUint8(raw: any): Uint8Array | null {
+    if (!raw) return null;
+
+    // string messages are not binary frames
+    if (typeof raw === "string") return null;
+
+    // Node Buffer is a Uint8Array subclass, but TS may not know Buffer typings.
+    if (raw instanceof Uint8Array) return raw;
+
+    if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+
+    // Some ws implementations pass ArrayBufferView
+    if (raw.buffer instanceof ArrayBuffer && typeof raw.byteOffset === "number" && typeof raw.byteLength === "number") {
+        return new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+    }
+
+    return null;
+}
+
+/**
+ * Encode a binary data frame to send over WS (backend<->agent).
+ *
+ * Format:
+ *  - byte    frameType = 0x01
+ *  - uint16  sessionIdLength (big-endian)
+ *  - bytes   sessionId (utf8)
+ *  - bytes   payload (raw)
+ */
+export function encodeRdpDataFrame(sessionId: string, payload: Uint8Array): Uint8Array {
     const sidBytes = enc.encode(sessionId);
-    if (sidBytes.length > 0xffff) throw new Error("sessionId too long for framing");
+    if (sidBytes.length > 0xffff) throw new Error("sessionId too long");
 
-    // 1 byte type + 2 bytes sidLen + sidBytes + payload
     const out = new Uint8Array(1 + 2 + sidBytes.length + payload.length);
-
     out[0] = FRAME_TYPE_DATA;
 
-    // write uint16be sidLen at offset 1
-    const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
-    dv.setUint16(1, sidBytes.length, false);
+    // uint16be
+    out[1] = (sidBytes.length >> 8) & 0xff;
+    out[2] = sidBytes.length & 0xff;
 
     out.set(sidBytes, 3);
     out.set(payload, 3 + sidBytes.length);
@@ -27,21 +61,29 @@ export function encodeDataFrame(sessionId: string, payload: Uint8Array): Uint8Ar
     return out;
 }
 
-export function decodeFrame(buf: Uint8Array): { type: "data"; sessionId: string; payload: Uint8Array } {
-    if (!buf || buf.length < 3) throw new Error("frame too short");
+/**
+ * Decode a binary WS frame into {sessionId, payload}.
+ */
+export function decodeRdpDataFrame(buf: Uint8Array): RdpDataFrame {
+    if (buf.length < 3) throw new Error("frame too short");
 
     const frameType = buf[0];
-    if (frameType !== FRAME_TYPE_DATA) throw new Error(`unknown frameType ${frameType}`);
+    if (frameType !== FRAME_TYPE_DATA) throw new Error("unknown frameType");
 
-    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    const sidLen = dv.getUint16(1, false);
+    const sidLen = (buf[1] << 8) | buf[2];
+    const sidStart = 3;
+    const sidEnd = sidStart + sidLen;
 
-    if (buf.length < 3 + sidLen) throw new Error("invalid sessionIdLen");
+    if (buf.length < sidEnd) throw new Error("invalid sessionId length");
 
-    const sidBytes = buf.slice(3, 3 + sidLen);
-    const sessionId = dec.decode(sidBytes);
+    const sessionId = dec.decode(buf.subarray(sidStart, sidEnd));
+    const payload = buf.subarray(sidEnd);
 
-    const payload = buf.slice(3 + sidLen);
-
-    return { type: "data", sessionId, payload };
+    return { sessionId, payload };
 }
+
+/**
+ * Back-compat exports: some files import encodeDataFrame/decodeDataFrame.
+ */
+export const encodeDataFrame = encodeRdpDataFrame;
+export const decodeDataFrame = decodeRdpDataFrame;

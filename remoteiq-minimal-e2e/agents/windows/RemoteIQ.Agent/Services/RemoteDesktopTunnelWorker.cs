@@ -1,11 +1,15 @@
-// RemoteIQ.Agent/Services/RemoteDesktopTunnelWorker.cs
+// agents/windows/RemoteIQ.Agent/Services/RemoteDesktopTunnelWorker.cs
 
+using System;
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -13,113 +17,130 @@ namespace RemoteIQ.Agent.Services;
 
 public sealed class RemoteDesktopTunnelWorker : BackgroundService
 {
-    private readonly ILogger<RemoteDesktopTunnelWorker> _logger;
+    private readonly ConfigService _cfg;
+    private readonly ILogger<RemoteDesktopTunnelWorker> _log;
 
-    // TODO: replace these with your existing config/AgentIdentity provider
-    private readonly string _wsBase;
-    private readonly string _agentUuid;
-    private readonly string _agentKey;
-
-    private ClientWebSocket? _ws;
+    private readonly JsonSerializerOptions _json = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
 
     private readonly ConcurrentDictionary<string, TunnelSession> _sessions = new();
+    private CancellationTokenSource? _linkedCts;
 
-    public RemoteDesktopTunnelWorker(ILogger<RemoteDesktopTunnelWorker> logger)
+    public RemoteDesktopTunnelWorker(ConfigService cfg, ILogger<RemoteDesktopTunnelWorker> log)
     {
-        _logger = logger;
-
-        // Minimal env-based config so this file compiles standalone.
-        // Wire into your existing agent config system when integrating.
-        _wsBase = Environment.GetEnvironmentVariable("REMOTEIQ_WS_BASE") ?? "ws://localhost:3001";
-        _agentUuid = Environment.GetEnvironmentVariable("REMOTEIQ_AGENT_UUID") ?? "";
-        _agentKey = Environment.GetEnvironmentVariable("REMOTEIQ_AGENT_KEY") ?? "";
+        _cfg = cfg;
+        _log = log;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (string.IsNullOrWhiteSpace(_agentUuid) || string.IsNullOrWhiteSpace(_agentKey))
-        {
-            _logger.LogError("RemoteDesktopTunnelWorker missing REMOTEIQ_AGENT_UUID / REMOTEIQ_AGENT_KEY");
-            return;
-        }
-
         while (!stoppingToken.IsCancellationRequested)
         {
+            if (string.IsNullOrWhiteSpace(_cfg.Current.AgentId) || string.IsNullOrWhiteSpace(_cfg.Current.AgentKey))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                continue;
+            }
+
+            var agentUuid = _cfg.Current.AgentId.Trim();
+
+            var wsUri = BuildDesktopTunnelWsUri(_cfg.Current.ApiBaseUrl, agentUuid);
+            if (wsUri is null)
+            {
+                _log.LogError("Invalid ApiBaseUrl for desktop tunnel WS: {ApiBaseUrl}", _cfg.Current.ApiBaseUrl);
+                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+                continue;
+            }
+
+            using var ws = new ClientWebSocket();
+            ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+
+            _linkedCts?.Dispose();
+            _linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
             try
             {
-                _ws = new ClientWebSocket();
-                _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+                await ws.ConnectAsync(wsUri, _linkedCts.Token);
+                _log.LogInformation("RemoteDesktopTunnel WS connected: {Uri}", wsUri);
 
-                var uri = BuildUri();
-                _logger.LogInformation("Desktop tunnel connecting to {Uri}", uri);
+                // ✅ Authenticate with the field names the backend expects:
+                // HelloMessage = { type:"hello", agentUuid:string, agentToken:string }
+                await SendAsync(ws, new
+                {
+                    type = "hello",
+                    agentUuid,
+                    agentToken = _cfg.Current.AgentKey
+                }, _linkedCts.Token);
 
-                await _ws.ConnectAsync(uri, stoppingToken);
-                _logger.LogInformation("Desktop tunnel connected");
-
-                // Receive loop
-                await ReceiveLoop(_ws, stoppingToken);
+                await ReceiveLoop(ws, _linkedCts.Token);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                // shutdown
-                break;
+                await CleanupSessions();
+                return;
+            }
+            catch (WebSocketException wse)
+            {
+                _log.LogWarning(wse, "RemoteDesktopTunnel WS error; reconnecting in 5s");
+                await CleanupSessions();
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Desktop tunnel connection loop error");
+                _log.LogWarning(ex, "RemoteDesktopTunnel WS error; reconnecting in 5s");
+                await CleanupSessions();
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
-
-            // Cleanup all active sessions on disconnect
-            foreach (var kvp in _sessions)
-            {
-                try { kvp.Value.Dispose(); } catch { }
-            }
-            _sessions.Clear();
-
-            // backoff
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }
-    }
-
-    private Uri BuildUri()
-    {
-        // Ensure /ws/desktop-tunnel
-        var baseUri = _wsBase.TrimEnd('/');
-        var url = $"{baseUri}/ws/desktop-tunnel?role=agent&agentUuid={Uri.EscapeDataString(_agentUuid)}&agentKey={Uri.EscapeDataString(_agentKey)}";
-        return new Uri(url);
     }
 
     private async Task ReceiveLoop(ClientWebSocket ws, CancellationToken ct)
     {
-        var buffer = new byte[1024 * 64];
+        var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
 
-        while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
+        try
         {
-            WebSocketReceiveResult? result = null;
-            using var ms = new MemoryStream();
-
-            do
+            while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
             {
-                result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                WebSocketReceiveResult? res;
+                using var ms = new System.IO.MemoryStream();
 
-                if (result.MessageType == WebSocketMessageType.Close)
-                    return;
+                do
+                {
+                    res = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
 
-                ms.Write(buffer, 0, result.Count);
+                    if (res.MessageType == WebSocketMessageType.Close)
+                    {
+                        try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "closing", CancellationToken.None); }
+                        catch { /* ignore */ }
+                        return;
+                    }
+
+                    if (res.Count > 0)
+                        ms.Write(buffer, 0, res.Count);
+                }
+                while (!res.EndOfMessage);
+
+                if (ms.Length == 0) continue;
+
+                if (res.MessageType == WebSocketMessageType.Text)
+                {
+                    var text = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
+                    if (!string.IsNullOrWhiteSpace(text))
+                        await HandleTextMessage(ws, text, ct);
+                }
+                else if (res.MessageType == WebSocketMessageType.Binary)
+                {
+                    var data = ms.ToArray();
+                    HandleBinaryMessage(data);
+                }
             }
-            while (!result.EndOfMessage);
-
-            var data = ms.ToArray();
-
-            if (result.MessageType == WebSocketMessageType.Text)
-            {
-                var text = Encoding.UTF8.GetString(data);
-                await HandleTextMessage(ws, text, ct);
-            }
-            else if (result.MessageType == WebSocketMessageType.Binary)
-            {
-                HandleBinaryMessage(data);
-            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
@@ -130,39 +151,54 @@ public sealed class RemoteDesktopTunnelWorker : BackgroundService
             using var doc = JsonDocument.Parse(text);
             var root = doc.RootElement;
 
-            if (!root.TryGetProperty("type", out var typeEl))
-                return;
-
+            if (!root.TryGetProperty("type", out var typeEl)) return;
             var type = typeEl.GetString() ?? "";
 
-            if (type == "ping")
+            switch (type)
             {
-                var ts = root.TryGetProperty("ts", out var tsEl) ? tsEl.GetInt64() : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                var pong = JsonSerializer.Serialize(new { type = "pong", ts });
-                await SendText(ws, pong, ct);
-                return;
-            }
+                case "ping":
+                    {
+                        var ts = root.TryGetProperty("ts", out var tsEl) && tsEl.ValueKind == JsonValueKind.Number
+                            ? tsEl.GetInt64()
+                            : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-            if (type == "rdp.open")
-            {
-                var sessionId = root.GetProperty("sessionId").GetString() ?? "";
-                var host = root.GetProperty("host").GetString() ?? "127.0.0.1";
-                var port = root.GetProperty("port").GetInt32();
+                        await SendAsync(ws, new { type = "pong", ts }, ct);
+                        return;
+                    }
 
-                _ = Task.Run(() => OpenSession(ws, sessionId, host, port, ct), ct);
-                return;
-            }
+                case "rdp.open":
+                    {
+                        var sessionId = ReadString(root, "sessionId") ?? "";
+                        if (string.IsNullOrWhiteSpace(sessionId)) return;
 
-            if (type == "rdp.close")
-            {
-                var sessionId = root.GetProperty("sessionId").GetString() ?? "";
-                CloseSession(sessionId, reason: "backend_close");
-                return;
+                        var host = (ReadString(root, "host") ?? "127.0.0.1").Trim();
+                        var port = ReadInt(root, "port") ?? 3389;
+
+                        _ = Task.Run(() => OpenSession(ws, sessionId, host, port, ct), ct);
+                        return;
+                    }
+
+                case "rdp.close":
+                    {
+                        var sessionId = ReadString(root, "sessionId") ?? "";
+                        if (string.IsNullOrWhiteSpace(sessionId)) return;
+
+                        CloseSession(sessionId, "backend_close");
+                        return;
+                    }
+
+                default:
+                    _log.LogDebug("RemoteDesktopTunnel WS unknown message type: {Type}", type);
+                    return;
             }
+        }
+        catch (JsonException)
+        {
+            // ignore parse errors
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to parse desktop tunnel control message");
+            _log.LogWarning(ex, "RemoteDesktopTunnel WS message handling error");
         }
     }
 
@@ -178,33 +214,32 @@ public sealed class RemoteDesktopTunnelWorker : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to handle binary frame");
+            _log.LogWarning(ex, "RemoteDesktopTunnel failed to handle binary frame");
         }
     }
 
     private async Task OpenSession(ClientWebSocket ws, string sessionId, string host, int port, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(sessionId))
-            return;
-
-        if (_sessions.ContainsKey(sessionId))
+        if (_sessions.TryRemove(sessionId, out var existing))
         {
-            // already exists; close & replace
-            CloseSession(sessionId, "replace");
+            try { existing.Dispose(); } catch { }
         }
 
-        var session = new TunnelSession(sessionId, _logger);
+        var session = new TunnelSession(sessionId, _log);
 
         try
         {
             await session.ConnectTcp(host, port, ct);
 
-            _sessions[sessionId] = session;
+            if (!_sessions.TryAdd(sessionId, session))
+            {
+                session.Dispose();
+                return;
+            }
 
-            // ready
-            await SendText(ws, JsonSerializer.Serialize(new { type = "rdp.ready", sessionId }), ct);
+            await SendAsync(ws, new { type = "rdp.ready", sessionId }, ct);
 
-            // start TCP->WS relay
+            // Start TCP -> WS relay
             _ = Task.Run(async () =>
             {
                 try
@@ -212,20 +247,16 @@ public sealed class RemoteDesktopTunnelWorker : BackgroundService
                     await foreach (var chunk in session.ReadTcpChunks(ct))
                     {
                         var framed = EncodeDataFrame(sessionId, chunk);
-                        await SendBinary(ws, framed, ct);
+                        await SendBinaryAsync(ws, framed, ct);
                     }
 
-                    await SendText(ws, JsonSerializer.Serialize(new { type = "rdp.closed", sessionId, reason = "tcp_eof" }), ct);
+                    await SendAsync(ws, new { type = "rdp.closed", sessionId, reason = "tcp_eof" }, ct);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "TCP->WS relay failed for session {SessionId}", sessionId);
-                    try
-                    {
-                        await SendText(ws, JsonSerializer.Serialize(new { type = "rdp.closed", sessionId, reason = "relay_error" }), ct);
-                    }
-                    catch { }
+                    _log.LogWarning(ex, "RemoteDesktopTunnel relay failed session {SessionId}", sessionId);
+                    try { await SendAsync(ws, new { type = "rdp.closed", sessionId, reason = "relay_error" }, ct); } catch { }
                 }
                 finally
                 {
@@ -236,15 +267,15 @@ public sealed class RemoteDesktopTunnelWorker : BackgroundService
         catch (SocketException sex)
         {
             var msg = $"TCP connect failed to {host}:{port} ({sex.SocketErrorCode})";
-            _logger.LogWarning(sex, msg);
-            await SendText(ws, JsonSerializer.Serialize(new { type = "rdp.error", sessionId, code = "TCP_CONNECT_FAILED", message = msg }), ct);
+            _log.LogWarning(sex, msg);
+            await SendAsync(ws, new { type = "rdp.error", sessionId, code = "TCP_CONNECT_FAILED", message = msg }, ct);
             session.Dispose();
         }
         catch (Exception ex)
         {
             var msg = $"Session open failed: {ex.Message}";
-            _logger.LogWarning(ex, msg);
-            await SendText(ws, JsonSerializer.Serialize(new { type = "rdp.error", sessionId, code = "OPEN_FAILED", message = msg }), ct);
+            _log.LogWarning(ex, msg);
+            await SendAsync(ws, new { type = "rdp.error", sessionId, code = "OPEN_FAILED", message = msg }, ct);
             session.Dispose();
         }
     }
@@ -254,28 +285,73 @@ public sealed class RemoteDesktopTunnelWorker : BackgroundService
         if (_sessions.TryRemove(sessionId, out var s))
         {
             try { s.Dispose(); } catch { }
-            _logger.LogInformation("Desktop tunnel session closed {SessionId} ({Reason})", sessionId, reason);
+            _log.LogInformation("RemoteDesktopTunnel session closed {SessionId} ({Reason})", sessionId, reason);
         }
     }
 
-    private static async Task SendText(ClientWebSocket ws, string text, CancellationToken ct)
+    private async Task SendAsync(ClientWebSocket ws, object payload, CancellationToken ct)
     {
-        var bytes = Encoding.UTF8.GetBytes(text);
-        await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, ct);
+        if (ws.State != WebSocketState.Open) return;
+
+        var json = JsonSerializer.Serialize(payload, _json);
+        var bytes = Encoding.UTF8.GetBytes(json);
+
+        await ws.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancellationToken: ct);
     }
 
-    private static async Task SendBinary(ClientWebSocket ws, byte[] data, CancellationToken ct)
+    private static async Task SendBinaryAsync(ClientWebSocket ws, byte[] data, CancellationToken ct)
     {
-        await ws.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Binary, true, ct);
+        if (ws.State != WebSocketState.Open) return;
+        await ws.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Binary, endOfMessage: true, cancellationToken: ct);
     }
 
-    // ---------------- Framing ----------------
+    private async Task CleanupSessions()
+    {
+        foreach (var kv in _sessions)
+        {
+            try { kv.Value.Dispose(); } catch { }
+        }
+        _sessions.Clear();
+        await Task.CompletedTask;
+    }
 
+    private static Uri? BuildDesktopTunnelWsUri(string apiBaseUrl, string agentUuid)
+    {
+        if (string.IsNullOrWhiteSpace(apiBaseUrl)) return null;
+        if (!Uri.TryCreate(apiBaseUrl, UriKind.Absolute, out var u)) return null;
+
+        var scheme = u.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? "wss" : "ws";
+
+        var builder = new UriBuilder(u)
+        {
+            Scheme = scheme,
+            Path = "/ws/desktop-tunnel",
+            Query = $"role=agent&agentUuid={Uri.EscapeDataString(agentUuid)}"
+        };
+
+        return builder.Uri;
+    }
+
+    private static string? ReadString(JsonElement obj, string prop)
+    {
+        if (!obj.TryGetProperty(prop, out var el)) return null;
+        return el.ValueKind == JsonValueKind.String ? el.GetString() : el.ToString();
+    }
+
+    private static int? ReadInt(JsonElement obj, string prop)
+    {
+        if (!obj.TryGetProperty(prop, out var el)) return null;
+        if (el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out var i)) return i;
+        if (el.ValueKind == JsonValueKind.String && int.TryParse(el.GetString(), out var si)) return si;
+        return null;
+    }
+
+    // ---------------- Framing (matches backend) ----------------
     private readonly record struct DataFrame(string SessionId, byte[] Payload);
 
+    // frameType(0x01) + uint16be sidLen + sidUtf8 + payload
     private static byte[] EncodeDataFrame(string sessionId, byte[] payload)
     {
-        // byte frameType(0x01) + uint16be sidLen + sidUtf8 + payload
         var sidBytes = Encoding.UTF8.GetBytes(sessionId);
         if (sidBytes.Length > ushort.MaxValue) throw new InvalidOperationException("sessionId too long");
 
@@ -304,8 +380,6 @@ public sealed class RemoteDesktopTunnelWorker : BackgroundService
         return new DataFrame(sid, payload);
     }
 
-    // ---------------- Session ----------------
-
     private sealed class TunnelSession : IDisposable
     {
         private readonly string _sessionId;
@@ -331,13 +405,14 @@ public sealed class RemoteDesktopTunnelWorker : BackgroundService
         {
             var s = _stream;
             if (s == null) return;
+
             try
             {
                 s.Write(payload, 0, payload.Length);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "WriteToTcp failed session {SessionId}", _sessionId);
+                _logger.LogWarning(ex, "RemoteDesktopTunnel WriteToTcp failed session {SessionId}", _sessionId);
                 Dispose();
             }
         }
