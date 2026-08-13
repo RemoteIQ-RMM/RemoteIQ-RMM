@@ -5,13 +5,37 @@ import { randomUUID } from "node:crypto";
 import * as net from "node:net";
 import type WebSocket from "ws";
 
-import { encodeDataFrame } from "./rdp-tunnel.framing";
+import { encodeRdpDataFrame } from "./rdp-tunnel.framing";
 import type { DesktopTunnelSession } from "./remote-desktop.types";
 
 const WS_OPEN = 1;
 
 function normAgentKey(v: string) {
     return String(v || "").trim().toLowerCase();
+}
+
+function safeCloseWs(ws: WebSocket) {
+    try {
+        ws.close();
+    } catch {
+        // ignore
+    }
+}
+
+function safeSendJson(ws: WebSocket, msg: any) {
+    try {
+        ws.send(JSON.stringify(msg));
+    } catch {
+        // ignore
+    }
+}
+
+function safeSendBinary(ws: WebSocket, data: Uint8Array) {
+    try {
+        ws.send(data, { binary: true });
+    } catch {
+        // ignore
+    }
 }
 
 @Injectable()
@@ -28,35 +52,35 @@ export class RemoteDesktopService {
      */
     private static readonly AGENTS = new Map<string, WebSocket>(); // key: normalized agent uuid/id
     private static readonly SESSIONS = new Map<string, DesktopTunnelSession>();
-
     private static cleanerStarted = false;
 
     // Phase 1 basic orphan guard (Phase 4 will tighten and audit)
     private readonly SESSION_IDLE_MS = 5 * 60_000;
 
     constructor() {
+        // Start a single global cleaner
         if (!RemoteDesktopService.cleanerStarted) {
             RemoteDesktopService.cleanerStarted = true;
+
             setInterval(() => {
                 try {
-                    // use a temp instance-less cleanup
                     const now = Date.now();
                     for (const s of RemoteDesktopService.SESSIONS.values()) {
                         if (s.state === "closed") continue;
-                        if (now - s.lastActivityAt > 5 * 60_000) {
-                            // we can’t call instance methods here safely; mark for closure by best-effort
-                            s.state = "closed";
-                            s.lastActivityAt = now;
+                        if (now - s.lastActivityAt <= 5 * 60_000) continue;
 
-                            try {
-                                if (s.tcpSocket && !s.tcpSocket.destroyed) s.tcpSocket.destroy();
-                            } catch { }
-                            try {
-                                if (s.tcpServer) s.tcpServer.close();
-                            } catch { }
+                        // best-effort shutdown (no instance methods)
+                        s.state = "closed";
+                        s.lastActivityAt = now;
 
-                            RemoteDesktopService.SESSIONS.delete(s.sessionId);
-                        }
+                        try {
+                            if (s.tcpSocket && !s.tcpSocket.destroyed) s.tcpSocket.destroy();
+                        } catch { }
+                        try {
+                            if (s.tcpServer) s.tcpServer.close();
+                        } catch { }
+
+                        RemoteDesktopService.SESSIONS.delete(s.sessionId);
                     }
                 } catch {
                     // ignore
@@ -72,11 +96,7 @@ export class RemoteDesktopService {
         if (!key) return;
 
         const existing = RemoteDesktopService.AGENTS.get(key);
-        if (existing && existing !== ws) {
-            try {
-                existing.close();
-            } catch { }
-        }
+        if (existing && existing !== ws) safeCloseWs(existing);
 
         RemoteDesktopService.AGENTS.set(key, ws);
         this.logger.log(`agent connected ${agentUuid}`);
@@ -143,7 +163,9 @@ export class RemoteDesktopService {
             // Make debugging painless when this happens
             const connected = this.listConnectedAgents();
             this.logger.warn(
-                `Agent not connected: requested=${agentUuid} (norm=${agentKey}) connectedKeys=[${connected.join(", ")}]`
+                `Agent not connected: requested=${agentUuid} (norm=${agentKey}) connectedKeys=[${connected.join(
+                    ", "
+                )}]`
             );
             throw new Error("Agent not connected");
         }
@@ -178,8 +200,9 @@ export class RemoteDesktopService {
 
             socket.on("data", (chunk) => {
                 session.lastActivityAt = Date.now();
-                // chunk is Buffer, which is Uint8Array compatible
-                this.sendBinaryToAgent(sessionId, agentKey, new Uint8Array(chunk));
+                const u8 =
+                    chunk instanceof Uint8Array ? chunk : new Uint8Array(Buffer.from(chunk as any));
+                this.sendBinaryToAgent(sessionId, agentKey, u8);
             });
 
             socket.on("close", () => {
@@ -189,7 +212,7 @@ export class RemoteDesktopService {
             });
 
             socket.on("error", (err) => {
-                this.logger.warn(`tcp socket error session=${sessionId}: ${err?.message || err}`);
+                this.logger.warn(`tcp socket error session=${sessionId}: ${(err as any)?.message || err}`);
                 this.endSession(sessionId, "tcp_socket_error");
             });
         });
@@ -262,29 +285,21 @@ export class RemoteDesktopService {
     sendBinaryToAgent(sessionId: string, agentUuid: string, payload: Uint8Array) {
         const agentKey = normAgentKey(agentUuid);
         const ws = this.getAgentWs(agentKey);
+
         if (!ws || (ws as any).readyState !== WS_OPEN) {
             this.endSession(sessionId, "agent_not_connected");
             return;
         }
 
-        const framed = encodeDataFrame(sessionId, payload);
-        try {
-            ws.send(framed);
-        } catch (e: any) {
-            this.logger.warn(`ws send failed agent=${agentKey} session=${sessionId}: ${e?.message || e}`);
-            this.endSession(sessionId, "ws_send_failed");
-        }
+        const framed = encodeRdpDataFrame(sessionId, payload);
+        safeSendBinary(ws, framed);
     }
 
     sendJsonToAgent(agentUuid: string, msg: any) {
         const agentKey = normAgentKey(agentUuid);
         const ws = this.getAgentWs(agentKey);
         if (!ws || (ws as any).readyState !== WS_OPEN) return;
-        try {
-            ws.send(JSON.stringify(msg));
-        } catch {
-            // ignore
-        }
+        safeSendJson(ws, msg);
     }
 
     endSession(sessionId: string, reason: string) {
@@ -315,6 +330,7 @@ export class RemoteDesktopService {
     }
 
     handlePong(agentUuid: string, ts: number) {
+        // Logger.debug always exists, but keep your optional chaining style
         this.logger.debug?.(`pong agent=${normAgentKey(agentUuid)} ts=${ts}`);
     }
 

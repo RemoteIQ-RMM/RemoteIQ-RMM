@@ -27,6 +27,7 @@ import PatchTab from "@/components/patch-tab";
 import RemoteTab from "@/components/remote-tab";
 import FileBrowserTab from "@/components/file-browser-tab";
 import RemoteDesktopPanel from "@/components/remote-desktop-panel";
+import RemoteConsolePanel from "@/components/remote-console-panel";
 import { useDevice } from "@/lib/use-device";
 import dynamic from "next/dynamic";
 
@@ -174,7 +175,7 @@ async function safeJson(res: Response): Promise<any> {
     }
 }
 
-type ToolParam = "" | "remote-desktop" | "remote-shell" | "file-browser";
+type ToolParam = "" | "remote-console" | "remote-desktop" | "remote-shell" | "file-browser";
 type TabValue = "overview" | "remote" | "checks" | "patch" | "software";
 
 export default function DeviceDetailPage({ params }: { params: { deviceId: string } }) {
@@ -232,7 +233,6 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
 
     const [banner, setBanner] = React.useState<ActionBanner>(null);
 
-    // ✅ Fix: tabs must have real state so clicks work
     const [tab, setTab] = React.useState<TabValue>("overview");
 
     const openRunScript = React.useCallback(() => {
@@ -308,14 +308,10 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
         window.open(url, "_blank", "noopener,noreferrer,width=1280,height=800");
     }, [pathname, search]);
 
-    // ✅ If a tool is selected, force "remote" tab active.
     const tabsValue: TabValue = tool ? "remote" : tab;
 
-    // ✅ Keep tab state sane if tool query param appears/disappears
     React.useEffect(() => {
-        if (tool) {
-            setTab("remote");
-        }
+        if (tool) setTab("remote");
     }, [tool]);
 
     if (loading && !device) {
@@ -390,11 +386,22 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
             : tool === "remote-shell"
                 ? "Remote Shell"
                 : tool === "remote-desktop"
-                    ? "Remote Desktop"
-                    : "Remote";
+                    ? "Remote Desktop (RDP)"
+                    : tool === "remote-console"
+                        ? "Remote Console"
+                        : "Remote";
 
-    // ✅ Popout mode: FULL WINDOW (no max width, no centered wrapper) + NO Back button
-    // ✅ Popout fix: tool area gets the remaining viewport height like the main Remote tab
+    // Popout mode:
+    // For remote-console, render edge-to-edge and let the panel own the UI (tiny top bar + desktop + chat)
+    if (popout && tool === "remote-console") {
+        return (
+            <main className="h-screen w-full">
+                <RemoteConsolePanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} popout />
+            </main>
+        );
+    }
+
+    // Other popouts keep the existing header wrapper
     if (popout) {
         return (
             <main className="min-h-screen w-full">
@@ -418,7 +425,6 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </div>
                 </div>
 
-                {/* Give the tool the remaining viewport height (header is ~72px: py-3 + text) */}
                 <div className="w-full p-4 h-[calc(100vh-72px)] min-h-0">
                     <div className="h-full min-h-0">
                         {tool === "file-browser" ? (
@@ -473,13 +479,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </Breadcrumb>
 
                     <div className="flex items-center gap-2">
-                        <Button
-                            variant="default"
-                            size="sm"
-                            onClick={openRunScript}
-                            className="gap-2"
-                            title="Open Run Script"
-                        >
+                        <Button variant="default" size="sm" onClick={openRunScript} className="gap-2" title="Open Run Script">
                             <Play className="h-4 w-4" /> Run Script
                         </Button>
 
@@ -521,7 +521,6 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                         const next = (v as TabValue) || "overview";
                         setTab(next);
 
-                        // leaving Remote? clear any selected tool so it stops forcing Remote
                         if (next !== "remote") setTool("");
                     }}
                 >
@@ -546,9 +545,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                 <CardHeader>
                                     <div className="flex justify-between items-start gap-4">
                                         <div className="min-w-0">
-                                            <CardTitle className="truncate">
-                                                {(device as any).alias || (device as any).hostname}
-                                            </CardTitle>
+                                            <CardTitle className="truncate">{(device as any).alias || (device as any).hostname}</CardTitle>
                                             <CardDescription className="truncate">
                                                 {(device as any).client} / {(device as any).site}
                                             </CardDescription>
@@ -693,9 +690,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                                         <div className="flex items-center justify-between">
                                                             <div className="font-medium">
                                                                 {d.title}
-                                                                {d.fs ? (
-                                                                    <span className="text-muted-foreground font-normal"> ({d.fs})</span>
-                                                                ) : null}
+                                                                {d.fs ? <span className="text-muted-foreground font-normal"> ({d.fs})</span> : null}
                                                             </div>
                                                             <div className="text-xs text-muted-foreground">
                                                                 {d.hasUsage ? `${d.usedPct.toFixed(0)}% used` : ""}
@@ -725,7 +720,7 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                     </TabsContent>
 
                     <TabsContent value="remote" className="h-[calc(100vh-220px)] min-h-0">
-                        {tool === "file-browser" || tool === "remote-shell" || tool === "remote-desktop" ? (
+                        {tool === "file-browser" || tool === "remote-shell" || tool === "remote-desktop" || tool === "remote-console" ? (
                             <div className="flex h-full flex-col gap-3 min-h-0">
                                 <div className="flex items-center justify-between gap-2">
                                     <div className="min-w-0">
@@ -738,26 +733,22 @@ export default function DeviceDetailPage({ params }: { params: { deviceId: strin
                                             <ArrowLeft className="h-4 w-4" />
                                             Back
                                         </Button>
-                                        <Button
-                                            variant="outline"
-                                            onClick={openPopout}
-                                            className="gap-2"
-                                            title="Open in a new window"
-                                        >
+                                        <Button variant="outline" onClick={openPopout} className="gap-2" title="Open in a new window">
                                             <ExternalLink className="h-4 w-4" />
                                             Pop out
                                         </Button>
                                     </div>
                                 </div>
 
-                                {/* this is the key: give the tool area the remaining height */}
                                 <div className="flex-1 min-h-0">
                                     {tool === "file-browser" ? (
                                         <FileBrowserTab deviceId={params.deviceId} />
                                     ) : tool === "remote-shell" ? (
                                         <RemoteShellPanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} />
-                                    ) : (
+                                    ) : tool === "remote-desktop" ? (
                                         <RemoteDesktopPanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} />
+                                    ) : (
+                                        <RemoteConsolePanel deviceId={params.deviceId} agentUuid={agentUuid ?? undefined} />
                                     )}
                                 </div>
                             </div>

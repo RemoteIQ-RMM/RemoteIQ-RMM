@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+
+    <!-- Opt out of Central Package Version Management -->
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <AssemblyName>RemoteIQ.CaptureHelper</AssemblyName>
+    <RootNamespace>RemoteIQ.CaptureHelper</RootNamespace>
+
+    <!-- WinExe avoids a console window flash -->
+    <OutputType>WinExe</OutputType>
+
+    <!-- Ensure an .exe is produced (apphost) -->
+    <UseAppHost>true</UseAppHost>
+
+    <!-- Publish -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+
+    <!-- Force real single-file EXE output -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Keep only if your helper uses WMI -->
+    <PackageReference Include="System.Management" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

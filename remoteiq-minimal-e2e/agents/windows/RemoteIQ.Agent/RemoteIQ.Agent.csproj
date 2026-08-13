@@ -1,9 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
 
     <!-- Opt this project out of repo-wide Central Package Version Management -->
     <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
 
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -19,6 +23,10 @@
     <TrimMode>partial</TrimMode>
     <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
 
+    <!-- IMPORTANT for native codec DLLs (VP8/H264/etc) when PublishSingleFile=true -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+
     <AssemblyName>RemoteIQ.Agent</AssemblyName>
     <RootNamespace>RemoteIQ.Agent</RootNamespace>
     <OutputType>Exe</OutputType>
@@ -33,7 +41,68 @@
     <PackageReference Include="Serilog.Sinks.EventLog" Version="3.1.0" />
     <PackageReference Include="Serilog.Extensions.Hosting" Version="7.0.0" />
 
+    <!-- NOTE: keep for now to avoid breaking other code paths while transitioning -->
+    <PackageReference Include="SIPSorcery" Version="10.0.3" />
+    <PackageReference Include="SIPSorceryMedia.Abstractions" Version="8.0.12" />
+    <PackageReference Include="SIPSorceryMedia.Windows" Version="8.0.14" />
+    <PackageReference Include="SIPSorceryMedia.Encoders" Version="10.0.4" />
+
     <PackageReference Include="System.Management" Version="8.0.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
+
+  <!-- Build dependency only; we publish it manually below -->
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteIQ.CaptureHelper\RemoteIQ.CaptureHelper.csproj" />
+  </ItemGroup>
+
+  <!-- Native WebRTC DLL: copy for local run AND force it to appear in publish output next to the EXE -->
+  <ItemGroup>
+    <Content Include="..\..\..\native\RemoteIQ.NativeWebRtc\bin\x64\Release\remoteiq_nativewebrtc.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+
+      <!-- CRITICAL: prevents it from being bundled into RemoteIQ.Agent.exe -->
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+
+      <Link>remoteiq_nativewebrtc.dll</Link>
+    </Content>
+  </ItemGroup>
+
+  <!-- Publish CaptureHelper and stage it into Agent publish output -->
+  <Target Name="PublishCaptureHelperIntoAgentPublish" AfterTargets="Publish">
+    <PropertyGroup>
+      <_CaptureHelperProject>$(MSBuildProjectDirectory)\..\RemoteIQ.CaptureHelper\RemoteIQ.CaptureHelper.csproj</_CaptureHelperProject>
+      <_CaptureHelperStagingDir>$(MSBuildProjectDirectory)\obj\capture_helper_publish\</_CaptureHelperStagingDir>
+
+      <_CaptureHelperDestDir>$(PublishDir)tools\capture-helper\</_CaptureHelperDestDir>
+      <_CaptureHelperExeStaged>$(_CaptureHelperStagingDir)RemoteIQ.CaptureHelper.exe</_CaptureHelperExeStaged>
+      <_CaptureHelperExeDest>$(_CaptureHelperDestDir)RemoteIQ.CaptureHelper.exe</_CaptureHelperExeDest>
+    </PropertyGroup>
+
+    <Message Importance="high" Text="RemoteIQ: publishing CaptureHelper to '$(_CaptureHelperStagingDir)'." />
+    <MakeDir Directories="$(_CaptureHelperStagingDir)" />
+
+    <!-- Publish CaptureHelper as single-file exe into a flat staging dir -->
+    <Exec
+      Command='dotnet publish &quot;$(_CaptureHelperProject)&quot; -c $(Configuration) -r $(RuntimeIdentifier) --self-contained false /p:PublishSingleFile=true /p:UseAppHost=true /p:PublishTrimmed=false /p:PublishDir=&quot;$(_CaptureHelperStagingDir)&quot;'
+    />
+
+    <MakeDir Directories="$(_CaptureHelperDestDir)" />
+
+    <!-- Hard fail if EXE isn't produced -->
+    <Error
+      Condition="!Exists('$(_CaptureHelperExeStaged)')"
+      Text="RemoteIQ: CaptureHelper publish did not produce RemoteIQ.CaptureHelper.exe at '$(_CaptureHelperStagingDir)'."
+    />
+
+    <Copy
+      SourceFiles="$(_CaptureHelperExeStaged)"
+      DestinationFiles="$(_CaptureHelperExeDest)"
+      SkipUnchangedFiles="true"
+    />
+
+    <Message Importance="high" Text="RemoteIQ: staged CaptureHelper EXE -> '$(_CaptureHelperExeDest)'." />
+  </Target>
+
 </Project>

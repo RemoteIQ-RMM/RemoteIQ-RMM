@@ -28,7 +28,7 @@ import { BackupsModule } from "./backups/backups.module";
 import { StorageModule } from "./storage/storage.module";
 import { TicketsModule } from "./tickets/tickets.module";
 import { RemoteShellModule } from "./remote-shell/remote-shell.module";
-
+import { RemoteConsoleModule } from "./remote-console/remote-console.module";
 import { AuthCookieMiddleware } from "./auth/auth-cookie.middleware";
 import { CompatModule } from "./compat/compat.module";
 import { EndpointsModule } from "./endpoints/endpoints.module";
@@ -69,6 +69,7 @@ import { RemoteDesktopModule } from "./remote-desktop/remote-desktop.module";
         TicketsModule,
         EndpointsModule,
         RemoteShellModule,
+        RemoteConsoleModule,
 
         // ✅ NEW Remote Desktop module
         RemoteDesktopModule,

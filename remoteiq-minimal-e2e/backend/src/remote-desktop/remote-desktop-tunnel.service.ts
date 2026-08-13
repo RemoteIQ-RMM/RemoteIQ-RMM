@@ -12,7 +12,7 @@ type TunnelTarget = { host: string; port: number };
 
 type TunnelSession = {
     sessionId: string;
-    agentUuid: string;
+    agentUuid: string; // canonical agent id (string)
 
     state: TunnelState;
     createdAt: number;
@@ -20,17 +20,13 @@ type TunnelSession = {
 
     target: TunnelTarget;
 
-    // local TCP server that guacd (later) connects to
     server: net.Server;
     localPort: number;
 
-    // active TCP client (guacd side) once connected
     tcpSocket: net.Socket | null;
 
-    // if open failed
     error?: string;
 
-    // awaiting ready
     readyResolve?: () => void;
     readyReject?: (err: Error) => void;
     readyTimer?: NodeJS.Timeout;
@@ -38,23 +34,25 @@ type TunnelSession = {
 
 const WS_OPEN = 1;
 
+function normKey(v: string) {
+    return String(v || "").trim().toLowerCase();
+}
+
 function wsSendJson(ws: WebSocket, msg: any) {
-    if ((ws as any).readyState === WS_OPEN) {
-        try {
-            ws.send(JSON.stringify(msg));
-        } catch {
-            // ignore
-        }
+    if ((ws as any).readyState !== WS_OPEN) return;
+    try {
+        ws.send(JSON.stringify(msg));
+    } catch {
+        // ignore
     }
 }
 
 function wsSendBinary(ws: WebSocket, data: Uint8Array) {
-    if ((ws as any).readyState === WS_OPEN) {
-        try {
-            ws.send(data, { binary: true });
-        } catch {
-            // ignore
-        }
+    if ((ws as any).readyState !== WS_OPEN) return;
+    try {
+        ws.send(data, { binary: true });
+    } catch {
+        // ignore
     }
 }
 
@@ -62,23 +60,56 @@ function wsSendBinary(ws: WebSocket, data: Uint8Array) {
 export class RemoteDesktopTunnelService {
     private readonly logger = new Logger("RemoteDesktopTunnelService");
 
-    // agentUuid -> ws
-    private readonly agents = new Map<string, WebSocket>();
+    /**
+     * IMPORTANT:
+     * If this service is accidentally provided in multiple modules, Nest can instantiate it twice.
+     * Instance-local Maps then diverge -> you get "Agent not connected" while the gateway logs auth.
+     *
+     * To harden against that, keep registries static so ALL instances share the same state.
+     */
+    private static readonly AGENTS = new Map<string, WebSocket>(); // agentKey -> ws
+    private static readonly SESSIONS = new Map<string, TunnelSession>(); // sessionId -> session
+    private static readonly SESSION_BY_AGENT = new Map<string, string>(); // agentKey -> sessionId
 
-    // sessionId -> session
-    private readonly sessions = new Map<string, TunnelSession>();
+    private static cleanerStarted = false;
 
-    // Policy: one session per device/agentUuid (deny second by default)
-    private readonly sessionByAgent = new Map<string, string>();
+    // Policy
+    private readonly READY_TIMEOUT_MS = 15_000;
+    private readonly IDLE_TIMEOUT_MS = 5 * 60_000;
+
+    constructor() {
+        if (!RemoteDesktopTunnelService.cleanerStarted) {
+            RemoteDesktopTunnelService.cleanerStarted = true;
+
+            setInterval(() => {
+                const now = Date.now();
+                for (const s of RemoteDesktopTunnelService.SESSIONS.values()) {
+                    if (s.state === "closed") continue;
+                    if (now - s.lastActivityAt > 5 * 60_000) {
+                        // best-effort cleanup without relying on instance state
+                        try {
+                            if (s.tcpSocket && !s.tcpSocket.destroyed) s.tcpSocket.destroy();
+                        } catch { }
+                        try {
+                            if (s.server) s.server.close();
+                        } catch { }
+
+                        RemoteDesktopTunnelService.SESSIONS.delete(s.sessionId);
+                        RemoteDesktopTunnelService.SESSION_BY_AGENT.delete(normKey(s.agentUuid));
+                    }
+                }
+            }, 30_000).unref();
+        }
+    }
 
     // ---------------- Debug / visibility ----------------
 
     listConnectedAgents(): string[] {
-        return Array.from(this.agents.keys());
+        return Array.from(RemoteDesktopTunnelService.AGENTS.keys());
     }
 
     listSessions() {
-        return Array.from(this.sessions.values()).map((s) => ({
+        return Array.from(RemoteDesktopTunnelService.SESSIONS.values()).map((s) => ({
             sessionId: s.sessionId,
             agentUuid: s.agentUuid,
             state: s.state,
@@ -90,10 +121,19 @@ export class RemoteDesktopTunnelService {
         }));
     }
 
+    private getAgentWs(agentUuid: string): WebSocket | undefined {
+        const key = normKey(agentUuid);
+        if (!key) return undefined;
+        return RemoteDesktopTunnelService.AGENTS.get(key);
+    }
+
     // ---------------- Agent lifecycle ----------------
 
     registerAgent(agentUuid: string, ws: WebSocket) {
-        const existing = this.agents.get(agentUuid);
+        const key = normKey(agentUuid);
+        if (!key) return;
+
+        const existing = RemoteDesktopTunnelService.AGENTS.get(key);
         if (existing && existing !== ws) {
             try {
                 existing.close();
@@ -102,16 +142,18 @@ export class RemoteDesktopTunnelService {
             }
         }
 
-        this.agents.set(agentUuid, ws);
-        this.logger.log(`Desktop tunnel agent registered: ${agentUuid}`);
+        RemoteDesktopTunnelService.AGENTS.set(key, ws);
+        this.logger.log(`Desktop tunnel agent registered: ${agentUuid} (key=${key})`);
     }
 
     unregisterAgent(agentUuid: string, ws: WebSocket) {
-        const cur = this.agents.get(agentUuid);
-        if (cur === ws) this.agents.delete(agentUuid);
+        const key = normKey(agentUuid);
+        if (!key) return;
 
-        // end any sessions for this agent
-        const sid = this.sessionByAgent.get(agentUuid);
+        const cur = RemoteDesktopTunnelService.AGENTS.get(key);
+        if (cur === ws) RemoteDesktopTunnelService.AGENTS.delete(key);
+
+        const sid = RemoteDesktopTunnelService.SESSION_BY_AGENT.get(key);
         if (sid) {
             this.logger.warn(`Agent disconnected; closing desktop tunnel session ${sid}`);
             void this.closeTunnel(sid, "agent_disconnected");
@@ -120,14 +162,17 @@ export class RemoteDesktopTunnelService {
 
     // Called by the gateway when the agent sends TEXT JSON control messages
     handleAgentText(agentUuid: string, msg: any) {
+        const agentKey = normKey(agentUuid);
         const type = String(msg?.type || "");
 
+        if (!agentKey) return;
         if (type === "pong") return;
 
         if (type === "rdp.ready") {
             const sessionId = String(msg?.sessionId || "");
-            const sess = this.sessions.get(sessionId);
-            if (!sess || sess.agentUuid !== agentUuid) return;
+            const sess = RemoteDesktopTunnelService.SESSIONS.get(sessionId);
+            if (!sess || normKey(sess.agentUuid) !== agentKey) return;
+            if (sess.state === "closed") return;
 
             sess.state = "ready";
             sess.lastActivityAt = Date.now();
@@ -136,14 +181,19 @@ export class RemoteDesktopTunnelService {
                 clearTimeout(sess.readyTimer);
                 sess.readyTimer = undefined;
             }
-            if (sess.readyResolve) {
-                sess.readyResolve();
-                sess.readyResolve = undefined;
-                sess.readyReject = undefined;
+
+            const resolve = sess.readyResolve;
+            sess.readyResolve = undefined;
+            sess.readyReject = undefined;
+
+            try {
+                resolve?.();
+            } catch {
+                // ignore
             }
 
             this.logger.log(
-                `Tunnel ready: agent=${agentUuid} session=${sessionId} localPort=${sess.localPort}`
+                `Tunnel ready: agent=${sess.agentUuid} session=${sessionId} localPort=${sess.localPort}`
             );
             return;
         }
@@ -151,8 +201,9 @@ export class RemoteDesktopTunnelService {
         if (type === "rdp.error") {
             const sessionId = String(msg?.sessionId || "");
             const message = String(msg?.message || "RDP tunnel error");
-            const sess = this.sessions.get(sessionId);
-            if (!sess || sess.agentUuid !== agentUuid) return;
+            const sess = RemoteDesktopTunnelService.SESSIONS.get(sessionId);
+            if (!sess || normKey(sess.agentUuid) !== agentKey) return;
+            if (sess.state === "closed") return;
 
             sess.state = "error";
             sess.error = message;
@@ -162,13 +213,18 @@ export class RemoteDesktopTunnelService {
                 clearTimeout(sess.readyTimer);
                 sess.readyTimer = undefined;
             }
-            if (sess.readyReject) {
-                sess.readyReject(new Error(message));
-                sess.readyResolve = undefined;
-                sess.readyReject = undefined;
+
+            const reject = sess.readyReject;
+            sess.readyResolve = undefined;
+            sess.readyReject = undefined;
+
+            try {
+                reject?.(new Error(message));
+            } catch {
+                // ignore
             }
 
-            this.logger.warn(`Tunnel error: agent=${agentUuid} session=${sessionId} msg=${message}`);
+            this.logger.warn(`Tunnel error: agent=${sess.agentUuid} session=${sessionId} msg=${message}`);
             void this.closeTunnel(sessionId, "agent_error");
             return;
         }
@@ -176,8 +232,8 @@ export class RemoteDesktopTunnelService {
         if (type === "rdp.closed") {
             const sessionId = String(msg?.sessionId || "");
             const reason = String(msg?.reason || "closed");
-            const sess = this.sessions.get(sessionId);
-            if (!sess || sess.agentUuid !== agentUuid) return;
+            const sess = RemoteDesktopTunnelService.SESSIONS.get(sessionId);
+            if (!sess || normKey(sess.agentUuid) !== agentKey) return;
 
             this.logger.log(`Tunnel closed by agent: session=${sessionId} reason=${reason}`);
             void this.closeTunnel(sessionId, `agent_closed:${reason}`);
@@ -187,6 +243,9 @@ export class RemoteDesktopTunnelService {
 
     // Called by the gateway when the agent sends BINARY frames
     handleAgentBinary(agentUuid: string, raw: any) {
+        const agentKey = normKey(agentUuid);
+        if (!agentKey) return;
+
         const buf = toUint8(raw);
         if (!buf) return;
 
@@ -197,9 +256,10 @@ export class RemoteDesktopTunnelService {
             return;
         }
 
-        const sess = this.sessions.get(frame.sessionId);
+        const sess = RemoteDesktopTunnelService.SESSIONS.get(frame.sessionId);
         if (!sess) return;
-        if (sess.agentUuid !== agentUuid) return;
+        if (normKey(sess.agentUuid) !== agentKey) return;
+        if (sess.state === "closed") return;
 
         sess.lastActivityAt = Date.now();
 
@@ -209,40 +269,36 @@ export class RemoteDesktopTunnelService {
         try {
             sock.write(frame.payload);
         } catch {
-            // ignore
+            // if TCP is broken, kill session
+            void this.closeTunnel(sess.sessionId, "tcp_write_failed");
         }
     }
 
-    // ---------------- Session API (called by controller/dev endpoints) ----------------
+    // ---------------- Session API ----------------
 
-    async openTunnel(
-        agentUuid: string,
-        target: TunnelTarget
-    ): Promise<{ sessionId: string; localPort: number }> {
-        const agent = this.agents.get(agentUuid);
-        if (!agent) {
+    async openTunnel(agentUuid: string, target: TunnelTarget): Promise<{ sessionId: string; localPort: number }> {
+        const agentKey = normKey(agentUuid);
+        const agent = this.getAgentWs(agentKey);
+
+        if (!agent || (agent as any).readyState !== WS_OPEN) {
             this.logger.warn(
-                `Agent not connected: requested=${agentUuid} connected=[${this.listConnectedAgents().join(
-                    ", "
-                )}]`
+                `Agent not connected: requested=${agentUuid} (key=${agentKey}) connected=[${this.listConnectedAgents().join(", ")}]`
             );
             throw new Error("Agent not connected");
         }
 
-        // one-session-per-device policy
-        const existing = this.sessionByAgent.get(agentUuid);
+        const existing = RemoteDesktopTunnelService.SESSION_BY_AGENT.get(agentKey);
         if (existing) {
             throw new Error("A desktop tunnel session is already active for this device.");
         }
 
         const sessionId = randomUUID();
 
-        // Create a local ephemeral TCP server
         const server = net.createServer();
 
         const sess: TunnelSession = {
             sessionId,
-            agentUuid,
+            agentUuid: agentKey, // store normalized key (stable for maps)
             state: "opening",
             createdAt: Date.now(),
             lastActivityAt: Date.now(),
@@ -252,18 +308,17 @@ export class RemoteDesktopTunnelService {
             tcpSocket: null,
         };
 
-        this.sessions.set(sessionId, sess);
-        this.sessionByAgent.set(agentUuid, sessionId);
+        RemoteDesktopTunnelService.SESSIONS.set(sessionId, sess);
+        RemoteDesktopTunnelService.SESSION_BY_AGENT.set(agentKey, sessionId);
 
-        // Accept only ONE TCP client (guacd) at a time
+        // Accept only ONE TCP client at a time
         server.on("connection", (sock) => {
-            // replace old socket if any
+            // If one is already connected, reject the new one (do NOT kill the existing stream).
             if (sess.tcpSocket && !sess.tcpSocket.destroyed) {
                 try {
-                    sess.tcpSocket.destroy();
-                } catch {
-                    // ignore
-                }
+                    sock.destroy();
+                } catch { }
+                return;
             }
 
             sess.tcpSocket = sock;
@@ -275,13 +330,15 @@ export class RemoteDesktopTunnelService {
 
             sock.on("data", (chunk: Buffer | Uint8Array) => {
                 sess.lastActivityAt = Date.now();
+                // Buffer is Uint8Array in Node; this keeps it as bytes without copies where possible.
                 const u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
                 const framed = encodeRdpDataFrame(sessionId, u8);
                 wsSendBinary(agent, framed);
             });
 
-            sock.on("error", () => {
-                // ignore
+            sock.on("error", (err) => {
+                this.logger.warn(`TCP socket error session=${sessionId}: ${(err as any)?.message || err}`);
+                void this.closeTunnel(sessionId, "tcp_socket_error");
             });
 
             sock.on("close", () => {
@@ -295,10 +352,13 @@ export class RemoteDesktopTunnelService {
             void this.closeTunnel(sessionId, "tcp_server_error");
         });
 
-        // Bind on localhost only
         await new Promise<void>((resolve, reject) => {
-            server.listen(0, "127.0.0.1", () => resolve());
-            server.once("error", reject);
+            const onErr = (e: any) => reject(e);
+            server.once("error", onErr);
+            server.listen(0, "127.0.0.1", () => {
+                server.off("error", onErr);
+                resolve();
+            });
         });
 
         const addr = server.address();
@@ -309,15 +369,19 @@ export class RemoteDesktopTunnelService {
 
         sess.localPort = addr.port;
 
-        // Ask agent to open TCP -> target.host:target.port
         const readyPromise = new Promise<void>((resolve, reject) => {
             sess.readyResolve = resolve;
             sess.readyReject = reject;
 
             sess.readyTimer = setTimeout(() => {
                 sess.readyTimer = undefined;
+
+                // clear handlers so we don't resolve/reject after timeout
+                sess.readyResolve = undefined;
+                sess.readyReject = undefined;
+
                 reject(new Error("Agent did not acknowledge tunnel open (timeout)."));
-            }, 15_000);
+            }, this.READY_TIMEOUT_MS).unref?.() ?? sess.readyTimer;
         });
 
         wsSendJson(agent, {
@@ -338,27 +402,28 @@ export class RemoteDesktopTunnelService {
     }
 
     async closeTunnel(sessionId: string, reason = "closed") {
-        const sess = this.sessions.get(sessionId);
+        const sess = RemoteDesktopTunnelService.SESSIONS.get(sessionId);
         if (!sess) return;
-
-        this.sessions.delete(sessionId);
-        this.sessionByAgent.delete(sess.agentUuid);
+        if (sess.state === "closed") return;
 
         sess.state = "closed";
         sess.lastActivityAt = Date.now();
+
+        RemoteDesktopTunnelService.SESSIONS.delete(sessionId);
+        RemoteDesktopTunnelService.SESSION_BY_AGENT.delete(normKey(sess.agentUuid));
 
         if (sess.readyTimer) {
             clearTimeout(sess.readyTimer);
             sess.readyTimer = undefined;
         }
+        sess.readyResolve = undefined;
+        sess.readyReject = undefined;
 
-        // tell agent to close
-        const agent = this.agents.get(sess.agentUuid);
+        const agent = this.getAgentWs(sess.agentUuid);
         if (agent) {
             wsSendJson(agent, { type: "rdp.close", sessionId, reason });
         }
 
-        // close tcp client
         if (sess.tcpSocket) {
             try {
                 sess.tcpSocket.destroy();
@@ -368,9 +433,9 @@ export class RemoteDesktopTunnelService {
             sess.tcpSocket = null;
         }
 
-        // close server
         try {
             await new Promise<void>((resolve) => {
+                // if server was never fully listening, close() can throw; we guard with try/catch around the await
                 sess.server.close(() => resolve());
             });
         } catch {
@@ -381,8 +446,19 @@ export class RemoteDesktopTunnelService {
     }
 
     sendPing(agentUuid: string) {
-        const ws = this.agents.get(agentUuid);
+        const ws = this.getAgentWs(agentUuid);
         if (!ws) return;
         wsSendJson(ws, { type: "ping", ts: Date.now() });
+    }
+
+    // Optional: used by other parts if you want manual cleanup (static timer also runs)
+    cleanupIdleSessionsBestEffort() {
+        const now = Date.now();
+        for (const s of RemoteDesktopTunnelService.SESSIONS.values()) {
+            if (s.state === "closed") continue;
+            if (now - s.lastActivityAt > this.IDLE_TIMEOUT_MS) {
+                void this.closeTunnel(s.sessionId, "idle_timeout");
+            }
+        }
     }
 }
