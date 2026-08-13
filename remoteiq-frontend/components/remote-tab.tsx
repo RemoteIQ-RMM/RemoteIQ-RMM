@@ -5,7 +5,7 @@ import React from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Monitor, Terminal, FileText, ExternalLink } from "lucide-react";
+import { Monitor, Terminal, FileText, ExternalLink, Tv2 } from "lucide-react";
 
 type RemoteTabProps = {
     /** The current device id (uuid). If omitted, actions will be disabled. */
@@ -67,22 +67,19 @@ function RemoteToolCard({
     );
 }
 
+type ToolKey = "remote-console" | "remote-desktop" | "remote-shell" | "file-browser";
+
 export default function RemoteTab({ deviceId }: RemoteTabProps) {
     const router = useRouter();
     const disabled = !deviceId;
 
-    const openInDashboard = (tool: "remote-desktop" | "remote-shell" | "file-browser") => {
+    const openInDashboard = (tool: ToolKey) => {
         if (!deviceId) return;
-
-        // Embed inside the device dashboard view.
-        // Your device page can read this query param and render the tool panel.
         router.push(`/devices/${encodeURIComponent(deviceId)}?tool=${encodeURIComponent(tool)}`);
     };
 
-    const popout = (tool: "remote-desktop" | "remote-shell" | "file-browser") => {
+    const popout = (tool: ToolKey) => {
         if (!deviceId) return;
-
-        // Same view, different shell. popout=1 can hide sidebar/topbar.
         const url = `/devices/${encodeURIComponent(deviceId)}?tool=${encodeURIComponent(tool)}&popout=1`;
         window.open(url, "_blank", "noopener,noreferrer,width=1280,height=800");
     };
@@ -90,10 +87,21 @@ export default function RemoteTab({ deviceId }: RemoteTabProps) {
     return (
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             <RemoteToolCard
+                icon={Tv2}
+                title="Remote Console"
+                description="No-lockout remote desktop console. View and control the user's live session without blanking their screen."
+                actionText="Start Console"
+                onAction={() => openInDashboard("remote-console")}
+                secondaryActionText="Pop out"
+                onSecondaryAction={() => popout("remote-console")}
+                disabled={disabled}
+            />
+
+            <RemoteToolCard
                 icon={Monitor}
-                title="Remote Desktop"
-                description="Start an interactive remote desktop session. View and control the user's screen in real-time."
-                actionText="Start Session"
+                title="Remote Desktop (RDP)"
+                description="Start an RDP tunnel session. Best for admin workflows and full desktop performance."
+                actionText="Start RDP"
                 onAction={() => openInDashboard("remote-desktop")}
                 secondaryActionText="Pop out"
                 onSecondaryAction={() => popout("remote-desktop")}

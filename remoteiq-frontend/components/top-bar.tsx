@@ -415,19 +415,6 @@ export default function TopBar() {
                             >
                                 <Link href="/tickets">Tickets</Link>
                             </Button>
-                            <div className="h-6 w-px bg-border self-center" />
-                            {/* Admin tab: only show when user has admin.access */}
-                            {canSeeAdmin && (
-                                <Button
-                                    asChild
-                                    variant={pathname.startsWith("/administration") ? "secondary" : "ghost"}
-                                    size="sm"
-                                    title="Administration"
-                                    className="rounded-none last:rounded-r-md px-4"
-                                >
-                                    <Link href="/administration">Administration</Link>
-                                </Button>
-                            )}
                         </div>
                     </div>
 
@@ -498,9 +485,7 @@ export default function TopBar() {
                                     </DropdownMenuItem>
                                 </DialogTrigger>
                                 <DropdownMenuSeparator />
-                                {savedViews.length === 0 && (
-                                    <DropdownMenuItem disabled>No saved views</DropdownMenuItem>
-                                )}
+                                {savedViews.length === 0 && <DropdownMenuItem disabled>No saved views</DropdownMenuItem>}
                                 {savedViews.map((view) => (
                                     <DropdownMenuItem
                                         key={view.id}
@@ -580,9 +565,7 @@ export default function TopBar() {
                                                 placeholder="e.g., Global Windows Servers"
                                                 autoFocus
                                             />
-                                            {nameError && (
-                                                <p className="mt-1 text-xs text-destructive">{nameError}</p>
-                                            )}
+                                            {nameError && <p className="mt-1 text-xs text-destructive">{nameError}</p>}
                                         </div>
                                     </div>
                                 </div>
@@ -677,7 +660,7 @@ export default function TopBar() {
                             >
                                 <Avatar className="h-8 w-8">
                                     <AvatarImage
-                                        src={avatarErrored ? PLACEHOLDER_AVATAR : (avatarUrl || PLACEHOLDER_AVATAR)}
+                                        src={avatarErrored ? PLACEHOLDER_AVATAR : avatarUrl || PLACEHOLDER_AVATAR}
                                         alt="User"
                                         onError={() => setAvatarErrored(true)}
                                         referrerPolicy="no-referrer"
@@ -690,9 +673,7 @@ export default function TopBar() {
                             <DropdownMenuItem asChild>
                                 <Link href="/account">Account</Link>
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => router.push("/account#security")}>
-                                Security
-                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => router.push("/account#security")}>Security</DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                                 onClick={(e) => {
@@ -754,9 +735,7 @@ export default function TopBar() {
                 <AlertDialogContent>
                     <AlertDialogHeader>
                         <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            You’re about to sign out of RemoteIQ.
-                        </AlertDialogDescription>
+                        <AlertDialogDescription>You’re about to sign out of RemoteIQ.</AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel>Cancel</AlertDialogCancel>

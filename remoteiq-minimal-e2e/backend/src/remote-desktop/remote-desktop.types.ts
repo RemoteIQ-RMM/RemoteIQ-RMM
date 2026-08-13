@@ -14,11 +14,11 @@ export type DesktopTunnelSession = {
     state: DesktopTunnelState;
     error?: { code: string; message: string };
 
-    // Local TCP bridge (guacd will connect here in Phase 2)
+    // Local TCP bridge (guacd will connect here later if you move to browser-based)
     tcpServer?: net.Server;
     localPort?: number;
 
-    // Single active TCP connection per session (deny extras)
+    // Single active TCP connection per session
     tcpSocket?: net.Socket;
 };
 

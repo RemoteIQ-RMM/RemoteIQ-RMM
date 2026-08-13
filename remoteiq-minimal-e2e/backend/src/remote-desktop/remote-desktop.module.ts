@@ -9,15 +9,19 @@ import { RemoteDesktopTunnelGateway } from "./remote-desktop-tunnel.gateway";
 import { RemoteDesktopDevController } from "./remote-desktop-dev.controller";
 import { RemoteDesktopController } from "./remote-desktop.controller";
 
+// (Optional) Back-compat wrapper if anything still imports RemoteDesktopService
+import { RemoteDesktopService } from "./remote-desktop.service";
+
 @Module({
     imports: [StorageModule], // provides PgPoolService
     controllers: [
-        RemoteDesktopController,     // ✅ real API
-        RemoteDesktopDevController,  // ✅ dev-only helpers
+        RemoteDesktopController, // ✅ real API
+        RemoteDesktopDevController, // ✅ dev-only helpers
     ],
     providers: [
         RemoteDesktopTunnelService,
         RemoteDesktopTunnelGateway, // ✅ gateways must be providers
+        RemoteDesktopService, // ✅ optional back-compat (safe even if unused)
     ],
     exports: [RemoteDesktopTunnelService],
 })

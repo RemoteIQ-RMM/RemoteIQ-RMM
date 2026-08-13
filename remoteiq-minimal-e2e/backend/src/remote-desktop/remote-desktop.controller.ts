@@ -16,6 +16,7 @@ import type { Response } from "express";
 
 import { PgPoolService } from "../storage/pg-pool.service";
 import { RemoteDesktopTunnelService } from "./remote-desktop-tunnel.service";
+import { RequirePerm } from "../auth/require-perm.decorator";
 
 function asNonEmptyString(v: any): string | null {
     if (typeof v !== "string") return null;
@@ -38,7 +39,8 @@ function ensureOneOf(deviceId?: string | null, agentUuid?: string | null) {
 type CreateSessionBody = {
     deviceId?: string;
     agentUuid?: string;
-    // optional overrides if you later want them (keep safe defaults)
+
+    // optional overrides
     host?: string;
     port?: number;
 };
@@ -54,6 +56,7 @@ export class RemoteDesktopController {
      * List connected agents + active sessions (for UI polling).
      */
     @Get("/sessions")
+    @RequirePerm("devices.read")
     getSessions() {
         return {
             ok: true,
@@ -67,6 +70,7 @@ export class RemoteDesktopController {
      * Body must include EXACTLY ONE of: { deviceId } OR { agentUuid }.
      */
     @Post("/sessions")
+    @RequirePerm("devices.read")
     async createSession(@Body() body: CreateSessionBody) {
         const deviceId = asNonEmptyString(body?.deviceId);
         const agentUuid = asNonEmptyString(body?.agentUuid);
@@ -99,20 +103,17 @@ export class RemoteDesktopController {
             resolvedAgentUuid = (row?.agent_uuid ?? row?.id ?? "").trim() || null;
 
             if (!resolvedAgentUuid) {
-                throw new BadRequestException(
-                    "No agent is registered for this deviceId yet."
-                );
+                throw new BadRequestException("No agent is registered for this deviceId yet.");
             }
         }
 
         try {
-            const { sessionId, localPort } = await this.tunnels.openTunnel(
-                String(resolvedAgentUuid),
-                { host, port }
-            );
+            const { sessionId, localPort } = await this.tunnels.openTunnel(String(resolvedAgentUuid), {
+                host,
+                port,
+            });
 
-            // IMPORTANT: today, localPort is bound on the backend machine (127.0.0.1).
-            // The UI will download an .rdp that points to 127.0.0.1:localPort.
+            // NOTE: localPort is bound on the backend machine (127.0.0.1).
             return {
                 ok: true,
                 sessionId,
@@ -137,6 +138,7 @@ export class RemoteDesktopController {
      * Close a session.
      */
     @Delete("/sessions/:sessionId")
+    @RequirePerm("devices.read")
     async closeSession(@Param("sessionId") sessionId: string) {
         const sid = asNonEmptyString(sessionId);
         if (!sid) throw new BadRequestException("sessionId is required");
@@ -150,14 +152,12 @@ export class RemoteDesktopController {
      * Browser opens this in a new tab/window; Windows should launch MSTSC.
      */
     @Get("/sessions/:sessionId/rdp")
+    @RequirePerm("devices.read")
     async downloadRdp(@Param("sessionId") sessionId: string, @Res() res: Response) {
         const sid = asNonEmptyString(sessionId);
         if (!sid) throw new BadRequestException("sessionId is required");
 
-        const sess = this.tunnels
-            .listSessions()
-            .find((s) => String(s.sessionId) === String(sid));
-
+        const sess = this.tunnels.listSessions().find((s) => String(s.sessionId) === String(sid));
         if (!sess) throw new NotFoundException("Session not found");
         if (!sess.localPort || typeof sess.localPort !== "number") {
             throw new BadRequestException("Session has no localPort");
@@ -166,9 +166,6 @@ export class RemoteDesktopController {
             throw new BadRequestException(`Session is not ready (state=${sess.state})`);
         }
 
-        // Today: backend listens on 127.0.0.1:<localPort> on the backend machine.
-        // In local dev where you’re running everything on one machine, this works.
-        // In production, you’ll likely replace this with a browser-based solution.
         const fullAddress = `127.0.0.1:${sess.localPort}`;
 
         const rdp = [
@@ -191,10 +188,7 @@ export class RemoteDesktopController {
         ].join("\r\n");
 
         res.setHeader("Content-Type", "application/x-rdp; charset=utf-8");
-        res.setHeader(
-            "Content-Disposition",
-            `attachment; filename="remoteiq-${sid}.rdp"`
-        );
+        res.setHeader("Content-Disposition", `attachment; filename="remoteiq-${sid}.rdp"`);
         res.status(200).send(rdp);
     }
 }
